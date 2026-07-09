@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
-import { updateMappingAction, updateAccountMappingAction } from "../actions";
+import { updateMappingAction, updateAccountMappingAction, seedDefaultMappingsAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +32,26 @@ export default async function MappingsPage() {
         Admin-editable rules. Resolve each account slot to a real QBO account ID (never rely on names once IDs are
         known). {editable ? "" : "Read-only for your role."}
       </p>
+
+      {purposes.length === 0 && accounts.length === 0 ? (
+        <div className="notice">
+          No mappings loaded yet.{" "}
+          {editable
+            ? "Click “Load default mappings” to seed the German Car Depot purpose & account rules."
+            : "An owner_admin needs to load the default mappings first."}
+        </div>
+      ) : null}
+
+      {editable && (
+        <form action={seedDefaultMappingsAction} className="row-actions">
+          <button className="btn" type="submit">
+            {purposes.length === 0 && accounts.length === 0 ? "Load default mappings" : "Restore default mappings"}
+          </button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+            Idempotent — never overwrites a resolved QBO account ID.
+          </span>
+        </form>
+      )}
 
       <h2>Account mappings</h2>
       <div className="table-wrap">
