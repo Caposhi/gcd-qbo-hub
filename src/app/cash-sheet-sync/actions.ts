@@ -1,0 +1,120 @@
+"use server";
+
+/**
+ * Server actions for the Cash Sheet Sync module (§14).
+ *
+ * Every mutating action is gated by role (§14, §18): owner_admin may approve
+ * postings, edit mappings, and advance the rollout stage; a reviewer may only
+ * mark warnings reviewed and run a dry-run. Gating is enforced server-side via
+ * requirePermission — never trusted from the client.
+ */
+import { revalidatePath } from "next/cache";
+import { prisma } from "@/lib/db";
+import { requirePermission } from "@/lib/auth/session";
+import { runSync } from "@/lib/cashsheet/engine";
+import { setRolloutStage } from "@/lib/config-store";
+import { findInvoiceMatch } from "@/lib/qbo/posting";
+import { getQboEnvironment } from "@/lib/config-store";
+import type { RolloutStage } from "@/lib/cashsheet/rollout";
+
+export async function runDryRunAction() {
+  const user = await requirePermission("run_dry_run");
+  await runSync({ forceDryRun: true, triggeredBy: user.email });
+  revalidatePath("/cash-sheet-sync");
+}
+
+export async function runSandboxSyncAction() {
+  const user = await requirePermission("run_sandbox_sync");
+  await runSync({ triggeredBy: user.email });
+  revalidatePath("/cash-sheet-sync");
+}
+
+export async function approveRowAction(rowId: string) {
+  const user = await requirePermission("approve_posting");
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: { approvedAt: new Date(), approvedByEmail: user.email },
+  });
+  await prisma.rowEvent.create({
+    data: { sheetRowId: rowId, eventType: "approved", eventMessage: `Approved by ${user.email}` },
+  });
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+  revalidatePath("/cash-sheet-sync/queue");
+}
+
+export async function markReviewedAction(rowId: string) {
+  const user = await requirePermission("mark_warning_reviewed");
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: { reviewedAt: new Date(), reviewedByEmail: user.email },
+  });
+  await prisma.rowEvent.create({
+    data: { sheetRowId: rowId, eventType: "reviewed", eventMessage: `Marked reviewed by ${user.email}` },
+  });
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+}
+
+export async function advanceStageAction(next: RolloutStage) {
+  const user = await requirePermission("change_rollout_stage");
+  // Extra guard for the live jump — toggling into live also requires toggle_live_mode.
+  if (next === "live_manual" || next === "live_auto") {
+    await requirePermission("toggle_live_mode");
+  }
+  await setRolloutStage(next, user.id, `Advanced via dashboard by ${user.email}`);
+  revalidatePath("/cash-sheet-sync/settings");
+  revalidatePath("/cash-sheet-sync");
+}
+
+export async function recheckQboMatchAction(rowId: string) {
+  await requirePermission("recheck_qbo_match");
+  const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
+  if (!row) return;
+  const environment = await getQboEnvironment();
+  const parsed = {
+    rowNumber: row.rowNumberLastSeen,
+    date: row.date,
+    invNumber: row.invNumber ?? "",
+    amount: row.amtCollected ? Number(row.amtCollected) : null,
+  } as Parameters<typeof findInvoiceMatch>[0];
+  try {
+    const match = await findInvoiceMatch(parsed, environment);
+    await prisma.sheetRow.update({
+      where: { id: rowId },
+      data: {
+        status: match.found ? "Audit Only" : "Awaiting QBO Match",
+        statusReason: match.found
+          ? `Matched QBO ${match.candidates[0]?.type} ${match.candidates[0]?.id}`
+          : "QBO Match Not Found — audit only",
+      },
+    });
+    await prisma.rowEvent.create({
+      data: { sheetRowId: rowId, eventType: "qbo_recheck", eventMessage: match.found ? "match found" : "no match", diffJson: match as object },
+    });
+  } catch (err) {
+    await prisma.rowEvent.create({
+      data: { sheetRowId: rowId, eventType: "qbo_recheck_error", eventMessage: String(err) },
+    });
+  }
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+}
+
+export async function updateMappingAction(formData: FormData) {
+  await requirePermission("edit_mappings");
+  const id = String(formData.get("id"));
+  const qboAccountId = String(formData.get("qboAccountId") ?? "").trim() || null;
+  const requiresManualApproval = formData.get("requiresManualApproval") === "on";
+  const active = formData.get("active") === "on";
+  await prisma.purposeMapping.update({
+    where: { id },
+    data: { qboAccountId, requiresManualApproval, active },
+  });
+  revalidatePath("/cash-sheet-sync/mappings");
+}
+
+export async function updateAccountMappingAction(formData: FormData) {
+  await requirePermission("edit_mappings");
+  const id = String(formData.get("id"));
+  const qboAccountId = String(formData.get("qboAccountId") ?? "").trim() || null;
+  await prisma.accountMapping.update({ where: { id }, data: { qboAccountId } });
+  revalidatePath("/cash-sheet-sync/mappings");
+}

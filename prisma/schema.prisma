@@ -1,0 +1,387 @@
+// GCD QBO Hub — Prisma schema.
+//
+// Two concerns live here:
+//   1. Hub-shared tables (users, config) — used by the shared shell/auth and
+//      by every future module.
+//   2. The Cash Sheet Sync module tables, namespaced with the `css_` table
+//      prefix (§1, §15) so future modules (Projections, Assistant, Coworker
+//      Portal) can add their own tables without colliding with this schema.
+//
+// NextAuth's own tables (Account/Session/VerificationToken) are also here
+// because the Prisma adapter requires them; they are the auth substrate, not a
+// module.
+//
+// Durability rules baked into the schema:
+//   - row_events is append-only (no update/delete in app code).
+//   - Unique constraints make double-posting impossible even under concurrent
+//     sync runs: a sheet row can hold at most one QBO transaction id, and a QBO
+//     transaction id can be recorded at most once (§10, §15).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// Hub-shared: identity & roles (§1, §18)
+// ===========================================================================
+
+// Extensible role enum from day one. `coworker` is a reserved stub for the
+// future "Ask My Client" portal — present in the schema so adding that module
+// later needs no migration of the enum's meaning (§1).
+enum Role {
+  owner_admin
+  reviewer
+  coworker
+}
+
+model User {
+  id          String    @id @default(cuid())
+  email       String    @unique
+  name        String?
+  image       String?
+  role        Role      @default(reviewer)
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  // NextAuth relations
+  accounts Account[]
+  sessions Session[]
+
+  // Audit: who changed config / approved rows.
+  configChanges ConfigChange[]
+
+  @@map("users")
+}
+
+// ---- NextAuth substrate (email magic-link provider) ----------------------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("auth_accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("auth_sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("auth_verification_tokens")
+}
+
+// ===========================================================================
+// Hub-shared: global config with change history (§12, §15)
+// ===========================================================================
+
+// Typed key/value store. The current rollout stage and QBO environment live
+// here (not just a raw env flag) so a stage/environment flip is an audited,
+// admin-only DB change — never a silent prod env edit (§12, §22).
+model Config {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  changes ConfigChange[]
+
+  @@map("config")
+}
+
+// Append-only audit of every config change (who, when, old → new).
+model ConfigChange {
+  id         String   @id @default(cuid())
+  configId   String
+  key        String
+  oldValue   String?  @db.Text
+  newValue   String   @db.Text
+  changedBy  String? // User.id (nullable for system/bootstrap changes)
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  config Config @relation(fields: [configId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [changedBy], references: [id])
+
+  @@index([key])
+  @@map("config_changes")
+}
+
+// ===========================================================================
+// Hub-shared: QBO OAuth tokens, encrypted at rest (§16)
+// ===========================================================================
+
+// One row per realm/environment. access/refresh tokens are stored ENCRYPTED
+// (AES-256-GCM via APP_ENCRYPTION_KEY) — never plaintext. This is the most
+// sensitive data the system holds, so it lives in its own table, redacted in
+// all logs (§16, §18).
+model QboCredential {
+  id                  String    @id @default(cuid())
+  environment         String // "sandbox" | "live"
+  realmId             String
+  accessTokenEnc      String    @db.Text
+  refreshTokenEnc     String    @db.Text
+  accessTokenExpires  DateTime
+  refreshTokenExpires DateTime?
+  scope               String?
+  connectedByEmail    String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([environment, realmId])
+  @@map("qbo_credentials")
+}
+
+// ===========================================================================
+// Cash Sheet Sync module — css_ prefixed (§15)
+// ===========================================================================
+
+enum SyncMode {
+  dry_run
+  sandbox_post
+  live_post
+}
+
+// Mirrors the §12 rollout ladder. Stored on each run and in Config.
+enum RolloutStage {
+  dry_run
+  sandbox_manual
+  sandbox_auto
+  live_manual
+  live_auto
+}
+
+model SyncRun {
+  id            String    @id @default(cuid())
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  status        String    @default("running") // running | success | error
+  mode          SyncMode
+  rolloutStage  RolloutStage
+  spreadsheetId String
+  tabsScanned   String[] // month tab names scanned this run
+  rowsScanned   Int       @default(0)
+  rowsPosted    Int       @default(0)
+  rowsSkipped   Int       @default(0)
+  rowsError     Int       @default(0)
+  rowsWarning   Int       @default(0)
+  summaryJson   Json?
+  createdAt     DateTime  @default(now())
+
+  events        RowEvent[]
+  transactions  QboTransaction[]
+  alerts        Alert[]
+
+  @@index([startedAt])
+  @@map("css_sync_runs")
+}
+
+model SheetRow {
+  id                  String    @id @default(cuid())
+  spreadsheetId       String
+  sheetGid            String? // numeric gid of the tab, as string
+  tabName             String
+  rowNumberLastSeen   Int
+  rowUuid             String // stable GCD_QBO_Row_ID
+  firstSeenAt         DateTime  @default(now())
+  lastSeenAt          DateTime  @default(now())
+
+  // Parsed source fields (§3 columns).
+  date                DateTime?
+  rcvByOrPaidTo       String?
+  name                String?
+  purpose             String?
+  invNumber           String?
+  backup              String?
+  approvedBy          String?
+  amtCollected        Decimal?  @db.Decimal(14, 2)
+  amountPaidOut       Decimal?  @db.Decimal(14, 2)
+  bankDeposit         Decimal?  @db.Decimal(14, 2)
+  cashBalanceEnvelope Decimal?  @db.Decimal(14, 2)
+  amountType          String? // amt_collected | amount_paid_out | bank_deposit
+
+  // Idempotency & audit (§10, §11).
+  normalizedFingerprint String
+  originalHash          String?
+  currentHash           String?
+  originalSnapshotJson  Json?
+  currentSnapshotJson   Json?
+
+  status              String   @default("New")
+  statusReason        String?
+  removedFromSheetAt  DateTime?
+
+  // Review/approval workflow (§12, §14). A reviewer can mark a warning
+  // reviewed; only an owner_admin can approve a row for posting. `approvedAt`
+  // is what the rollout gate reads at a manual stage.
+  approvedAt      DateTime?
+  approvedByEmail String?
+  reviewedAt      DateTime?
+  reviewedByEmail String?
+
+  // QBO linkage after posting (§10). Nullable & unique so a row can hold at
+  // most one QBO transaction id, and that id can appear on only one row.
+  qboTransactionId    String?  @unique
+  qboTransactionType  String?
+  qboAccountId        String?
+  qboPostedAt         DateTime?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  events        RowEvent[]
+  transactions  QboTransaction[]
+  alerts        Alert[]
+
+  // Row UUID is unique PER spreadsheet: the same UUID appearing twice in the
+  // sheet is a duplicate-row-id signal (§10) detected in app code, but within
+  // our store each UUID maps to exactly one persisted row.
+  @@unique([spreadsheetId, rowUuid])
+  @@index([status])
+  @@index([tabName])
+  @@index([normalizedFingerprint])
+  @@map("css_sheet_rows")
+}
+
+// Append-only. Never updated or deleted in app code.
+model RowEvent {
+  id           String   @id @default(cuid())
+  sheetRowId   String?
+  syncRunId    String?
+  eventType    String
+  eventMessage String?
+  beforeJson   Json?
+  afterJson    Json?
+  diffJson     Json?
+  createdAt    DateTime @default(now())
+
+  sheetRow SheetRow? @relation(fields: [sheetRowId], references: [id], onDelete: SetNull)
+  syncRun  SyncRun?  @relation(fields: [syncRunId], references: [id], onDelete: SetNull)
+
+  @@index([sheetRowId])
+  @@index([eventType])
+  @@map("css_row_events")
+}
+
+model QboTransaction {
+  id                   String   @id @default(cuid())
+  sheetRowId           String?
+  syncRunId            String?
+  qboCompanyId         String
+  qboEnvironment       String
+  qboTransactionId     String
+  qboTransactionType   String
+  qboSyncToken         String?
+  qboDocNumber         String?
+  requestJsonRedacted  Json?
+  responseJsonRedacted Json?
+  createdAt            DateTime @default(now())
+
+  sheetRow SheetRow? @relation(fields: [sheetRowId], references: [id], onDelete: SetNull)
+  syncRun  SyncRun?  @relation(fields: [syncRunId], references: [id], onDelete: SetNull)
+
+  // A given QBO transaction is recorded exactly once per company/environment.
+  @@unique([qboEnvironment, qboCompanyId, qboTransactionId])
+  @@index([sheetRowId])
+  @@map("css_qbo_transactions")
+}
+
+model PurposeMapping {
+  id                     String   @id @default(cuid())
+  purposePattern         String // human-facing pattern e.g. "JOSE PR"
+  normalizedPurpose      String // uppercased/trimmed key used for matching
+  amountType             String? // amt_collected | amount_paid_out | bank_deposit | null (any)
+  qboAction              String // expense | deposit | transfer | audit_only
+  qboAccountName         String?
+  qboAccountId           String?
+  postToQbo              Boolean  @default(true)
+  auditOnly              Boolean  @default(false)
+  requiresPayee          Boolean  @default(false)
+  requiresManualApproval Boolean  @default(false)
+  invoiceMatching        Boolean  @default(false)
+  active                 Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([normalizedPurpose])
+  @@index([active])
+  @@map("css_purpose_mappings")
+}
+
+model AccountMapping {
+  id             String   @id @default(cuid())
+  friendlyName   String   @unique // e.g. "Cash on hand", "Chase Checking 9680"
+  qboAccountName String?
+  qboAccountId   String?
+  qboAccountType String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("css_account_mappings")
+}
+
+model PayeeMapping {
+  id            String   @id @default(cuid())
+  sheetNameValue String  @unique // the "Name" column value seen in the sheet
+  qboEntityType  String? // Vendor | Customer | Employee
+  qboEntityId    String?
+  qboDisplayName String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("css_payee_mappings")
+}
+
+model Alert {
+  id                String   @id @default(cuid())
+  alertType         String // changed_after_posting | removed_after_posting | daily_summary | error_summary
+  severity          String // info | warning | critical
+  recipient         String
+  subject           String
+  body              String   @db.Text
+  sentAt            DateTime?
+  status            String   @default("pending") // pending | sent | failed
+  relatedSheetRowId String?
+  relatedSyncRunId  String?
+  createdAt         DateTime @default(now())
+
+  sheetRow SheetRow? @relation(fields: [relatedSheetRowId], references: [id], onDelete: SetNull)
+  syncRun  SyncRun?  @relation(fields: [relatedSyncRunId], references: [id], onDelete: SetNull)
+
+  @@index([alertType])
+  @@index([status])
+  @@map("css_alerts")
+}
