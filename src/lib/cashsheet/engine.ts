@@ -18,7 +18,7 @@ import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { listTabs, readTabValues } from "@/lib/google/sheets";
 import { detectHeaderRow } from "./headers";
-import { parseRow, isBlankRow, isTransactionCandidate, validateRow, type ParsedRow } from "./rows";
+import { parseRow, isBlankRow, isSummaryRow, isTransactionCandidate, validateRow, type ParsedRow } from "./rows";
 import { computeFingerprint, computeRowHash, rowSnapshot } from "./fingerprint";
 import { extractRowUuid, generateRowUuid, CONTROL_KEYS, isValidRowUuid } from "./uuid";
 import { buildPostingPlan, type AccountMappingLike } from "./classify";
@@ -27,7 +27,7 @@ import { findDuplicateRowIds, findPossibleDuplicate, isAlreadyPosted, type Poste
 import { isChangedAfterPosting, diffSnapshots, findRemovedAfterPosting } from "./detection";
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
-import { MONTH_TABS, TEMPLATE_TAB } from "./config";
+import { canonicalMonthTab, TEMPLATE_TAB } from "./config";
 import { AUTOMATION_START_DATE, isOnOrAfterStartDate, formatDate } from "./dates";
 import { getRolloutStage, getSpreadsheetId } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
@@ -128,7 +128,18 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     throw err;
   }
 
-  const monthTabs = tabs.filter((t) => MONTH_TABS.includes(t.title) && t.title !== TEMPLATE_TAB);
+  const monthTabs = tabs.filter((t) => t.title !== TEMPLATE_TAB && canonicalMonthTab(t.title) !== null);
+  // Diagnostic: record every tab found in the workbook and which we selected as
+  // month tabs, so an operator can see immediately if a data tab was skipped
+  // for being named unexpectedly (§3).
+  await recordEvent(
+    run.id,
+    null,
+    "tabs_discovered",
+    `Workbook tabs: ${tabs.map((t) => t.title).join(", ") || "(none)"} · scanning: ${
+      monthTabs.map((t) => t.title).join(", ") || "(none)"
+    }`
+  );
 
   for (const tab of monthTabs) {
     try {
@@ -146,6 +157,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
         const raw = values[i] ?? [];
         const parsed = parseRow(raw, det.columns, rowNumber);
         if (isBlankRow(parsed)) continue;
+        if (isSummaryRow(parsed)) continue; // column-totals line, not a transaction
         if (!isTransactionCandidate(parsed)) continue;
 
         summary.rowsScanned++;

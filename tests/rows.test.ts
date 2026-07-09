@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { isTransactionCandidate, isBlankRow, validateRow } from "@/lib/cashsheet/rows";
+import { isTransactionCandidate, isBlankRow, isSummaryRow, validateRow } from "@/lib/cashsheet/rows";
 import { AUTOMATION_START_DATE } from "@/lib/cashsheet/dates";
+import { canonicalMonthTab } from "@/lib/cashsheet/config";
 import { parse } from "./fixtures";
 
 describe("row parsing, candidacy & validation (§5)", () => {
@@ -53,5 +54,32 @@ describe("row parsing, candidacy & validation (§5)", () => {
     const r = parse({ date: "1/5/2026", purpose: "PART", amountPaidOut: "100" });
     const v = validateRow(r, AUTOMATION_START_DATE);
     expect(v.warnings.some((w) => /before the automation start date/i.test(w))).toBe(true);
+  });
+
+  it("detects a totals/summary row (amounts, no identity) and does not treat it as a transaction (§5)", () => {
+    // The column-totals row at the bottom of a month tab: sums but no date,
+    // name, purpose, or invoice number.
+    const totals = parse({ amtCollected: "1905", amountPaidOut: "6920", bankDeposit: "0" });
+    expect(isSummaryRow(totals)).toBe(true);
+    expect(isBlankRow(totals)).toBe(false);
+    // A real (if imperfect) transaction with any identity field is NOT a summary row.
+    expect(isSummaryRow(parse({ date: "7/8/2026", amtCollected: "100" }))).toBe(false);
+    expect(isSummaryRow(parse({ purpose: "PART", amountPaidOut: "50" }))).toBe(false);
+  });
+});
+
+describe("month-tab matching is tolerant of naming (§3)", () => {
+  it("matches full names, abbreviations, case, and year suffixes", () => {
+    expect(canonicalMonthTab("May")).toBe("May");
+    expect(canonicalMonthTab("June")).toBe("Jun");
+    expect(canonicalMonthTab("JULY")).toBe("Jul");
+    expect(canonicalMonthTab("Jul 26")).toBe("Jul");
+    expect(canonicalMonthTab("Sept '26")).toBe("Sep");
+  });
+
+  it("ignores non-month tabs", () => {
+    expect(canonicalMonthTab("Template")).toBeNull();
+    expect(canonicalMonthTab("Summary")).toBeNull();
+    expect(canonicalMonthTab("")).toBeNull();
   });
 });

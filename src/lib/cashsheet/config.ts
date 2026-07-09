@@ -39,5 +39,24 @@ export const MONTH_TABS = [
 
 export const TEMPLATE_TAB = "Template";
 
+/**
+ * Map a workbook tab title to its canonical month tab, tolerantly (§3).
+ *
+ * Employees name month tabs inconsistently — "May", "June", "JULY", "Jul 26",
+ * "Sept '26" — so exact-matching against MONTH_TABS misses real data tabs. We
+ * match on the first three letters (case-insensitive), which uniquely
+ * identifies every month, and ignore any trailing year/space/punctuation.
+ * Returns the canonical short name (e.g. "Jul") or null if it isn't a month.
+ */
+const MONTH_PREFIX: Record<string, string> = {
+  jan: "Jan", feb: "Feb", mar: "Mar", apr: "Apr", may: "May", jun: "Jun",
+  jul: "Jul", aug: "Aug", sep: "Sep", oct: "Oct", nov: "Nov", dec: "Dec",
+};
+
+export function canonicalMonthTab(title: string): string | null {
+  const key = title.trim().toLowerCase().slice(0, 3);
+  return MONTH_PREFIX[key] ?? null;
+}
+
 /** Business entity, for memos/reports (§0). */
 export const BUSINESS_ENTITY = "Alan Gelfand Inc DBA German Car Depot";
