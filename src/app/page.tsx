@@ -28,19 +28,21 @@ export default async function HomePage() {
               {m.icon} {m.name}{" "}
               {m.status === "live" ? (
                 <span className="badge ok">live</span>
+              ) : m.status === "prototype" ? (
+                <span className="badge warn">beta</span>
               ) : (
                 <span className="badge muted">planned</span>
               )}
             </h3>
             <p className="muted">{m.tagline}</p>
-            {m.status === "live" ? (
-              <Link className="btn secondary" href={m.basePath}>
-                Open
-              </Link>
-            ) : (
+            {m.status === "planned" ? (
               <span className="btn secondary" style={{ opacity: 0.5 }}>
                 Coming soon
               </span>
+            ) : (
+              <Link className="btn secondary" href={m.basePath}>
+                Open
+              </Link>
             )}
           </div>
         ))}

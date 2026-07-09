@@ -17,7 +17,8 @@ export interface ModuleDef {
   icon: string;
   basePath: string;
   tablePrefix: string;
-  status: "live" | "planned";
+  /** live = production; prototype = early build behind auth; planned = stub only. */
+  status: "live" | "prototype" | "planned";
   tagline: string;
   /** Minimum permission needed to see the module in nav (all can view live ones). */
   requiredPermission?: Permission;
@@ -40,8 +41,9 @@ export const MODULES: ModuleDef[] = [
     icon: "📈",
     basePath: "/projections",
     tablePrefix: "proj_",
-    status: "planned",
-    tagline: "Cash-flow & financial projections (coming soon).",
+    status: "prototype",
+    tagline: "Project cash-flow forward from assumptions.",
+    requiredPermission: "view_projections",
   },
   {
     id: "assistant",
@@ -49,8 +51,9 @@ export const MODULES: ModuleDef[] = [
     icon: "🤖",
     basePath: "/assistant",
     tablePrefix: "ai_",
-    status: "planned",
-    tagline: "Ask questions about the business's books (coming soon).",
+    status: "prototype",
+    tagline: "Ask Claude about the business's books.",
+    requiredPermission: "use_assistant",
   },
   {
     id: "coworker-portal",
@@ -58,8 +61,9 @@ export const MODULES: ModuleDef[] = [
     icon: "🧑‍🔧",
     basePath: "/coworker-portal",
     tablePrefix: "cwp_",
-    status: "planned",
-    tagline: "\"Ask My Client\" transaction Q&A for coworkers (coming soon).",
+    status: "prototype",
+    tagline: "\"Ask My Client\" transaction Q&A for coworkers.",
+    requiredPermission: "view_coworker_portal",
   },
 ];
 

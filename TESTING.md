@@ -23,8 +23,26 @@ The pure domain rules are unit-tested with no DB/network. Coverage maps to §20:
 - [x] Dry-run never posts to QBO — `rollout.test.ts` (`dry_run_never_posts`)
 - [x] Sandbox/live posting only at the correct stage with valid credentials — `rollout.test.ts`
 - [x] Role-gated actions (reviewer cannot approve postings or change mappings/stage) — `roles.test.ts`
+- [x] Projection engine: flat/compounding growth, one-offs, horizon clamping, summarize lowest-balance, assumption coercion — `projections.test.ts`
+- [x] Coworker role activated (view + answer; not ask) and reviewer prototype-module gating — `roles.test.ts`
 
 Run also: `npm run typecheck` and `npm run build`.
+
+## Prototype modules (manual)
+
+### Financial Projections
+- [ ] As owner_admin, create a scenario (opening balance, horizon, in/out, growth) — the monthly table and summary tiles render; negative ending balances show a red badge.
+- [ ] As a reviewer, the create form is hidden and a muted note appears; scenarios are still viewable.
+
+### AI Report Assistant
+- [ ] Without `ANTHROPIC_API_KEY`, the page loads and shows a "not configured" notice; sending a message returns that error.
+- [ ] With the key set, "How did the last sync go?" and "List July parts purchases" return answers grounded in the DB (no fabricated figures); the assistant declines write requests.
+- [ ] Conversations persist and reappear in the sidebar.
+
+### Coworker Portal
+- [ ] As owner_admin/reviewer, raise a question (optionally assigned to a coworker email).
+- [ ] As the assigned coworker, only see assigned + unassigned-pool questions; answer one → status flips to "answered".
+- [ ] A coworker cannot open a question assigned to someone else (sees a "not assigned to you" notice).
 
 ## Manual (staging) checklist
 
