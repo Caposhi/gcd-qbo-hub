@@ -385,3 +385,97 @@ model Alert {
   @@index([status])
   @@map("css_alerts")
 }
+
+// ===========================================================================
+// Financial Projections module — proj_ prefixed (prototype)
+// ===========================================================================
+
+// A named projection scenario: opening balance + assumptions the engine uses
+// to project future cash balances. Kept module-namespaced so it never collides
+// with Cash Sheet Sync (§1, §15).
+model ProjScenario {
+  id               String   @id @default(cuid())
+  name             String
+  description      String?
+  createdByEmail   String?
+  // Assumptions consumed by the pure projection engine (opening balance,
+  // monthly inflow/outflow, growth rate, horizon months, one-off adjustments).
+  assumptionsJson  Json
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([active])
+  @@map("proj_scenarios")
+}
+
+// ===========================================================================
+// AI Report Assistant module — ai_ prefixed (prototype)
+// ===========================================================================
+
+model AiConversation {
+  id        String   @id @default(cuid())
+  userEmail String
+  title     String   @default("New conversation")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages AiMessage[]
+
+  @@index([userEmail])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String // user | assistant
+  content        String   @db.Text
+  // Redacted token/usage metadata for cost visibility (never raw secrets).
+  usageJson      Json?
+  createdAt      DateTime @default(now())
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@map("ai_messages")
+}
+
+// ===========================================================================
+// Coworker Portal module — cwp_ prefixed (prototype)
+// ===========================================================================
+
+// "Ask My Client" — a question about a specific transaction, raised by an
+// owner/reviewer and answered by a coworker (activates the reserved `coworker`
+// role, §1). Links loosely to a Cash Sheet Sync row by id when relevant.
+model CwpQuestion {
+  id            String   @id @default(cuid())
+  relatedRowId  String? // css_sheet_rows.id, when the question is about a synced row
+  qboReference  String? // free-text QBO txn reference, when relevant
+  subject       String
+  body          String   @db.Text
+  askedByEmail  String
+  assignedEmail String? // coworker the question is directed at
+  status        String   @default("open") // open | answered | closed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  answers CwpAnswer[]
+
+  @@index([status])
+  @@index([assignedEmail])
+  @@map("cwp_questions")
+}
+
+model CwpAnswer {
+  id              String   @id @default(cuid())
+  questionId      String
+  body            String   @db.Text
+  answeredByEmail String
+  createdAt       DateTime @default(now())
+
+  question CwpQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("cwp_answers")
+}

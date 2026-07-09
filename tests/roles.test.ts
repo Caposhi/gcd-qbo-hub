@@ -28,9 +28,28 @@ describe("role-gated actions (§14, §18, §20)", () => {
     expect(can("reviewer", "run_dry_run")).toBe(true);
   });
 
-  it("coworker stub has no cash-sheet powers yet (§1)", () => {
+  it("coworker has no cash-sheet powers", () => {
     expect(can("coworker", "view_dashboard")).toBe(false);
     expect(can("coworker", "approve_posting")).toBe(false);
+    expect(can("coworker", "edit_mappings")).toBe(false);
+  });
+
+  it("coworker role is active for the Ask My Client portal (§1)", () => {
+    expect(can("coworker", "view_coworker_portal")).toBe(true);
+    expect(can("coworker", "answer_coworker_questions")).toBe(true);
+    // A coworker answers questions but does not raise them.
+    expect(can("coworker", "ask_coworker_questions")).toBe(false);
+    // No access to the other prototype modules.
+    expect(can("coworker", "use_assistant")).toBe(false);
+    expect(can("coworker", "edit_projections")).toBe(false);
+  });
+
+  it("reviewer can explore prototype modules but not edit them", () => {
+    expect(can("reviewer", "view_projections")).toBe(true);
+    expect(can("reviewer", "use_assistant")).toBe(true);
+    expect(can("reviewer", "ask_coworker_questions")).toBe(true);
+    expect(can("reviewer", "edit_projections")).toBe(false);
+    expect(can("reviewer", "answer_coworker_questions")).toBe(false);
   });
 
   it("anonymous / null role is denied everything", () => {

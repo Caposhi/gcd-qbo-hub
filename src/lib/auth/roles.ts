@@ -29,7 +29,16 @@ export type Permission =
   | "change_rollout_stage"
   | "toggle_live_mode"
   | "connect_qbo"
-  | "manage_users";
+  | "manage_users"
+  // Financial Projections module (prototype)
+  | "view_projections"
+  | "edit_projections"
+  // AI Report Assistant module (prototype)
+  | "use_assistant"
+  // Coworker Portal module (prototype) — "Ask My Client"
+  | "view_coworker_portal"
+  | "ask_coworker_questions"
+  | "answer_coworker_questions";
 
 const PERMISSIONS: Record<Role, Permission[]> = {
   owner_admin: [
@@ -44,15 +53,30 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "toggle_live_mode",
     "connect_qbo",
     "manage_users",
+    // Full access to the prototype modules too.
+    "view_projections",
+    "edit_projections",
+    "use_assistant",
+    "view_coworker_portal",
+    "ask_coworker_questions",
+    "answer_coworker_questions",
   ],
   reviewer: [
     "view_dashboard",
     "mark_warning_reviewed",
     "recheck_qbo_match",
     "run_dry_run",
+    // Reviewers can explore projections and the assistant, and raise coworker
+    // questions, but not edit projections or answer on the coworker's behalf.
+    "view_projections",
+    "use_assistant",
+    "view_coworker_portal",
+    "ask_coworker_questions",
   ],
-  // The coworker stub can view its (future) portal but has no cash-sheet powers.
-  coworker: [],
+  // The coworker role is now active for the "Ask My Client" portal (§1): a
+  // coworker can view the portal and answer questions directed at them, but has
+  // no Cash Sheet Sync powers.
+  coworker: ["view_coworker_portal", "answer_coworker_questions"],
 };
 
 export function can(role: Role | null | undefined, permission: Permission): boolean {

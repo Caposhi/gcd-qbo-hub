@@ -55,6 +55,9 @@ services:
         value: https://gcd-qbo-hub.onrender.com/api/qbo/callback
       - key: QBO_REALM_ID
         sync: false
+      # --- AI Report Assistant (prototype) ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
       # --- SendGrid ---
       - key: SENDGRID_API_KEY
         sync: false

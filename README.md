@@ -60,6 +60,20 @@ duplicate/change/removal detection, rollout gating, role gating) has no DB or
 network dependencies and is fully unit-tested with Vitest. The **engine**
 (`engine.ts`) orchestrates a run using those pure rules plus the service clients.
 
+## Modules
+
+| Module | Status | What it does |
+|---|---|---|
+| **Cash Sheet Sync** | live | Posts the employee cash sheet to QBO with a full audit trail (the bulk of this repo). |
+| **Financial Projections** | prototype | Projects cash-flow forward from an assumptions set (opening balance, monthly in/out, growth, one-offs) via a pure, unit-tested engine. Scenarios are admin-editable; `owner_admin` creates them, everyone with `view_projections` can view. |
+| **AI Report Assistant** | prototype | A `claude-opus-4-8` assistant (adaptive thinking) that answers questions about the books through **read-only** tools over the hub DB — it can't post, edit, or delete anything. Needs `ANTHROPIC_API_KEY`; shows "not configured" without it. |
+| **Coworker Portal** | prototype | "Ask My Client" — owners/reviewers raise a question about a transaction; a coworker answers it. This activates the `coworker` role (view + answer only). |
+
+Each module is a self-contained section under the shared shell, registered in
+`src/lib/modules/registry.ts`, gated by a role permission, and namespaced with
+its own DB table prefix (`css_`, `proj_`, `ai_`, `cwp_`) so nothing collides.
+The prototypes are behind the same auth as everything else.
+
 ## Why customer invoice cash is audit-only (read this)
 
 `Amt Collected` rows with purpose **INV** are **audit-only by default** — the

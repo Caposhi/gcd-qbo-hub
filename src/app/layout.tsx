@@ -26,7 +26,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
               {MODULES.map((m) => (
                 <Link key={m.id} href={m.basePath} className={m.status === "planned" ? "planned" : ""}>
                   {m.icon} {m.name}
-                  {m.status === "planned" ? " ·soon" : ""}
+                  {m.status === "planned" ? " ·soon" : m.status === "prototype" ? " ·beta" : ""}
                 </Link>
               ))}
               <span className="who">
