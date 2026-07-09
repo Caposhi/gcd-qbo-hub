@@ -118,3 +118,42 @@ export async function updateAccountMappingAction(formData: FormData) {
   await prisma.accountMapping.update({ where: { id }, data: { qboAccountId } });
   revalidatePath("/cash-sheet-sync/mappings");
 }
+
+/**
+ * Load (or restore) the default German Car Depot seed mappings (§7, §14).
+ * Idempotent: upserts by key and never overwrites a resolved qboAccountId or a
+ * mapping's active flag on re-run — so clicking it again is safe and won't undo
+ * account IDs you've already mapped. Use it to populate an empty mappings table
+ * (e.g. before the DB has been seeded) or to restore any deleted defaults.
+ */
+export async function seedDefaultMappingsAction() {
+  await requirePermission("edit_mappings");
+  const { buildSeedPurposeMappings, SEED_ACCOUNT_MAPPINGS } = await import("@/lib/cashsheet/seed-mappings");
+
+  for (const m of buildSeedPurposeMappings()) {
+    await prisma.purposeMapping.upsert({
+      where: { normalizedPurpose: m.normalizedPurpose },
+      create: m,
+      update: {
+        purposePattern: m.purposePattern,
+        amountType: m.amountType,
+        qboAction: m.qboAction,
+        qboAccountName: m.qboAccountName,
+        postToQbo: m.postToQbo,
+        auditOnly: m.auditOnly,
+        requiresPayee: m.requiresPayee,
+        requiresManualApproval: m.requiresManualApproval,
+        invoiceMatching: m.invoiceMatching,
+        // Deliberately NOT touching qboAccountId or active — preserve resolved IDs.
+      },
+    });
+  }
+  for (const a of SEED_ACCOUNT_MAPPINGS) {
+    await prisma.accountMapping.upsert({
+      where: { friendlyName: a.friendlyName },
+      create: a,
+      update: { qboAccountName: a.qboAccountName, qboAccountType: a.qboAccountType },
+    });
+  }
+  revalidatePath("/cash-sheet-sync/mappings");
+}

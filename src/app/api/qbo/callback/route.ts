@@ -15,12 +15,18 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
+  // Behind Render's proxy, req.url is the internal http://localhost:10000/…
+  // address, so a redirect resolved against it sends the browser to localhost.
+  // Always build post-callback redirects against the public app URL instead.
+  const base = process.env.PUBLIC_APP_URL || process.env.NEXTAUTH_URL || new URL(req.url).origin;
+  const to = (path: string) => NextResponse.redirect(new URL(path, base));
+
   let email: string | undefined;
   try {
     const user = await requirePermission("connect_qbo");
     email = user.email;
   } catch {
-    return NextResponse.redirect(new URL("/auth/signin", req.url));
+    return to("/auth/signin");
   }
 
   const url = new URL(req.url);
@@ -30,18 +36,16 @@ export async function GET(req: Request) {
   const expectedState = cookies().get("qbo_oauth_state")?.value;
 
   if (!code || !realmId) {
-    return NextResponse.redirect(new URL("/cash-sheet-sync/settings?qbo=missing_params", req.url));
+    return to("/cash-sheet-sync/settings?qbo=missing_params");
   }
   if (!state || !expectedState || state !== expectedState) {
-    return NextResponse.redirect(new URL("/cash-sheet-sync/settings?qbo=bad_state", req.url));
+    return to("/cash-sheet-sync/settings?qbo=bad_state");
   }
 
   try {
     await exchangeCode(code, realmId, email);
-    return NextResponse.redirect(new URL("/cash-sheet-sync/settings?qbo=connected", req.url));
+    return to("/cash-sheet-sync/settings?qbo=connected");
   } catch (err) {
-    return NextResponse.redirect(
-      new URL(`/cash-sheet-sync/settings?qbo=error&detail=${encodeURIComponent(String(err))}`, req.url)
-    );
+    return to(`/cash-sheet-sync/settings?qbo=error&detail=${encodeURIComponent(String(err))}`);
   }
 }
