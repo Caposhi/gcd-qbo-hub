@@ -42,11 +42,26 @@ export const authOptions: NextAuthOptions = {
           // Don't send a link to a disallowed address; signIn() also blocks it.
           throw new Error("Email domain not allowed");
         }
-        await sendEmail({
+        // Bootstrap / deliverability escape hatch: when MAGIC_LINK_DEBUG=true,
+        // also print the sign-in link to the server logs (Render → Logs). Use
+        // this ONCE to sign in if corporate mail filtering swallows the email,
+        // then turn it OFF — the link is a single-use credential. It expires in
+        // 15 minutes and only works for @germancardepot.com addresses.
+        if (process.env.MAGIC_LINK_DEBUG === "true") {
+          // eslint-disable-next-line no-console
+          console.log(`[auth] MAGIC_LINK_DEBUG sign-in link for ${identifier}:\n${url}`);
+        }
+        const outcome = await sendEmail({
           to: identifier,
           subject: "Sign in to GCD QBO Hub",
           text: `Sign in to GCD QBO Hub:\n\n${url}\n\nThis link expires in 15 minutes. If you didn't request it, ignore this email.`,
         });
+        // Surface a real SendGrid failure so NextAuth shows the error page
+        // instead of silently claiming the link was sent. (Skipped when the
+        // debug log is on, so a missing SendGrid key doesn't block bootstrap.)
+        if (!outcome.ok && process.env.MAGIC_LINK_DEBUG !== "true") {
+          throw new Error(`Sign-in email failed to send: ${outcome.error ?? outcome.status}`);
+        }
       },
     }),
   ],

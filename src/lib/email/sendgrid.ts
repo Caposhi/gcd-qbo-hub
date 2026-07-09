@@ -41,6 +41,15 @@ export async function sendEmail(msg: EmailMessage): Promise<SendOutcome> {
           { type: "text/plain", value: msg.text },
           { type: "text/html", value: msg.html ?? `<pre style="font-family:ui-monospace,monospace">${escapeHtml(msg.text)}</pre>` },
         ],
+        // These are transactional/security emails. Disable click + open
+        // tracking so the sign-in link is NOT rewritten through a SendGrid
+        // redirect domain — that rewrite hurts deliverability (looks phishy to
+        // corporate filters) and lets link scanners follow the wrapped URL and
+        // burn the single-use magic-link token before the human clicks.
+        tracking_settings: {
+          click_tracking: { enable: false, enable_text: false },
+          open_tracking: { enable: false },
+        },
       }),
     });
     if (!res.ok) {
