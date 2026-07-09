@@ -120,6 +120,50 @@ export async function updateAccountMappingAction(formData: FormData) {
 }
 
 /**
+ * Auto-resolve account IDs from the connected QBO company by matching each
+ * account slot's name against the company's chart of accounts (fully-qualified
+ * name first, then plain name). Fills what it can and leaves the rest for manual
+ * mapping. Also propagates resolved IDs onto the purpose mappings that reference
+ * the same account name. In a fresh sandbox many GCD-specific names won't exist,
+ * so this typically resolves more in production than in sandbox — use the
+ * "Fetch QBO accounts" list to map the rest by hand.
+ */
+export async function autoResolveAccountsFromQboAction() {
+  await requirePermission("edit_mappings");
+  const { getQboEnvironment } = await import("@/lib/config-store");
+  const { getContext, listAccounts } = await import("@/lib/qbo/client");
+  const environment = await getQboEnvironment();
+  const ctx = await getContext(environment); // throws QboNotConnectedError if not connected
+
+  const accounts = await listAccounts(ctx);
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim().toUpperCase();
+  const byKey = new Map<string, string>();
+  for (const a of accounts) {
+    if (a.FullyQualifiedName) byKey.set(norm(a.FullyQualifiedName), String(a.Id));
+    if (a.Name) byKey.set(norm(a.Name), String(a.Id));
+  }
+
+  const accountMaps = await prisma.accountMapping.findMany();
+  for (const m of accountMaps) {
+    const id = byKey.get(norm(m.qboAccountName ?? m.friendlyName));
+    if (id && id !== m.qboAccountId) {
+      await prisma.accountMapping.update({ where: { id: m.id }, data: { qboAccountId: id } });
+    }
+  }
+
+  // Propagate to purpose mappings that name a category account.
+  const purposeMaps = await prisma.purposeMapping.findMany({ where: { auditOnly: false } });
+  for (const p of purposeMaps) {
+    if (!p.qboAccountName) continue;
+    const id = byKey.get(norm(p.qboAccountName));
+    if (id && id !== p.qboAccountId) {
+      await prisma.purposeMapping.update({ where: { id: p.id }, data: { qboAccountId: id } });
+    }
+  }
+  revalidatePath("/cash-sheet-sync/mappings");
+}
+
+/**
  * Load (or restore) the default German Car Depot seed mappings (§7, §14).
  * Idempotent: upserts by key and never overwrites a resolved qboAccountId or a
  * mapping's active flag on re-run — so clicking it again is safe and won't undo

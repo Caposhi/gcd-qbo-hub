@@ -2,9 +2,38 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
-import { updateMappingAction, updateAccountMappingAction, seedDefaultMappingsAction } from "../actions";
+import {
+  updateMappingAction,
+  updateAccountMappingAction,
+  seedDefaultMappingsAction,
+  autoResolveAccountsFromQboAction,
+} from "../actions";
+import { getQboEnvironment } from "@/lib/config-store";
+import { getContext, listAccounts, QboNotConnectedError } from "@/lib/qbo/client";
 
 export const dynamic = "force-dynamic";
+
+/** On-demand fetch of the connected company's chart of accounts (§14, §16). */
+async function loadQboAccounts(): Promise<
+  | { ok: true; accounts: Awaited<ReturnType<typeof listAccounts>> }
+  | { ok: false; error: string; notConnected: boolean }
+> {
+  try {
+    const environment = await getQboEnvironment();
+    const ctx = await getContext(environment);
+    const accounts = await listAccounts(ctx);
+    accounts.sort((a, b) =>
+      (a.FullyQualifiedName ?? a.Name).localeCompare(b.FullyQualifiedName ?? b.Name)
+    );
+    return { ok: true, accounts };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      notConnected: err instanceof QboNotConnectedError,
+    };
+  }
+}
 
 const inputStyle: React.CSSProperties = {
   padding: "0.3rem",
@@ -15,7 +44,11 @@ const inputStyle: React.CSSProperties = {
   width: 140,
 };
 
-export default async function MappingsPage() {
+export default async function MappingsPage({
+  searchParams,
+}: {
+  searchParams: { accounts?: string };
+}) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
   const editable = can(user.role, "edit_mappings");
@@ -24,6 +57,11 @@ export default async function MappingsPage() {
     prisma.purposeMapping.findMany({ orderBy: { normalizedPurpose: "asc" } }),
     prisma.accountMapping.findMany({ orderBy: { friendlyName: "asc" } }),
   ]);
+
+  // Only hit QBO when the admin explicitly asks (?accounts=1) — avoids a network
+  // call (and token refresh) on every page load.
+  const showQboAccounts = editable && searchParams.accounts === "1";
+  const qboAccounts = showQboAccounts ? await loadQboAccounts() : null;
 
   return (
     <>
@@ -43,14 +81,58 @@ export default async function MappingsPage() {
       ) : null}
 
       {editable && (
-        <form action={seedDefaultMappingsAction} className="row-actions">
-          <button className="btn" type="submit">
-            {purposes.length === 0 && accounts.length === 0 ? "Load default mappings" : "Restore default mappings"}
-          </button>
+        <div className="row-actions" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+          <form action={seedDefaultMappingsAction} className="inline">
+            <button className="btn" type="submit">
+              {purposes.length === 0 && accounts.length === 0 ? "Load default mappings" : "Restore default mappings"}
+            </button>
+          </form>
+          <form action={autoResolveAccountsFromQboAction} className="inline">
+            <button className="btn secondary" type="submit">Auto-resolve IDs from QBO</button>
+          </form>
+          <a className="btn secondary" href="?accounts=1">Fetch QBO accounts</a>
           <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
-            Idempotent — never overwrites a resolved QBO account ID.
+            Auto-resolve matches each slot by name; anything left <em>unresolved</em> you map by hand from the fetched list.
           </span>
-        </form>
+        </div>
+      )}
+
+      {qboAccounts && (
+        <section style={{ marginTop: "1rem" }}>
+          <h2>QBO accounts (connected company)</h2>
+          {qboAccounts.ok ? (
+            <>
+              <p className="sub">
+                {qboAccounts.accounts.length} active accounts. Copy the <strong>Id</strong> into the matching slot
+                below, then press Save. <a href="?">Hide</a>
+              </p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Id</th><th>Name</th><th>Fully-qualified name</th><th>Type</th><th>Subtype</th></tr>
+                  </thead>
+                  <tbody>
+                    {qboAccounts.accounts.map((a) => (
+                      <tr key={a.Id}>
+                        <td><span className="badge ok">{a.Id}</span></td>
+                        <td>{a.Name}</td>
+                        <td className="muted">{a.FullyQualifiedName}</td>
+                        <td className="muted">{a.AccountType}</td>
+                        <td className="muted">{a.AccountSubType ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="notice">
+              {qboAccounts.notConnected
+                ? "QBO isn’t connected yet — connect it under Settings, then try again."
+                : `Couldn’t fetch accounts: ${qboAccounts.error}`}
+            </div>
+          )}
+        </section>
       )}
 
       <h2>Account mappings</h2>
