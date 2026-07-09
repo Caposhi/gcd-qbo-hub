@@ -5,7 +5,7 @@ import { can } from "@/lib/auth/roles";
 import { getRolloutStage, getQboEnvironment } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { RowStatus } from "@/lib/cashsheet/status";
-import { runDryRunAction, runSandboxSyncAction } from "./actions";
+import { runDryRunAction, runSandboxSyncAction, runBackfillAction } from "./actions";
 import { RequireAuth } from "../components/RequireAuth";
 
 export const dynamic = "force-dynamic";
@@ -105,6 +105,16 @@ export default async function OverviewPage() {
         <form action={runSandboxSyncAction}>
           <button className="btn" type="submit" disabled={!can(user.role, "run_sandbox_sync")}>
             Run sync now
+          </button>
+        </form>
+        <form action={runBackfillAction}>
+          <button
+            className="btn secondary"
+            type="submit"
+            disabled={!can(user.role, "run_sandbox_sync") || environment === "live"}
+            title="Ignores the 2026-07-07 go-live cutoff so older rows already in the sheet become eligible. Sandbox/dry-run only."
+          >
+            Run backfill (ignore start date)
           </button>
         </form>
         <Link className="btn secondary" href="/cash-sheet-sync/queue">
