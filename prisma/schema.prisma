@@ -42,6 +42,10 @@ enum Role {
 model User {
   id          String    @id @default(cuid())
   email       String    @unique
+  // Required by the NextAuth Prisma adapter (@auth/prisma-adapter): its
+  // createUser writes `emailVerified`. Without this column the magic-link
+  // callback fails at user creation with "Unknown argument emailVerified".
+  emailVerified DateTime?
   name        String?
   image       String?
   role        Role      @default(reviewer)
