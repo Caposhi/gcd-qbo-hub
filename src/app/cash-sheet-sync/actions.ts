@@ -29,6 +29,27 @@ export async function runSandboxSyncAction() {
   revalidatePath("/cash-sheet-sync");
 }
 
+/**
+ * Backfill sync (§19 backfill tool). Lifts the 2026-07-07 go-live date gate so
+ * historical rows already in the workbook (e.g. earlier months) become eligible.
+ * It still respects the current rollout stage: in `dry_run` this is a harmless
+ * dry-run that just shows how those older rows classify; only once the stage is
+ * advanced to a sandbox/live posting stage does a backfill actually post. Used
+ * to exercise end-to-end posting against the sandbox without editing the sheet.
+ */
+export async function runBackfillAction() {
+  const user = await requirePermission("run_sandbox_sync");
+  // Enforce the "backfill is never live" rule (§3): posting historical, pre
+  // go-live rows to the real company is never allowed. Sandbox and dry-run only.
+  const environment = await getQboEnvironment();
+  if (environment === "live") {
+    throw new Error("Backfill is disabled in the live environment — it would post historical rows to real QuickBooks.");
+  }
+  await runSync({ backfill: true, triggeredBy: user.email });
+  revalidatePath("/cash-sheet-sync");
+  revalidatePath("/cash-sheet-sync/queue");
+}
+
 export async function approveRowAction(rowId: string) {
   const user = await requirePermission("approve_posting");
   await prisma.sheetRow.update({
