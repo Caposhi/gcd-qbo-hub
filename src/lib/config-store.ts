@@ -78,3 +78,13 @@ export async function getQboEnvironment(): Promise<QboEnvironment> {
 export async function getSpreadsheetId(): Promise<string> {
   return getConfig(CONFIG_KEYS.spreadsheetId, process.env.GOOGLE_SHEET_ID || DEFAULT_SPREADSHEET_ID);
 }
+
+/**
+ * Whether the sync writes back to the sheet (§4): the hidden row UUID plus the
+ * visible status columns. Defaults OFF so the system never edits the workbook
+ * until an owner deliberately enables it (and grants the service account
+ * Editor access). Turning it on is an audited config change like any other.
+ */
+export async function getSheetWritebackEnabled(): Promise<boolean> {
+  return (await getConfig(CONFIG_KEYS.sheetWriteback, "false")) === "true";
+}

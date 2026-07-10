@@ -75,6 +75,20 @@ export async function markReviewedAction(rowId: string) {
   revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
 }
 
+export async function setSheetWritebackAction(enabled: boolean) {
+  const user = await requirePermission("change_rollout_stage");
+  const { setConfig } = await import("@/lib/config-store");
+  const { CONFIG_KEYS } = await import("@/lib/cashsheet/config");
+  await setConfig(
+    CONFIG_KEYS.sheetWriteback,
+    enabled ? "true" : "false",
+    user.id,
+    `Sheet write-back ${enabled ? "enabled" : "disabled"} via dashboard by ${user.email}`
+  );
+  revalidatePath("/cash-sheet-sync/settings");
+  revalidatePath("/cash-sheet-sync");
+}
+
 export async function advanceStageAction(next: RolloutStage) {
   const user = await requirePermission("change_rollout_stage");
   // Extra guard for the live jump — toggling into live also requires toggle_live_mode.

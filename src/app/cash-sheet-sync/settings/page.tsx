@@ -1,10 +1,10 @@
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
-import { getRolloutStage, getQboEnvironment } from "@/lib/config-store";
+import { getRolloutStage, getQboEnvironment, getSheetWritebackEnabled } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { ROLLOUT_STAGES, type RolloutStage } from "@/lib/cashsheet/rollout";
-import { advanceStageAction } from "../actions";
+import { advanceStageAction, setSheetWritebackAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [stage, environment] = await Promise.all([getRolloutStage(), getQboEnvironment()]);
+  const [stage, environment, writebackEnabled] = await Promise.all([
+    getRolloutStage(),
+    getQboEnvironment(),
+    getSheetWritebackEnabled(),
+  ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const idx = ROLLOUT_STAGES.indexOf(stage);
   const prev = idx > 0 ? ROLLOUT_STAGES[idx - 1] : null;
@@ -88,6 +92,32 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         Every stage change is recorded with who/when/old→new in the config change history — flips are auditable,
         not silent env edits (§12).
       </p>
+
+      <h2>Sheet write-back</h2>
+      <p>
+        Status:{" "}
+        {writebackEnabled ? (
+          <span className="badge ok">on</span>
+        ) : (
+          <span className="badge">off</span>
+        )}
+      </p>
+      <p className="muted">
+        When on, each sync stamps a <strong>hidden stable row ID</strong> (<code>GCD_QBO_Row_ID</code>) plus{" "}
+        <code>Status</code>, <code>Txn ID</code>, <code>Posted At</code>, and <code>Error</code> columns back into the
+        workbook, to the right of your data. The hidden ID is what lets edits, moves, and deletions be detected safely
+        (§4) — the row number is never used. Requires the Google service account to have <strong>Editor</strong> access
+        to the workbook; without it the sync still runs read-only and logs a write-back error. Once the ID column is
+        populated, an admin should hide &amp; protect it.
+      </p>
+      <div className="row-actions">
+        <form action={setSheetWritebackAction.bind(null, !writebackEnabled)}>
+          <button className={`btn ${writebackEnabled ? "secondary" : ""}`} disabled={!canChange}>
+            {writebackEnabled ? "Turn write-back off" : "Turn write-back on"}
+          </button>
+        </form>
+      </div>
+      {!canChange && <p className="muted">Changing write-back requires owner_admin (§14).</p>}
     </>
   );
 }
