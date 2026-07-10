@@ -103,6 +103,25 @@ export function isTransactionCandidate(r: ParsedRow): boolean {
   return false;
 }
 
+/**
+ * True when a row is a totals / summary line rather than a transaction (§5):
+ * it carries amount(s) but none of the identifying fields a real transaction
+ * always has (date, purpose, name, invoice #, received-by/paid-to). These are
+ * the column-sum rows at the bottom of each month tab — ignore them rather
+ * than flagging a spurious "more than one amount column" error.
+ */
+export function isSummaryRow(r: ParsedRow): boolean {
+  const hasIdentity =
+    r.date !== null ||
+    r.purpose !== "" ||
+    r.name !== "" ||
+    r.invNumber !== "" ||
+    r.rcvByOrPaidTo !== "";
+  const hasAmount =
+    r.amtCollected !== null || r.amountPaidOut !== null || r.bankDeposit !== null;
+  return !hasIdentity && hasAmount;
+}
+
 /** True when the entire row is blank (no meaningful cell). Ignored (§5). */
 export function isBlankRow(r: ParsedRow): boolean {
   return (

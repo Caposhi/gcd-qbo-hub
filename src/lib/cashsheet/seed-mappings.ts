@@ -63,7 +63,7 @@ const GROUPS: SeedGroup[] = [
   {
     // Customer invoice cash — audit only, attempt QBO match, NEVER post revenue
     // (§6B, §19, §22). This is the critical no-double-count rule.
-    patterns: ["INV", "INVOICE"],
+    patterns: ["INV", "INVOICE", "INV DEPOSIT", "INVOICE DEPOSIT", "INV DEP"],
     amountType: "amt_collected",
     qboAction: "audit_only",
     qboAccountName: null,

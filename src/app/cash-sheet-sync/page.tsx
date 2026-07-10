@@ -71,6 +71,9 @@ export default async function OverviewPage() {
         <p className="muted">
           {lastRun.startedAt.toISOString()} · mode <strong>{lastRun.mode}</strong> · stage{" "}
           <strong>{lastRun.rolloutStage}</strong> · {lastRun.status}
+          <br />
+          Tabs scanned:{" "}
+          <strong>{lastRun.tabsScanned.length ? lastRun.tabsScanned.join(", ") : "(none)"}</strong>
         </p>
       ) : (
         <p className="muted">No sync has run yet. Start with a dry-run below.</p>
