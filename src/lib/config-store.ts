@@ -8,10 +8,14 @@ import { prisma } from "@/lib/db";
 import {
   CONFIG_KEYS,
   DEFAULT_ROLLOUT_STAGE,
-  DEFAULT_QBO_ENVIRONMENT,
   DEFAULT_SPREADSHEET_ID,
 } from "@/lib/cashsheet/config";
-import { ROLLOUT_STAGES, type RolloutStage, type QboEnvironment } from "@/lib/cashsheet/rollout";
+import {
+  ROLLOUT_STAGES,
+  environmentForStage,
+  type RolloutStage,
+  type QboEnvironment,
+} from "@/lib/cashsheet/rollout";
 
 export async function getConfig(key: string, fallback: string): Promise<string> {
   const row = await prisma.config.findUnique({ where: { key } });
@@ -70,9 +74,15 @@ export async function setRolloutStage(
   await setConfig(CONFIG_KEYS.rolloutStage, next, changedBy, reason);
 }
 
+/**
+ * The QBO environment is DERIVED from the rollout stage — the single source of
+ * truth — so the dashboard, actions, and the sync engine can never disagree
+ * (dry_run/sandbox_* → sandbox; live_* → live). Advancing the ladder to a live
+ * stage flips the environment everywhere at once; there is no separate env flag
+ * to fall out of sync (§12, §16).
+ */
 export async function getQboEnvironment(): Promise<QboEnvironment> {
-  const v = await getConfig(CONFIG_KEYS.qboEnvironment, DEFAULT_QBO_ENVIRONMENT);
-  return v === "live" ? "live" : "sandbox";
+  return environmentForStage(await getRolloutStage());
 }
 
 export async function getSpreadsheetId(): Promise<string> {
