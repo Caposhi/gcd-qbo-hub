@@ -12,6 +12,7 @@ export const CONFIG_KEYS = {
   rolloutStage: "css.rollout_stage",
   qboEnvironment: "css.qbo_environment",
   spreadsheetId: "css.spreadsheet_id",
+  sheetWriteback: "css.sheet_writeback",
 } as const;
 
 /** The safest possible starting point: dry-run, sandbox (§12, §19, §22). */

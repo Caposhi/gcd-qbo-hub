@@ -136,6 +136,31 @@ export async function writeRowUuid(
   });
 }
 
+/**
+ * Batch-write individual cells (RAW). Used by the sync's write-back step to
+ * stamp the hidden row UUID + status columns (§4). Best-effort: the caller
+ * wraps this in try/catch so a missing Editor grant degrades gracefully rather
+ * than failing the whole sync.
+ *
+ * @param cells  row is 1-based (sheet row number); col is 0-based column index.
+ */
+export async function writeCells(
+  spreadsheetId: string,
+  tabTitle: string,
+  cells: Array<{ row: number; col: number; value: string }>
+): Promise<void> {
+  if (cells.length === 0) return;
+  const sheets = getGoogleSheetsClient();
+  const data = cells.map((c) => ({
+    range: `${quoteTab(tabTitle)}!${columnIndexToA1(c.col)}${c.row}`,
+    values: [[c.value]],
+  }));
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: { valueInputOption: "RAW", data },
+  });
+}
+
 export const CONTROL_COLUMN_HEADERS = [
   CONTROL_KEYS.rowId,
   CONTROL_KEYS.firstSeenAt,

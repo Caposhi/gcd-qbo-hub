@@ -16,7 +16,7 @@
  */
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
-import { listTabs, readTabValues } from "@/lib/google/sheets";
+import { listTabs, readTabValues, writeCells } from "@/lib/google/sheets";
 import { detectHeaderRow } from "./headers";
 import { parseRow, isBlankRow, isSummaryRow, isTransactionCandidate, validateRow, type ParsedRow } from "./rows";
 import { computeFingerprint, computeRowHash, rowSnapshot } from "./fingerprint";
@@ -28,8 +28,9 @@ import { isChangedAfterPosting, diffSnapshots, findRemovedAfterPosting } from ".
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
 import { canonicalMonthTab, TEMPLATE_TAB } from "./config";
+import { planWritebackColumns, type WritebackLayout } from "./writeback";
 import { AUTOMATION_START_DATE, isOnOrAfterStartDate, formatDate } from "./dates";
-import { getRolloutStage, getSpreadsheetId } from "@/lib/config-store";
+import { getRolloutStage, getSpreadsheetId, getSheetWritebackEnabled } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { postPlan, findInvoiceMatch } from "@/lib/qbo/posting";
 import { sendEmail, ALERT_RECIPIENTS } from "@/lib/email/sendgrid";
@@ -116,6 +117,14 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
 
   const [mappings, accounts] = await Promise.all([loadMappings(), loadAccounts()]);
 
+  // Sheet write-back (§4): when enabled we stamp a hidden stable UUID + status
+  // columns back into the workbook. Per-tab layout + queued cell writes; a
+  // synthetic→real UUID migration list (see below).
+  const writebackEnabled = await getSheetWritebackEnabled();
+  const layoutByTab = new Map<string, WritebackLayout>();
+  const cellsByTab = new Map<string, Array<{ row: number; col: number; value: string }>>();
+  const uuidMigrations: Array<{ syn: string; real: string }> = [];
+
   // ---- 1. Scan every month tab -------------------------------------------
   const scanned: Scanned[] = [];
   const seenUuidsByTab = new Map<string, Set<string>>();
@@ -148,7 +157,23 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
       if (!det) continue; // no header → skip; dashboard can flag separately
       summary.tabsScanned.push(tab.title);
 
-      const controlCol = findControlColumn(values[det.headerRowIndex]);
+      const headerRow = values[det.headerRowIndex];
+      // With write-back on, the managed layout owns the UUID column (reusing an
+      // existing GCD_QBO_Row_ID or appending a fresh block); otherwise fall back
+      // to read-only control-column detection.
+      let controlCol: number | null;
+      if (writebackEnabled) {
+        const layout = planWritebackColumns(headerRow, det.columns);
+        layoutByTab.set(tab.title, layout);
+        const cells = cellsByTab.get(tab.title) ?? [];
+        cellsByTab.set(tab.title, cells);
+        for (const h of layout.headerCellsToWrite) {
+          cells.push({ row: det.headerRowIndex + 1, col: h.col, value: h.value });
+        }
+        controlCol = layout.colByKey.rowId;
+      } else {
+        controlCol = findControlColumn(headerRow);
+      }
       const seen = new Set<string>();
       seenUuidsByTab.set(tab.title, seen);
 
@@ -166,21 +191,39 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
         const hash = computeRowHash(spreadsheetId, tab.title, parsed);
         const snapshot = rowSnapshot(spreadsheetId, tab.title, parsed);
 
-        // Stable identity: hidden UUID if present, else a synthetic content key
-        // (so the DB is idempotent even before hidden columns exist, §4).
-        let rowUuid: string | null =
+        // Stable identity (§4): a real hidden UUID read from the sheet wins;
+        // otherwise a synthetic content key keeps the DB idempotent before the
+        // UUID column is populated.
+        const realUuid =
           controlCol !== null ? extractRowUuid({ [CONTROL_KEYS.rowId]: raw[controlCol] }) : null;
-        let synthetic = false;
-        if (!isValidRowUuid(rowUuid)) {
-          rowUuid = `syn-${fingerprint.slice(0, 24)}`;
+        const syntheticId = `syn-${fingerprint.slice(0, 24)}`;
+        let rowUuid: string;
+        let synthetic: boolean;
+        if (isValidRowUuid(realUuid)) {
+          // A real UUID is present — it only got there because a prior write
+          // succeeded, so it is safe to adopt as identity. Migrate any existing
+          // synthetic DB row to it (below) so a posted row isn't seen as new.
+          rowUuid = realUuid!;
+          synthetic = false;
+          if (writebackEnabled) uuidMigrations.push({ syn: syntheticId, real: realUuid! });
+        } else {
+          // No real UUID yet. Keep synthetic identity THIS run; if write-back is
+          // on, queue a fresh UUID so it becomes the stable identity next run
+          // (only after the write is confirmed by reading it back).
+          rowUuid = syntheticId;
           synthetic = true;
+          if (writebackEnabled && controlCol !== null) {
+            cellsByTab
+              .get(tab.title)!
+              .push({ row: rowNumber, col: controlCol, value: generateRowUuid() });
+          }
         }
 
-        seen.add(rowUuid!);
+        seen.add(rowUuid);
         scanned.push({
           tabName: tab.title,
           sheetGid: String(tab.sheetId),
-          rowUuid: rowUuid!,
+          rowUuid,
           synthetic,
           row: parsed,
           fingerprint,
@@ -192,6 +235,22 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
       summary.rowsError++;
       await recordEvent(run.id, null, "tab_error", `Tab ${tab.title}: ${String(err)}`);
     }
+  }
+
+  // ---- 1b. Migrate synthetic identities to their now-persisted UUID (§4) --
+  // A row we previously tracked under a synthetic content key gets migrated to
+  // the real UUID the moment that UUID is read back from the sheet — so a
+  // posted row is recognized as the same row (never a false removed/new pair).
+  for (const m of uuidMigrations) {
+    if (m.syn === m.real) continue;
+    const already = await prisma.sheetRow.findUnique({
+      where: { spreadsheetId_rowUuid: { spreadsheetId, rowUuid: m.real } },
+    });
+    if (already) continue; // real UUID already tracked — nothing to migrate
+    await prisma.sheetRow.updateMany({
+      where: { spreadsheetId, rowUuid: m.syn },
+      data: { rowUuid: m.real },
+    });
   }
 
   // ---- 2. Duplicate row-id detection across everything scanned (§10) ------
@@ -251,6 +310,42 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     const removed = findRemovedAfterPosting(uuids, seen);
     for (const uuid of removed) {
       await handleRemoved(spreadsheetId, uuid, run.id, summary);
+    }
+  }
+
+  // ---- 4b. Sheet write-back (§4): stamp UUID + status columns ------------
+  // Best-effort: a failure here (e.g. the service account only has Viewer)
+  // is logged and never fails the run — reads and posts already happened.
+  if (writebackEnabled && cellsByTab.size > 0) {
+    const uuids = scanned.map((s) => s.rowUuid);
+    const dbRows = uuids.length
+      ? await prisma.sheetRow.findMany({
+          where: { spreadsheetId, rowUuid: { in: uuids } },
+          select: { rowUuid: true, status: true, qboTransactionId: true, qboPostedAt: true, statusReason: true },
+        })
+      : [];
+    const byUuid = new Map(dbRows.map((r) => [r.rowUuid, r]));
+    for (const s of scanned) {
+      const layout = layoutByTab.get(s.tabName);
+      const cells = cellsByTab.get(s.tabName);
+      const dbRow = byUuid.get(s.rowUuid);
+      if (!layout || !cells || !dbRow) continue;
+      const rn = s.row.rowNumber;
+      cells.push({ row: rn, col: layout.colByKey.status, value: dbRow.status });
+      cells.push({ row: rn, col: layout.colByKey.txnId, value: dbRow.qboTransactionId ?? "" });
+      cells.push({ row: rn, col: layout.colByKey.postedAt, value: dbRow.qboPostedAt ? dbRow.qboPostedAt.toISOString() : "" });
+      cells.push({
+        row: rn,
+        col: layout.colByKey.error,
+        value: dbRow.status === RowStatus.Error ? dbRow.statusReason ?? "" : "",
+      });
+    }
+    for (const [tabTitle, cells] of cellsByTab) {
+      try {
+        await writeCells(spreadsheetId, tabTitle, cells);
+      } catch (err) {
+        await recordEvent(run.id, null, "writeback_error", `Sheet write-back failed for ${tabTitle}: ${String(err)}`);
+      }
     }
   }
 
