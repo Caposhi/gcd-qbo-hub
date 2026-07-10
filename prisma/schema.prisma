@@ -483,3 +483,81 @@ model CwpAnswer {
   @@index([questionId])
   @@map("cwp_answers")
 }
+
+// ===========================================================================
+// Deposit Reconciliation module — dep_ prefixed (planned)
+// See docs/DEPOSIT_RECONCILIATION.md. Builds the QBO Bank Deposit for each
+// processor payout so QBO auto-matches the downloaded bank-feed line.
+// ===========================================================================
+
+// An ingested processor settlement file (Chase Paymentech CSV / Tekmetric
+// payout export). fileHash makes re-ingesting the same file idempotent.
+model DepImport {
+  id              String   @id @default(cuid())
+  processor       String // paymentech | tekmetric
+  fileHash        String   @unique
+  rowCount        Int      @default(0)
+  importedByEmail String?
+  createdAt       DateTime @default(now())
+
+  payouts DepPayout[]
+
+  @@map("dep_imports")
+}
+
+// One expected bank deposit: the net that hits Chase 9680 plus the gross/fee
+// breakdown. status tracks the reconciliation lifecycle; a deposit is only
+// created in QBO when the located records sum EXACTLY to net (deltaCents = 0).
+model DepPayout {
+  id             String          @id @default(cuid())
+  importId       String?
+  processor      String // paymentech | tekmetric
+  settlementDate String // YYYY-MM-DD
+  grossAmount    Decimal         @db.Decimal(12, 2)
+  feeAmount      Decimal         @default(0) @db.Decimal(12, 2)
+  netAmount      Decimal         @db.Decimal(12, 2)
+  status         String          @default("needs_review") // needs_review | matched | proposed | created
+  deltaCents     Int? // net - selected, in cents (0 when it ties out)
+  qboDepositId   String?
+  sourceRef      String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  import DepImport?     @relation(fields: [importId], references: [id], onDelete: SetNull)
+  lines  DepPayoutLine[]
+  events DepEvent[]
+
+  @@index([processor, settlementDate])
+  @@index([status])
+  @@map("dep_payouts")
+}
+
+model DepPayoutLine {
+  id                String   @id @default(cuid())
+  payoutId          String
+  amount            Decimal  @db.Decimal(12, 2)
+  brand             String?
+  ref               String?
+  matchedQboTxnId   String?
+  matchedQboTxnType String? // Payment | JournalEntry
+  createdAt         DateTime @default(now())
+
+  payout DepPayout @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+
+  @@index([payoutId])
+  @@map("dep_payout_lines")
+}
+
+model DepEvent {
+  id        String   @id @default(cuid())
+  payoutId  String?
+  eventType String
+  message   String   @db.Text
+  dataJson  Json?
+  createdAt DateTime @default(now())
+
+  payout DepPayout? @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+
+  @@index([payoutId])
+  @@map("dep_events")
+}
