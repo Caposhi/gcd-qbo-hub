@@ -65,6 +65,16 @@ export const MODULES: ModuleDef[] = [
     tagline: "\"Ask My Client\" transaction Q&A for coworkers.",
     requiredPermission: "view_coworker_portal",
   },
+  {
+    id: "deposit-reconciliation",
+    name: "Deposit Reconciliation",
+    icon: "🏦",
+    basePath: "/deposit-reconciliation",
+    tablePrefix: "dep_",
+    status: "planned",
+    tagline: "Auto-build QBO deposits for Tekmetric & Chase payouts so the bank matches itself.",
+    requiredPermission: "view_dashboard",
+  },
 ];
 
 export function getModule(id: string): ModuleDef | undefined {
