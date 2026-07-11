@@ -46,9 +46,14 @@ export function memoRoToken(privateNote: string | null | undefined): string {
   return first.trim();
 }
 
-/** Normalize an RO/INV value for comparison (strip spaces, upper-case). */
+/**
+ * Normalize an RO/INV value to its comparison key: the leading whitespace-
+ * delimited token, upper-cased. The sheet sometimes appends a name to the RO
+ * ("73663 GILLIS") while the Back Office memo carries the bare number
+ * ("73663 | ..."), so both sides reduce to the first token.
+ */
 function normRo(v: string): string {
-  return v.replace(/\s+/g, "").toUpperCase();
+  return (v.trim().split(/\s+/)[0] ?? "").toUpperCase();
 }
 
 /**

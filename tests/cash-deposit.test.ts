@@ -42,6 +42,11 @@ describe("matchPaymentByRo", () => {
     expect(matchPaymentByRo(cands, " 73534 ", 1000)?.id).toBe("p1");
   });
 
+  it("matches when the sheet RO carries a trailing name", () => {
+    // Sheet cell "73534 MCADAM" should still match memo token "73534".
+    expect(matchPaymentByRo(cands, "73534 MCADAM", 1000)?.id).toBe("p1");
+  });
+
   it("among same-RO ties picks the amount closest to the deposit", () => {
     const dup: PaymentLike[] = [
       { id: "a", amount: 100, privateNote: "555 | GCD | Cash | 06/01/2026", date: "2026-06-01" },

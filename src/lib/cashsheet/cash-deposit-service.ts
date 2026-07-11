@@ -15,13 +15,18 @@ import { RowStatus } from "./status";
 export const CHASE_ACCOUNT = "Chase Checking 9680";
 export const OVER_SHORT_ACCOUNT = "Cash over/short";
 
-/** Rows that are customer cash collections with a bank-deposit amount, not yet
- * turned into a QBO deposit. Ordered oldest first (deposits are dated). */
+/**
+ * Rows that are customer invoice cash collections (an INV#/RO plus a Collected
+ * amount) not yet turned into a QBO deposit. On the 26 DC sheet these INV rows
+ * record the cash in the "Amt Collected" column — that collected cash is what
+ * gets physically deposited, and its Customer Payment already sits in
+ * Undeposited Funds (posted by Back Office). Ordered oldest first.
+ */
 export async function findCashDepositCandidates() {
   return prisma.sheetRow.findMany({
     where: {
       invNumber: { not: null },
-      bankDeposit: { not: null },
+      amtCollected: { not: null },
       NOT: { qboTransactionType: "Deposit" },
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
@@ -67,15 +72,15 @@ function isoShift(date: Date, days: number): string {
  */
 export async function locateRow(
   ctx: QboContext,
-  row: { date: Date | null; invNumber: string | null; bankDeposit: unknown },
+  row: { date: Date | null; invNumber: string | null; amtCollected: unknown },
 ): Promise<LocatedPlan> {
   const ro = (row.invNumber ?? "").trim();
-  const depositedAmount = Number(row.bankDeposit ?? 0);
+  const depositedAmount = Number(row.amtCollected ?? 0);
   const base: LocatedPlan = { found: false, reason: "", ro, depositedAmount, payment: null, plan: null };
 
   if (!ro) return { ...base, reason: "Row has no INV#/RO number" };
   if (!row.date) return { ...base, reason: "Row has no date to search around" };
-  if (!(depositedAmount > 0)) return { ...base, reason: "Row has no bank-deposit amount" };
+  if (!(depositedAmount > 0)) return { ...base, reason: "Row has no collected amount" };
 
   const start = isoShift(row.date, -14);
   const end = isoShift(row.date, 7);
