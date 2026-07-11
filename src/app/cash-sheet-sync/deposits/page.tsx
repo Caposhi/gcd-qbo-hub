@@ -41,18 +41,38 @@ export default async function CashDepositsPage() {
     ? await prisma.rowEvent.findMany({
         where: {
           sheetRowId: { in: rowIds },
-          eventType: { in: ["cash_deposit_plan", "cash_deposit_created", "cash_deposit_blocked", "cash_deposit_locate_error"] },
+          eventType: {
+            in: [
+              "cash_deposit_plan",
+              "cash_deposit_created",
+              "cash_deposit_blocked",
+              "cash_deposit_error",
+              "cash_deposit_locate_error",
+            ],
+          },
         },
         orderBy: { createdAt: "desc" },
       })
     : [];
   const latestPlan = new Map<string, PlanEvent>();
   const latestMsg = new Map<string, string>();
+  // The most recent Create attempt outcome per row (so a blocked/failed create
+  // is visible on the page instead of silently doing nothing).
+  const createOutcome = new Map<string, { kind: "blocked" | "error"; msg: string }>();
   for (const e of events) {
     if (!e.sheetRowId) continue;
     if (!latestMsg.has(e.sheetRowId)) latestMsg.set(e.sheetRowId, `${e.eventType}: ${e.eventMessage}`);
     if (e.eventType === "cash_deposit_plan" && !latestPlan.has(e.sheetRowId)) {
       latestPlan.set(e.sheetRowId, (e.diffJson as PlanEvent) ?? {});
+    }
+    if (
+      (e.eventType === "cash_deposit_blocked" || e.eventType === "cash_deposit_error") &&
+      !createOutcome.has(e.sheetRowId)
+    ) {
+      createOutcome.set(e.sheetRowId, {
+        kind: e.eventType === "cash_deposit_error" ? "error" : "blocked",
+        msg: e.eventMessage ?? "",
+      });
     }
   }
 
@@ -74,18 +94,18 @@ export default async function CashDepositsPage() {
         when the collected amount differs from the payment by rounding (e.g. sheet $241.00 vs payment $240.74 → +$0.26).
         Nothing posts until you click <strong>Create deposit</strong> on a row, and only when it ties out.
       </p>
-      <p className="badge warn" style={{ display: "block", padding: "0.5rem 0.75rem" }}>
-        Safety: rows whose payment is <em>already</em> on a QBO deposit are marked “already deposited” and offer no
-        Create button, so a payment can never be deposited twice. Still, create deposits deliberately — start with the
-        current pending rows rather than mass-creating the historical backlog, in case older months were reconciled a
-        different way.
-      </p>
+      <div style={noticeWarn}>
+        <strong>Safety:</strong> rows whose payment is <em>already</em> on a QBO deposit are marked “already deposited”
+        and offer no Create button, so a payment can never be deposited twice. Still, create deposits deliberately —
+        start with the current pending rows rather than mass-creating the historical backlog, in case older months were
+        reconciled a different way.
+      </div>
 
       {!accountsReady && (
-        <p className="badge danger">
+        <div style={noticeDanger}>
           Account mapping incomplete — need both “Cash on hand” ({accounts.depositToId ?? "unresolved"}) and “Cash
           over/short” ({accounts.overShortId ?? "unresolved"}). Resolve them on the Mappings page first.
-        </p>
+        </div>
       )}
 
       {editable && (
@@ -170,6 +190,15 @@ export default async function CashDepositsPage() {
                           <button className="btn" type="submit">Create deposit</button>
                         </form>
                       )}
+                      {!created && createOutcome.get(r.id) && (
+                        <span
+                          className={`badge ${createOutcome.get(r.id)!.kind === "error" ? "danger" : "warn"}`}
+                          style={{ display: "inline-block", whiteSpace: "normal", maxWidth: 320, fontSize: "0.72rem" }}
+                        >
+                          {createOutcome.get(r.id)!.kind === "error" ? "Create failed: " : "Blocked: "}
+                          {createOutcome.get(r.id)!.msg}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -187,3 +216,21 @@ export default async function CashDepositsPage() {
     </>
   );
 }
+
+const noticeWarn: React.CSSProperties = {
+  display: "block",
+  whiteSpace: "normal",
+  padding: "0.6rem 0.85rem",
+  margin: "0.75rem 0",
+  borderRadius: 8,
+  border: "1px solid #b7791f",
+  background: "rgba(183,121,31,0.12)",
+  fontSize: "0.85rem",
+  lineHeight: 1.45,
+};
+
+const noticeDanger: React.CSSProperties = {
+  ...noticeWarn,
+  border: "1px solid #c53030",
+  background: "rgba(197,48,48,0.12)",
+};

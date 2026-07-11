@@ -297,6 +297,7 @@ export async function createCashDepositAction(formData: FormData) {
   } = await import("@/lib/cashsheet/cash-deposit-service");
   const { buildMemo } = await import("@/lib/cashsheet/memo");
 
+  try {
   const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
   if (!row) throw new Error("Row not found");
   if (alreadyHasDeposit(row)) return; // idempotent — already deposited
@@ -439,6 +440,15 @@ export async function createCashDepositAction(formData: FormData) {
 
   revalidatePath("/cash-sheet-sync/deposits");
   revalidatePath("/cash-sheet-sync/queue");
+  } catch (err) {
+    // Nothing is silent: any unexpected failure (QBO query, DB, etc.) is
+    // recorded against the row so it shows on the page instead of the button
+    // appearing to do nothing.
+    await prisma.rowEvent.create({
+      data: { sheetRowId: rowId, eventType: "cash_deposit_error", eventMessage: `Create failed: ${String(err)}` },
+    });
+    revalidatePath("/cash-sheet-sync/deposits");
+  }
 }
 
 export async function updateMappingAction(formData: FormData) {
