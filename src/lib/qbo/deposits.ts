@@ -60,7 +60,7 @@ interface DepositLine {
   Amount: number;
   DetailType?: "DepositLineDetail";
   Description?: string;
-  LinkedTxn?: Array<{ TxnId: string; TxnType: string }>;
+  LinkedTxn?: Array<{ TxnId: string; TxnType: string; TxnLineId?: string }>;
   DepositLineDetail?: { AccountRef?: { value: string } };
 }
 
@@ -71,7 +71,9 @@ export function buildCashDepositBody(input: CashDepositPost) {
     // DepositLineDetail (400) — that shape is only for direct account lines.
     {
       Amount: Number(input.paymentAmount.toFixed(2)),
-      LinkedTxn: [{ TxnId: input.paymentId, TxnType: "Payment" }],
+      // TxnLineId "0" links the whole Payment (matches Intuit's canonical
+      // Deposit sample for every LinkedTxn line).
+      LinkedTxn: [{ TxnId: input.paymentId, TxnType: "Payment", TxnLineId: "0" }],
     },
   ];
   if (Math.round(input.overShortAmount * 100) !== 0) {
