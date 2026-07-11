@@ -9,13 +9,66 @@
  * requirePermission — never trusted from the client.
  */
 import { revalidatePath } from "next/cache";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { runSync } from "@/lib/cashsheet/engine";
 import { setRolloutStage } from "@/lib/config-store";
 import { findInvoiceMatch } from "@/lib/qbo/posting";
 import { getQboEnvironment } from "@/lib/config-store";
+import { RowStatus } from "@/lib/cashsheet/status";
 import type { RolloutStage } from "@/lib/cashsheet/rollout";
+
+/**
+ * One-time go-live reset (§12/§16). Sandbox test posts leave a QBO transaction
+ * id stamped on the sheet row, so once live the engine treats that row as
+ * "already posted" and skips it — even though the live company never received
+ * it. This clears the posting state on rows whose ONLY posting was in the
+ * sandbox (never touching a row that has a real live posting), and deletes the
+ * sandbox qbo_transactions, so live starts clean. Owner-only and irreversible,
+ * but safe: it only removes throwaway sandbox test residue.
+ */
+export async function resetSandboxPostingsAction() {
+  await requirePermission("toggle_live_mode");
+
+  const sandboxTxns = await prisma.qboTransaction.findMany({
+    where: { qboEnvironment: "sandbox" },
+    select: { sheetRowId: true },
+  });
+  const rowIds = [
+    ...new Set(sandboxTxns.map((t) => t.sheetRowId).filter((id): id is string => id !== null)),
+  ];
+
+  for (const rowId of rowIds) {
+    const liveTxn = await prisma.qboTransaction.findFirst({
+      where: { sheetRowId: rowId, qboEnvironment: "live" },
+      select: { id: true },
+    });
+    if (liveTxn) continue; // has a real live posting — never touch it
+    await prisma.sheetRow.update({
+      where: { id: rowId },
+      data: {
+        status: RowStatus.New,
+        statusReason: "Reset for go-live — sandbox posting cleared",
+        qboTransactionId: null,
+        qboTransactionType: null,
+        qboPostedAt: null,
+        originalHash: null,
+        originalSnapshotJson: Prisma.DbNull,
+        // Require fresh, deliberate approval before any live post.
+        approvedAt: null,
+        approvedByEmail: null,
+        reviewedAt: null,
+        reviewedByEmail: null,
+      },
+    });
+  }
+
+  await prisma.qboTransaction.deleteMany({ where: { qboEnvironment: "sandbox" } });
+  revalidatePath("/cash-sheet-sync");
+  revalidatePath("/cash-sheet-sync/queue");
+  revalidatePath("/cash-sheet-sync/settings");
+}
 
 export async function runDryRunAction() {
   const user = await requirePermission("run_dry_run");

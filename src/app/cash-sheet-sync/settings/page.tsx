@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db";
 import { getRolloutStage, getQboEnvironment, getSheetWritebackEnabled } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { ROLLOUT_STAGES, type RolloutStage } from "@/lib/cashsheet/rollout";
-import { advanceStageAction, setSheetWritebackAction } from "../actions";
+import { advanceStageAction, setSheetWritebackAction, resetSandboxPostingsAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -131,6 +131,25 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         </form>
       </div>
       {!canChange && <p className="muted">Changing write-back requires owner_admin (§14).</p>}
+
+      <h2>Go-live reset</h2>
+      <p className="muted">
+        Sandbox test posts leave a QBO transaction id on the sheet row, so once live the engine treats those rows as
+        already posted and skips them — even though your live company never received them. This one-time reset clears
+        the posting state on rows whose only posting was in the <strong>sandbox</strong> (it never touches a row that
+        has a real live posting) and deletes the sandbox transaction records, so live starts clean. Rows will require
+        fresh approval before posting live. Irreversible, but only removes throwaway sandbox test data.
+      </p>
+      <div className="row-actions">
+        <form action={resetSandboxPostingsAction}>
+          <button className="btn danger" disabled={!can(user.role, "toggle_live_mode")}>
+            Reset sandbox test postings
+          </button>
+        </form>
+      </div>
+      {!can(user.role, "toggle_live_mode") && (
+        <p className="muted">The go-live reset requires owner_admin (§14).</p>
+      )}
     </>
   );
 }
