@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
-import { ingestDepositFilesAction, locateProposedPaymentsAction } from "./actions";
+import { ingestDepositFilesAction, locateProposedPaymentsAction, cleanupDuplicatePayoutsAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +18,31 @@ export default async function DepositReconciliationPage() {
   const payouts = await prisma.depPayout.findMany({
     orderBy: [{ settlementDate: "desc" }, { createdAt: "desc" }],
     include: { _count: { select: { lines: true } } },
-    take: 100,
+    take: 200,
   });
+
+  // Latest locate detail per payout + the last locate-run summary, so a
+  // "needs review" result explains itself (which amounts weren't found).
+  const locateEvents = await prisma.depEvent.findMany({
+    where: { eventType: "locate_payments", payoutId: { in: payouts.map((p) => p.id) } },
+    orderBy: { createdAt: "desc" },
+  });
+  const locateMsg = new Map<string, string>();
+  for (const e of locateEvents) if (e.payoutId && !locateMsg.has(e.payoutId)) locateMsg.set(e.payoutId, e.message);
+  const lastLocate = await prisma.depEvent.findFirst({
+    where: { eventType: "locate_summary" },
+    orderBy: { createdAt: "desc" },
+  });
+
+  // Flag likely duplicates (same processor + source ref) so the cleanup button
+  // only shows when there's something to clean.
+  const dupSeen = new Set<string>();
+  let dupCount = 0;
+  for (const p of [...payouts].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+    const key = p.sourceRef ? `${p.processor}|${p.sourceRef}` : `${p.processor}|${p.settlementDate}|${p.netAmount}`;
+    if (dupSeen.has(key)) dupCount++;
+    else dupSeen.add(key);
+  }
 
   return (
     <>
@@ -56,6 +79,20 @@ export default async function DepositReconciliationPage() {
           </span>
         </form>
       )}
+      {editable && dupCount > 0 && (
+        <form action={cleanupDuplicatePayoutsAction} className="row-actions" style={{ marginBottom: "0.5rem" }}>
+          <button className="btn secondary" type="submit">Remove {dupCount} duplicate payout{dupCount === 1 ? "" : "s"}</button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+            Same processor + source ref appears more than once (from re-dropping files). Keeps the earliest; never
+            touches a posted one.
+          </span>
+        </form>
+      )}
+      {lastLocate && (
+        <p className="muted" style={{ fontSize: "0.8rem" }}>
+          {lastLocate.message} · {lastLocate.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
       {payouts.length === 0 ? (
         <p className="muted">No payouts ingested yet. Drop your processor CSVs above.</p>
       ) : (
@@ -81,10 +118,17 @@ export default async function DepositReconciliationPage() {
                       <span className="badge ok">proposed</span>
                     ) : p.status === "created" ? (
                       <span className="badge ok">created</span>
+                    ) : p.status === "matched" ? (
+                      <span className="badge ok">matched</span>
                     ) : (
                       <span className="badge warn">
                         needs review{p.deltaCents ? ` (Δ ${(p.deltaCents / 100).toFixed(2)})` : ""}
                       </span>
+                    )}
+                    {locateMsg.get(p.id) && (
+                      <div className="muted" style={{ fontSize: "0.72rem", marginTop: 2, whiteSpace: "normal", maxWidth: 360 }}>
+                        {locateMsg.get(p.id)}
+                      </div>
                     )}
                   </td>
                   <td className="muted" style={{ fontSize: "0.78rem" }}>{p.sourceRef ?? "—"}</td>
