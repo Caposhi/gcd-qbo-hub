@@ -16,6 +16,7 @@ export const RowStatus = {
   ReadyToPost: "Ready To Post",
   Posted: "Posted",
   PostedWithWarning: "Posted With Warning",
+  DepositCreated: "Deposit Created",
   Error: "Error",
   PossibleDuplicate: "Possible Duplicate",
   DuplicateRowId: "Duplicate Row ID",

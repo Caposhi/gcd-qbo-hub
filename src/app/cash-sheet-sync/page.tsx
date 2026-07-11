@@ -126,6 +126,9 @@ export default async function OverviewPage() {
         <Link className="btn secondary" href="/cash-sheet-sync/mappings">
           Mappings →
         </Link>
+        <Link className="btn secondary" href="/cash-sheet-sync/deposits">
+          Cash deposits →
+        </Link>
       </div>
       {!can(user.role, "run_sandbox_sync") && (
         <p className="muted">You are a {user.role}: you can run dry-runs and review, but not post or change config.</p>
