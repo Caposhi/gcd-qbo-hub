@@ -2,7 +2,12 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
-import { ingestDepositFilesAction, locateProposedPaymentsAction, cleanupDuplicatePayoutsAction } from "./actions";
+import {
+  ingestDepositFilesAction,
+  locateProposedPaymentsAction,
+  cleanupDuplicatePayoutsAction,
+  createDepositFromPayoutAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +34,19 @@ export default async function DepositReconciliationPage() {
   });
   const locateMsg = new Map<string, string>();
   for (const e of locateEvents) if (e.payoutId && !locateMsg.has(e.payoutId)) locateMsg.set(e.payoutId, e.message);
+
+  // Latest create-outcome per payout (so a blocked/failed create is visible).
+  const createEvents = await prisma.depEvent.findMany({
+    where: {
+      eventType: { in: ["create_deposit", "create_blocked", "create_error"] },
+      payoutId: { in: payouts.map((p) => p.id) },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const createMsg = new Map<string, { kind: string; msg: string }>();
+  for (const e of createEvents) {
+    if (e.payoutId && !createMsg.has(e.payoutId)) createMsg.set(e.payoutId, { kind: e.eventType, msg: e.message });
+  }
   const lastLocate = await prisma.depEvent.findFirst({
     where: { eventType: "locate_summary" },
     orderBy: { createdAt: "desc" },
@@ -101,7 +119,7 @@ export default async function DepositReconciliationPage() {
             <thead>
               <tr>
                 <th>Settlement</th><th>Processor</th><th>Gross</th><th>Fee</th><th>Net (deposit)</th>
-                <th>Lines</th><th>Status</th><th>Source</th>
+                <th>Lines</th><th>Status</th><th>Source</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -132,6 +150,26 @@ export default async function DepositReconciliationPage() {
                     )}
                   </td>
                   <td className="muted" style={{ fontSize: "0.78rem" }}>{p.sourceRef ?? "—"}</td>
+                  <td>
+                    {editable && p.status === "matched" && p.processor === "paymentech" && !p.qboDepositId && (
+                      <form action={createDepositFromPayoutAction}>
+                        <input type="hidden" name="payoutId" value={p.id} />
+                        <button className="btn" type="submit">Create deposit</button>
+                      </form>
+                    )}
+                    {editable && p.status === "matched" && p.processor === "tekmetric" && (
+                      <span className="muted" style={{ fontSize: "0.72rem" }}>Tekmetric posting needs fee-JE support (coming)</span>
+                    )}
+                    {createMsg.get(p.id) && createMsg.get(p.id)!.kind !== "create_deposit" && (
+                      <div
+                        className={`badge ${createMsg.get(p.id)!.kind === "create_error" ? "danger" : "warn"}`}
+                        style={{ display: "inline-block", whiteSpace: "normal", maxWidth: 320, fontSize: "0.72rem", marginTop: 4 }}
+                      >
+                        {createMsg.get(p.id)!.kind === "create_error" ? "Create failed: " : "Blocked: "}
+                        {createMsg.get(p.id)!.msg}
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
