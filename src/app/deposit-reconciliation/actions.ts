@@ -180,39 +180,65 @@ export async function locateProposedPaymentsAction() {
   const environment = await getQboEnvironment();
   const ctx = await getContext(environment);
 
-  const payouts = await prisma.depPayout.findMany({
+  const payoutsRaw = await prisma.depPayout.findMany({
     where: { status: { in: ["proposed", "needs_review", "matched"] } },
     include: { lines: true },
   });
+  // Deterministic order (oldest settlement first) so the global no-reuse guard
+  // assigns each shared-amount payment stably.
+  const payouts = payoutsRaw.sort(
+    (a, b) => a.settlementDate.localeCompare(b.settlementDate) || a.id.localeCompare(b.id)
+  );
+
+  // A payment can back only ONE payout — across the whole run AND across
+  // deposits already created — so two batches never claim the same
+  // Undeposited-Funds payment (the collision a wide amount search could cause).
+  // Seed from payments already on created deposits.
+  const globalUsed = new Set<string>();
+  const createdLines = await prisma.depPayoutLine.findMany({
+    where: { matchedQboTxnId: { not: null }, payout: { status: "created" } },
+    select: { matchedQboTxnId: true },
+  });
+  for (const l of createdLines) if (l.matchedQboTxnId) globalUsed.add(l.matchedQboTxnId);
+
+  const daysApart = (a: string, b: string) =>
+    Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
   let payoutsMatched = 0;
   let payoutsReview = 0;
 
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
-    // Window: card payments post on/around the charge date, a few days before
-    // the payout arrival. Generous both ways to tolerate RO-vs-charge dating.
-    const start = shiftDate(p.settlementDate, -16);
+    // Tight, processor-specific window: Paymentech posts on the batch date;
+    // Tekmetric charges settle the next day. Narrow windows + the global
+    // no-reuse guard keep same-amount transactions on different days apart.
+    const start = shiftDate(p.settlementDate, p.processor === "tekmetric" ? -6 : -3);
     const end = shiftDate(p.settlementDate, 2);
-    const usedPaymentIds = new Set<string>();
     const detail: Array<{ amount: number; found: boolean; matchedAmount?: number; delta?: number; candidates: number }> = [];
     let foundCount = 0;
 
     for (const line of p.lines) {
       const amt = Number(line.amount);
-      // Exact first.
-      let cands = await findPaymentsByAmount(ctx, amt, start, end);
-      let pick = cands.find((c) => !usedPaymentIds.has(c.id));
-      // Tolerant fallback: nearest unused payment within the keying band.
+      // Exact-amount candidates, preferring the one dated closest to settlement
+      // (a same-amount payment on a different day is deprioritized).
+      let cands = (await findPaymentsByAmount(ctx, amt, start, end))
+        .filter((c) => !globalUsed.has(c.id))
+        .sort((a, b) => daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate));
+      let pick = cands[0];
+      // Tolerant fallback (keying typo): nearest unused payment within the band,
+      // preferring closest amount then closest date.
       if (!pick) {
-        const near = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end))
-          .filter((c) => !usedPaymentIds.has(c.id))
-          .sort((a, b) => Math.abs(a.amount - amt) - Math.abs(b.amount - amt));
-        pick = near[0];
-        cands = near;
+        cands = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end))
+          .filter((c) => !globalUsed.has(c.id))
+          .sort(
+            (a, b) =>
+              Math.abs(a.amount - amt) - Math.abs(b.amount - amt) ||
+              daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
+          );
+        pick = cands[0];
       }
       if (pick) {
-        usedPaymentIds.add(pick.id);
+        globalUsed.add(pick.id);
         foundCount++;
         detail.push({ amount: amt, found: true, matchedAmount: pick.amount, delta: Number((amt - pick.amount).toFixed(2)), candidates: cands.length });
         await prisma.depPayoutLine.update({
