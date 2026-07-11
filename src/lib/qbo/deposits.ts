@@ -119,6 +119,77 @@ export async function postCashDeposit(
   };
 }
 
+export interface LinkedDepositInput {
+  depositToAccountId: string;
+  txnDate: string; // YYYY-MM-DD
+  privateNote: string;
+  /** Undeposited-Funds customer payments to sweep (gross). */
+  payments: Array<{ id: string; amount: number }>;
+  /** Fee journal entries to sweep (amount negative); lineId = the UF line's Id. */
+  journalEntries?: Array<{ id: string; lineId: string; amount: number }>;
+  /** Optional plug line (e.g. card surcharge / over-short) to tie to the bank. */
+  plug?: { accountId: string; amount: number; description?: string };
+}
+
+/**
+ * Build a Bank Deposit that links multiple Undeposited-Funds records — customer
+ * Payments and (for Tekmetric) fee JournalEntries — plus an optional account
+ * plug line, into one deposit account. Same doc-verified line shapes as the
+ * cash deposit: linked lines carry LinkedTxn only (no DetailType); the plug uses
+ * DepositLineDetail. Used by deposit reconciliation.
+ */
+export function buildLinkedDepositBody(input: LinkedDepositInput) {
+  const lines: DepositLine[] = [];
+  for (const p of input.payments) {
+    lines.push({
+      Amount: Number(p.amount.toFixed(2)),
+      LinkedTxn: [{ TxnId: p.id, TxnType: "Payment", TxnLineId: "0" }],
+    });
+  }
+  for (const je of input.journalEntries ?? []) {
+    lines.push({
+      Amount: Number(je.amount.toFixed(2)),
+      LinkedTxn: [{ TxnId: je.id, TxnType: "JournalEntry", TxnLineId: je.lineId }],
+    });
+  }
+  if (input.plug && Math.round(input.plug.amount * 100) !== 0) {
+    lines.push({
+      Amount: Number(input.plug.amount.toFixed(2)),
+      DetailType: "DepositLineDetail",
+      Description: input.plug.description ?? "Adjustment",
+      DepositLineDetail: { AccountRef: { value: input.plug.accountId } },
+    });
+  }
+  return {
+    DepositToAccountRef: { value: input.depositToAccountId },
+    TxnDate: input.txnDate,
+    PrivateNote: input.privateNote,
+    Line: lines,
+  };
+}
+
+/** Total of a built deposit body, in cents (for the exact-sum checksum). */
+export function linkedDepositTotalCents(body: ReturnType<typeof buildLinkedDepositBody>): number {
+  return body.Line.reduce((s, l) => s + Math.round(l.Amount * 100), 0);
+}
+
+/** Create a multi-line linked Bank Deposit in QBO. */
+export async function postLinkedDeposit(
+  ctx: QboContext,
+  input: LinkedDepositInput
+): Promise<DepositPostResult> {
+  const body = buildLinkedDepositBody(input);
+  const res = await post<Record<string, any>>(ctx, "deposit", body);
+  const created = res.Deposit ?? {};
+  return {
+    qboTransactionId: String(created.Id ?? ""),
+    qboSyncToken: created.SyncToken != null ? String(created.SyncToken) : null,
+    totalAmt: created.TotalAmt != null ? Number(created.TotalAmt) : null,
+    requestRedacted: redactPayload(body),
+    responseRedacted: redactPayload(res),
+  };
+}
+
 /**
  * Payment IDs that are ALREADY part of a QBO Bank Deposit in [startDate,
  * endDate]. A customer payment sits in Undeposited Funds until a deposit sweeps

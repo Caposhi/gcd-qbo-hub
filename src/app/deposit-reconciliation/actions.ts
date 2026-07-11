@@ -243,3 +243,115 @@ export async function locateProposedPaymentsAction() {
 
   revalidatePath("/deposit-reconciliation");
 }
+
+/**
+ * Create the QBO Bank Deposit for one matched PAYMENTECH payout (owner-only).
+ * Paymentech deposits are pure gross card sales (fees billed monthly, not
+ * netted), so the deposit just links the matched Undeposited-Funds payments into
+ * Chase Checking 9680 — total = the batch amount = what Chase deposited, so the
+ * bank-feed line auto-matches. Tekmetric payouts are NOT postable here yet
+ * (they need the fee journal-entry links). Guards: rollout stage (never
+ * dry-run, valid creds), all lines located, exact-sum checksum, and a fresh
+ * double-count scan so a payment already on a deposit is never re-deposited.
+ */
+export async function createDepositFromPayoutAction(formData: FormData) {
+  const user = await requirePermission("edit_mappings");
+  const payoutId = String(formData.get("payoutId") ?? "");
+  if (!payoutId) throw new Error("Missing payoutId");
+
+  const { canPostRow } = await import("@/lib/cashsheet/rollout");
+  const { getQboEnvironment, getRolloutStage } = await import("@/lib/config-store");
+  const { hasValidCredentials } = await import("@/lib/qbo/oauth");
+  const { getContext } = await import("@/lib/qbo/client");
+  const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedPaymentIds } = await import(
+    "@/lib/qbo/deposits"
+  );
+  const { shiftDate } = await import("@/lib/deposits/qbo-lookup");
+
+  const blocked = async (message: string) => {
+    await prisma.depEvent.create({ data: { payoutId, eventType: "create_blocked", message } });
+    revalidatePath("/deposit-reconciliation");
+  };
+
+  try {
+    const payout = await prisma.depPayout.findUnique({ where: { id: payoutId }, include: { lines: true } });
+    if (!payout) throw new Error("Payout not found");
+    if (payout.qboDepositId) return; // already created — idempotent
+    if (payout.processor !== "paymentech") {
+      return blocked("Tekmetric deposits aren't postable yet — they need fee journal-entry links (coming).");
+    }
+    if (payout.status !== "matched") return blocked("Not matched — run Locate first so every charge is confirmed.");
+    const unlocated = payout.lines.filter((l) => !l.matchedQboTxnId);
+    if (unlocated.length) return blocked(`${unlocated.length} line(s) not located — re-run Locate.`);
+
+    const stage = await getRolloutStage();
+    const environment = await getQboEnvironment();
+    const credsValid = await hasValidCredentials(environment);
+    const gate = canPostRow({ stage, credentialsValid: credsValid, mappingRequiresApproval: false, rowApproved: true });
+    if (!gate.allowed) return blocked(`Not created: ${gate.reason}`);
+
+    const chase = await prisma.accountMapping.findFirst({ where: { friendlyName: "Chase Checking 9680" } });
+    if (!chase?.qboAccountId) return blocked("Chase Checking 9680 account mapping unresolved.");
+
+    const ctx = await getContext(gate.environment!);
+
+    // Double-count guard: refuse if any matched payment is already on a deposit.
+    const deposited = await collectDepositedPaymentIds(
+      ctx,
+      shiftDate(payout.settlementDate, -16),
+      shiftDate(payout.settlementDate, 2)
+    );
+    const already = payout.lines.filter((l) => l.matchedQboTxnId && deposited.has(l.matchedQboTxnId));
+    if (already.length) {
+      return blocked(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
+    }
+
+    const payments = payout.lines.map((l) => ({ id: l.matchedQboTxnId as string, amount: Number(l.amount) }));
+    const input = {
+      depositToAccountId: chase.qboAccountId,
+      txnDate: payout.settlementDate,
+      privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
+      payments,
+    };
+
+    // Exact-sum checksum: the deposit MUST equal the payout net or we never post.
+    const totalCents = linkedDepositTotalCents(buildLinkedDepositBody(input));
+    const netCents = Math.round(Number(payout.netAmount) * 100);
+    if (totalCents !== netCents) {
+      return blocked(`Checksum mismatch: linked payments ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`);
+    }
+
+    let result;
+    try {
+      result = await postLinkedDeposit(ctx, input);
+    } catch (err) {
+      const detail = (err as { detail?: unknown })?.detail;
+      await prisma.depEvent.create({
+        data: {
+          payoutId,
+          eventType: "create_error",
+          message: `QBO rejected deposit: ${String(err)}${detail ? ` · ${JSON.stringify(detail)}` : ""}`.slice(0, 1800),
+        },
+      });
+      revalidatePath("/deposit-reconciliation");
+      return;
+    }
+
+    await prisma.depPayout.update({
+      where: { id: payoutId },
+      data: { status: "created", qboDepositId: result.qboTransactionId, deltaCents: 0 },
+    });
+    await prisma.depEvent.create({
+      data: {
+        payoutId,
+        eventType: "create_deposit",
+        message: `Created Chase Checking deposit ${result.qboTransactionId} for ${(netCents / 100).toFixed(2)} (${payments.length} payments) by ${user.email}.`,
+        dataJson: { depositId: result.qboTransactionId, totalAmt: result.totalAmt } as unknown as object,
+      },
+    });
+    revalidatePath("/deposit-reconciliation");
+  } catch (err) {
+    await prisma.depEvent.create({ data: { payoutId, eventType: "create_error", message: `Create failed: ${String(err)}` } });
+    revalidatePath("/deposit-reconciliation");
+  }
+}
