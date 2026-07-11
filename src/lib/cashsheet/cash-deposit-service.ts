@@ -60,6 +60,8 @@ export interface LocatedPlan {
   depositedAmount: number;
   payment: PaymentLike | null;
   plan: CashDepositPlan | null;
+  /** True when the matched payment is already on a QBO deposit (never offer it). */
+  alreadyDeposited?: boolean;
 }
 
 /** Shift a Date by N days, returning YYYY-MM-DD (UTC). */
@@ -77,6 +79,7 @@ function isoShift(date: Date, days: number): string {
 export async function locateRow(
   ctx: QboContext,
   row: { date: Date | null; invNumber: string | null; amtCollected: unknown },
+  depositedPaymentIds?: Set<string>,
 ): Promise<LocatedPlan> {
   const ro = (row.invNumber ?? "").trim();
   const depositedAmount = Number(row.amtCollected ?? 0);
@@ -92,6 +95,18 @@ export async function locateRow(
   const payment = matchPaymentByRo(candidates, ro, depositedAmount);
   if (!payment) {
     return { ...base, reason: `No Undeposited-Funds payment with RO# ${ro} found between ${start} and ${end}` };
+  }
+
+  // Never offer a payment that has already been swept into a deposit — creating
+  // another deposit for it would double-count.
+  if (depositedPaymentIds?.has(payment.id)) {
+    return {
+      ...base,
+      found: false,
+      payment,
+      alreadyDeposited: true,
+      reason: `Payment ${payment.id} (RO# ${ro}) is already on a QBO deposit — nothing to do`,
+    };
   }
 
   const plan = planCashDeposit(payment.amount, depositedAmount);

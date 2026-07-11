@@ -112,3 +112,31 @@ export async function postCashDeposit(
     responseRedacted: redactPayload(res),
   };
 }
+
+/**
+ * Payment IDs that are ALREADY part of a QBO Bank Deposit in [startDate,
+ * endDate]. A customer payment sits in Undeposited Funds until a deposit sweeps
+ * it; once swept, the deposit's line carries a LinkedTxn of TxnType "Payment".
+ * We collect those ids so the matcher never offers to deposit a payment that is
+ * already deposited (which would double-count). Read-only.
+ */
+export async function collectDepositedPaymentIds(
+  ctx: QboContext,
+  startDate: string,
+  endDate: string
+): Promise<Set<string>> {
+  const res = await query<{ QueryResponse?: { Deposit?: any[] } }>(
+    ctx,
+    `select * from Deposit where TxnDate >= '${escapeQuery(startDate)}' ` +
+      `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
+  );
+  const ids = new Set<string>();
+  for (const dep of res.QueryResponse?.Deposit ?? []) {
+    for (const line of dep.Line ?? []) {
+      for (const lt of line.LinkedTxn ?? []) {
+        if (lt?.TxnType === "Payment" && lt?.TxnId) ids.add(String(lt.TxnId));
+      }
+    }
+  }
+  return ids;
+}

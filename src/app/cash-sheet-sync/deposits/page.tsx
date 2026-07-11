@@ -23,6 +23,7 @@ interface PlanEvent {
   reason?: string;
   ro?: string;
   depositedAmount?: number;
+  alreadyDeposited?: boolean;
   payment?: { id: string; amount: number; privateNote: string; date: string; customerName?: string } | null;
   plan?: { paymentId: string; paymentCents: number; depositedCents: number; overShortCents: number; withinThreshold: boolean } | null;
 }
@@ -72,6 +73,12 @@ export default async function CashDepositsPage() {
         small <em>Cash over/short</em> plug when the collected amount differs from the payment by rounding (e.g. sheet
         $241.00 vs payment $240.74 → +$0.26) — and, once you create it, QuickBooks auto-matches the bank-feed line.
         Nothing posts until you click <strong>Create deposit</strong> on a row, and only when it ties out.
+      </p>
+      <p className="badge warn" style={{ display: "block", padding: "0.5rem 0.75rem" }}>
+        Safety: rows whose payment is <em>already</em> on a QBO deposit are marked “already deposited” and offer no
+        Create button, so a payment can never be deposited twice. Still, create deposits deliberately — start with the
+        current pending rows rather than mass-creating the historical backlog, in case older months were reconciled a
+        different way.
       </p>
 
       {!accountsReady && (
@@ -146,6 +153,8 @@ export default async function CashDepositsPage() {
                     <td>
                       {created ? (
                         <span className="badge ok">{RowStatus.DepositCreated}</span>
+                      ) : p?.alreadyDeposited ? (
+                        <span className="badge muted" title={latestMsg.get(r.id)}>already deposited</span>
                       ) : ready ? (
                         <span className="badge ok">ready</span>
                       ) : p ? (
