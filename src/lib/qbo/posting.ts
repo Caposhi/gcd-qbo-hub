@@ -48,8 +48,13 @@ export async function postPlan(
   const docNumber = buildDocNumber(rowUuid);
 
   switch (plan.action) {
-    case "expense":
-      return doPost(ctx, "purchase", buildPurchase(plan, memo, docNumber), "Purchase");
+    case "expense": {
+      // Set the QBO Payee (EntityRef) to the row's Name, matching how these
+      // expenses were categorized before (e.g. "Jose" on the OWNER Contract
+      // Labor account). Best-effort — a payee lookup hiccup never blocks the post.
+      const payee = await resolvePayeeRef(ctx, row.name);
+      return doPost(ctx, "purchase", buildPurchase(plan, memo, docNumber, payee), "Purchase");
+    }
     case "deposit":
       return doPost(ctx, "deposit", buildDeposit(plan, memo, docNumber), "Deposit");
     case "transfer":
@@ -59,10 +64,42 @@ export async function postPlan(
   }
 }
 
-function buildPurchase(plan: PostingPlan, memo: string, docNumber: string) {
+interface PayeeRef {
+  value: string;
+  name: string;
+  type: "Vendor";
+}
+
+/**
+ * Resolve the row's payee (Name) to a QBO Vendor EntityRef, creating the vendor
+ * if it doesn't exist (mirrors Accounting Link's "Vendor — create if not found").
+ * Returns undefined when the name is blank or lookup/create fails — posting then
+ * proceeds without a payee rather than failing (the memo still carries the name).
+ */
+async function resolvePayeeRef(ctx: QboContext, name: string): Promise<PayeeRef | undefined> {
+  const n = (name ?? "").trim();
+  if (!n) return undefined;
+  try {
+    const q = await query<{ QueryResponse?: { Vendor?: any[] } }>(
+      ctx,
+      `select Id, DisplayName from Vendor where DisplayName = '${escapeQuery(n)}'`
+    );
+    const found = q.QueryResponse?.Vendor?.[0];
+    if (found?.Id) return { value: String(found.Id), name: String(found.DisplayName ?? n), type: "Vendor" };
+    const created = await post<Record<string, any>>(ctx, "vendor", { DisplayName: n });
+    const v = created.Vendor ?? {};
+    if (v.Id) return { value: String(v.Id), name: String(v.DisplayName ?? n), type: "Vendor" };
+  } catch {
+    // Best-effort: fall through to no payee.
+  }
+  return undefined;
+}
+
+function buildPurchase(plan: PostingPlan, memo: string, docNumber: string, payee?: PayeeRef) {
   return {
     PaymentType: "Cash",
     AccountRef: accountRef(plan.cashAccountId, plan.cashAccount),
+    ...(payee ? { EntityRef: { value: payee.value, name: payee.name, type: payee.type } } : {}),
     DocNumber: docNumber,
     PrivateNote: memo,
     Line: [
