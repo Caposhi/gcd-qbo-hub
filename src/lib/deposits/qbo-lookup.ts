@@ -40,6 +40,44 @@ export async function findPaymentsByAmount(
   }));
 }
 
+/**
+ * Payments with TotalAmt in [low, high] within [startDate, endDate]. Used for
+ * tolerant matching when the processor's charged amount differs from the QBO
+ * customer payment by a small terminal-keying discrepancy.
+ */
+export async function findPaymentsInRange(
+  ctx: QboContext,
+  low: number,
+  high: number,
+  startDate: string,
+  endDate: string
+): Promise<QboPaymentCandidate[]> {
+  const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
+    ctx,
+    `select Id, TotalAmt, TxnDate from Payment where TotalAmt >= '${escapeQuery(low.toFixed(2))}' ` +
+      `and TotalAmt <= '${escapeQuery(high.toFixed(2))}' ` +
+      `and TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}'`
+  );
+  return (res.QueryResponse?.Payment ?? []).map((p) => ({
+    id: String(p.Id),
+    amount: Number(p.TotalAmt),
+    date: String(p.TxnDate),
+  }));
+}
+
+/** Fetch TotalAmt for a set of payment ids (for computing a deposit's plug). */
+export async function getPaymentAmounts(ctx: QboContext, ids: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (ids.length === 0) return out;
+  const list = ids.map((id) => `'${escapeQuery(id)}'`).join(",");
+  const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
+    ctx,
+    `select Id, TotalAmt from Payment where Id in (${list})`
+  );
+  for (const p of res.QueryResponse?.Payment ?? []) out.set(String(p.Id), Number(p.TotalAmt));
+  return out;
+}
+
 /** Shift a YYYY-MM-DD date by N days (negative = earlier). */
 export function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);

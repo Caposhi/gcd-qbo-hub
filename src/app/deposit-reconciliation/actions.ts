@@ -170,7 +170,12 @@ export async function locateProposedPaymentsAction() {
   await requirePermission("edit_mappings");
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
-  const { findPaymentsByAmount, shiftDate } = await import("@/lib/deposits/qbo-lookup");
+  const { findPaymentsByAmount, findPaymentsInRange, shiftDate } = await import("@/lib/deposits/qbo-lookup");
+
+  // Terminal-keying discrepancy tolerance: the amount charged at the Chase
+  // terminal can differ from the RO/QBO payment by a small typo. Match within
+  // this band and book the difference to Cash over/short at deposit time.
+  const KEYING_TOLERANCE = 5.0;
 
   const environment = await getQboEnvironment();
   const ctx = await getContext(environment);
@@ -190,22 +195,32 @@ export async function locateProposedPaymentsAction() {
     const start = shiftDate(p.settlementDate, -16);
     const end = shiftDate(p.settlementDate, 2);
     const usedPaymentIds = new Set<string>();
-    const detail: Array<{ amount: number; found: boolean; candidates: number }> = [];
+    const detail: Array<{ amount: number; found: boolean; matchedAmount?: number; delta?: number; candidates: number }> = [];
     let foundCount = 0;
 
     for (const line of p.lines) {
       const amt = Number(line.amount);
-      const cands = await findPaymentsByAmount(ctx, amt, start, end);
-      const pick = cands.find((c) => !usedPaymentIds.has(c.id));
-      detail.push({ amount: amt, found: !!pick, candidates: cands.length });
+      // Exact first.
+      let cands = await findPaymentsByAmount(ctx, amt, start, end);
+      let pick = cands.find((c) => !usedPaymentIds.has(c.id));
+      // Tolerant fallback: nearest unused payment within the keying band.
+      if (!pick) {
+        const near = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end))
+          .filter((c) => !usedPaymentIds.has(c.id))
+          .sort((a, b) => Math.abs(a.amount - amt) - Math.abs(b.amount - amt));
+        pick = near[0];
+        cands = near;
+      }
       if (pick) {
         usedPaymentIds.add(pick.id);
         foundCount++;
+        detail.push({ amount: amt, found: true, matchedAmount: pick.amount, delta: Number((amt - pick.amount).toFixed(2)), candidates: cands.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: pick.id, matchedQboTxnType: "Payment" },
         });
       } else {
+        detail.push({ amount: amt, found: false, candidates: cands.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: null, matchedQboTxnType: null },
@@ -218,18 +233,20 @@ export async function locateProposedPaymentsAction() {
     else payoutsReview++;
 
     const missing = detail.filter((d) => !d.found).map((d) => d.amount.toFixed(2));
+    const overShortCents = detail.reduce((s, d) => s + Math.round((d.delta ?? 0) * 100), 0);
     await prisma.depPayout.update({
       where: { id: p.id },
-      data: { status: foundAll ? "matched" : "needs_review", deltaCents: foundAll ? 0 : null },
+      data: { status: foundAll ? "matched" : "needs_review", deltaCents: foundAll ? overShortCents : null },
     });
+    const osNote = overShortCents !== 0 ? ` Over/short from keying: ${(overShortCents / 100).toFixed(2)} (booked to Cash over/short on deposit).` : "";
     await prisma.depEvent.create({
       data: {
         payoutId: p.id,
         eventType: "locate_payments",
         message: foundAll
-          ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).`
+          ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${osNote}`
           : `Located ${foundCount}/${p.lines.length}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`,
-        dataJson: { detail, start, end } as unknown as object,
+        dataJson: { detail, start, end, overShortCents } as unknown as object,
       },
     });
   }
@@ -266,7 +283,7 @@ export async function createDepositFromPayoutAction(formData: FormData) {
   const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedPaymentIds } = await import(
     "@/lib/qbo/deposits"
   );
-  const { shiftDate } = await import("@/lib/deposits/qbo-lookup");
+  const { shiftDate, getPaymentAmounts } = await import("@/lib/deposits/qbo-lookup");
 
   const blocked = async (message: string) => {
     await prisma.depEvent.create({ data: { payoutId, eventType: "create_blocked", message } });
@@ -306,19 +323,46 @@ export async function createDepositFromPayoutAction(formData: FormData) {
       return blocked(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
     }
 
-    const payments = payout.lines.map((l) => ({ id: l.matchedQboTxnId as string, amount: Number(l.amount) }));
+    // Link each payment at its ACTUAL QBO amount (which may differ from the
+    // terminal-charged line amount by a keying typo), then plug the difference
+    // to the bank total via Cash over/short so the deposit ties to what Chase
+    // actually deposited.
+    const ids = payout.lines.map((l) => l.matchedQboTxnId as string);
+    const amounts = await getPaymentAmounts(ctx, ids);
+    if (ids.some((id) => !amounts.has(id))) {
+      return blocked("Could not read some matched payment amounts from QBO — re-run Locate.");
+    }
+    const payments = ids.map((id) => ({ id, amount: amounts.get(id) as number }));
+
+    const sumCents = payments.reduce((s, p) => s + Math.round(p.amount * 100), 0);
+    const netCents = Math.round(Number(payout.netAmount) * 100);
+    const plugCents = netCents - sumCents; // over/short needed so deposit == bank
+    const KEYING_CAP_CENTS = 1000; // $10
+    if (Math.abs(plugCents) > KEYING_CAP_CENTS) {
+      return blocked(
+        `Over/short ${(plugCents / 100).toFixed(2)} exceeds the $10 keying tolerance — investigate before posting.`
+      );
+    }
+
+    let plug: { accountId: string; amount: number; description: string } | undefined;
+    if (plugCents !== 0) {
+      const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
+      if (!os?.qboAccountId) return blocked("Cash over/short account mapping unresolved.");
+      plug = { accountId: os.qboAccountId, amount: plugCents / 100, description: "Card terminal keying over/short" };
+    }
+
     const input = {
       depositToAccountId: chase.qboAccountId,
       txnDate: payout.settlementDate,
       privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
       payments,
+      plug,
     };
 
-    // Exact-sum checksum: the deposit MUST equal the payout net or we never post.
+    // Exact-sum checksum: the built deposit MUST equal the payout net or we never post.
     const totalCents = linkedDepositTotalCents(buildLinkedDepositBody(input));
-    const netCents = Math.round(Number(payout.netAmount) * 100);
     if (totalCents !== netCents) {
-      return blocked(`Checksum mismatch: linked payments ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`);
+      return blocked(`Checksum mismatch: deposit ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`);
     }
 
     let result;
