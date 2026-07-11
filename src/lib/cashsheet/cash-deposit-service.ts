@@ -27,7 +27,11 @@ export async function findCashDepositCandidates() {
     where: {
       invNumber: { not: null },
       amtCollected: { not: null },
-      NOT: { qboTransactionType: "Deposit" },
+      // Exclude rows we've already turned into a deposit. Filter on status
+      // (always non-null) rather than `NOT qboTransactionType = "Deposit"`,
+      // which — because qboTransactionType is NULL on undeposited rows — would
+      // evaluate to NULL and silently drop every candidate (SQL 3-valued logic).
+      status: { not: RowStatus.DepositCreated },
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
   });

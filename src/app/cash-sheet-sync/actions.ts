@@ -205,10 +205,14 @@ export async function locateCashDepositsAction() {
   const ctx = await getContext(environment); // throws QboNotConnectedError if not connected
   const rows = await findCashDepositCandidates();
 
+  let found = 0;
+  let notFound = 0;
   for (const row of rows) {
     if (alreadyHasDeposit(row)) continue;
     try {
       const located = await locateRow(ctx, row);
+      if (located.found) found++;
+      else notFound++;
       await prisma.rowEvent.create({
         data: {
           sheetRowId: row.id,
@@ -231,6 +235,16 @@ export async function locateCashDepositsAction() {
       });
     }
   }
+
+  // Always leave a breadcrumb — even a zero-candidate run — so the operator can
+  // see the locate actually ran and what it found (visible on the deposits page
+  // and in the row-events audit trail; no DB access needed).
+  await prisma.rowEvent.create({
+    data: {
+      eventType: "cash_deposit_locate_summary",
+      eventMessage: `Locate run: ${rows.length} candidate row(s), ${found} ready, ${notFound} not found · env ${environment}`,
+    },
+  });
 
   revalidatePath("/cash-sheet-sync/deposits");
 }

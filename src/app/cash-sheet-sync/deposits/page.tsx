@@ -57,6 +57,12 @@ export default async function CashDepositsPage() {
 
   const accountsReady = !!accounts.chaseId && !!accounts.overShortId;
 
+  // Last locate breadcrumb (visible feedback even for a zero-result run).
+  const lastLocate = await prisma.rowEvent.findFirst({
+    where: { eventType: "cash_deposit_locate_summary" },
+    orderBy: { createdAt: "desc" },
+  });
+
   return (
     <>
       <h1>Cash Deposit Matching</h1>
@@ -84,6 +90,12 @@ export default async function CashDepositsPage() {
             Finds each row&apos;s Undeposited-Funds payment and previews the deposit. No writes.
           </span>
         </form>
+      )}
+
+      {lastLocate && (
+        <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
+          Last locate: {lastLocate.eventMessage} · {lastLocate.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
       )}
 
       {rows.length === 0 ? (
