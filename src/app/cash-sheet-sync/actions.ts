@@ -201,17 +201,40 @@ export async function locateCashDepositsAction() {
     "@/lib/cashsheet/cash-deposit-service"
   );
 
+  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
+
   const accounts = await resolveDepositAccounts();
   const ctx = await getContext(environment); // throws QboNotConnectedError if not connected
   const rows = await findCashDepositCandidates();
 
+  // One pass to learn which payments are ALREADY on a QBO deposit, over the full
+  // span of candidate dates (buffered), so the matcher can skip anything that
+  // was already deposited/reconciled — never double-count.
+  const dated = rows.map((r) => r.date).filter((d): d is Date => !!d);
+  let depositedPaymentIds = new Set<string>();
+  if (dated.length) {
+    const min = new Date(Math.min(...dated.map((d) => d.getTime())));
+    const max = new Date(Math.max(...dated.map((d) => d.getTime())));
+    const scanStart = new Date(min.getTime());
+    scanStart.setUTCDate(scanStart.getUTCDate() - 14);
+    const scanEnd = new Date(max.getTime());
+    scanEnd.setUTCDate(scanEnd.getUTCDate() + 14);
+    depositedPaymentIds = await collectDepositedPaymentIds(
+      ctx,
+      scanStart.toISOString().slice(0, 10),
+      scanEnd.toISOString().slice(0, 10)
+    );
+  }
+
   let found = 0;
   let notFound = 0;
+  let alreadyDeposited = 0;
   for (const row of rows) {
     if (alreadyHasDeposit(row)) continue;
     try {
-      const located = await locateRow(ctx, row);
+      const located = await locateRow(ctx, row, depositedPaymentIds);
       if (located.found) found++;
+      else if (located.alreadyDeposited) alreadyDeposited++;
       else notFound++;
       await prisma.rowEvent.create({
         data: {
@@ -242,7 +265,7 @@ export async function locateCashDepositsAction() {
   await prisma.rowEvent.create({
     data: {
       eventType: "cash_deposit_locate_summary",
-      eventMessage: `Locate run: ${rows.length} candidate row(s), ${found} ready, ${notFound} not found · env ${environment}`,
+      eventMessage: `Locate run: ${rows.length} candidate row(s), ${found} ready, ${alreadyDeposited} already deposited, ${notFound} not found · env ${environment}`,
     },
   });
 
@@ -298,12 +321,12 @@ export async function createCashDepositAction(formData: FormData) {
   }
 
   const accounts = await resolveDepositAccounts();
-  if (!accounts.chaseId || !accounts.overShortId) {
+  if (!accounts.depositToId || !accounts.overShortId) {
     await prisma.rowEvent.create({
       data: {
         sheetRowId: rowId,
         eventType: "cash_deposit_blocked",
-        eventMessage: `Account mapping unresolved (Chase=${accounts.chaseId ?? "?"}, Cash over/short=${
+        eventMessage: `Account mapping unresolved (Cash on hand=${accounts.depositToId ?? "?"}, Cash over/short=${
           accounts.overShortId ?? "?"
         })`,
       },
@@ -312,8 +335,22 @@ export async function createCashDepositAction(formData: FormData) {
     return;
   }
 
+  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
   const ctx = await getContext(gate.environment!);
-  const located = await locateRow(ctx, row);
+
+  // Hard guard: re-scan deposits around this row's date and refuse if the
+  // payment is already on a deposit (protects against double-counting even if
+  // the cached preview was stale).
+  let depositedPaymentIds = new Set<string>();
+  if (row.date) {
+    const s = new Date(row.date.getTime());
+    s.setUTCDate(s.getUTCDate() - 14);
+    const e = new Date(row.date.getTime());
+    e.setUTCDate(e.getUTCDate() + 14);
+    depositedPaymentIds = await collectDepositedPaymentIds(ctx, s.toISOString().slice(0, 10), e.toISOString().slice(0, 10));
+  }
+
+  const located = await locateRow(ctx, row, depositedPaymentIds);
   if (!located.found || !located.plan) {
     await prisma.rowEvent.create({
       data: { sheetRowId: rowId, eventType: "cash_deposit_blocked", eventMessage: located.reason },
@@ -336,15 +373,26 @@ export async function createCashDepositAction(formData: FormData) {
     row.rowUuid
   );
 
-  const result = await postCashDeposit(ctx, {
-    depositToAccountId: accounts.chaseId,
-    txnDate: (row.date ?? new Date()).toISOString().slice(0, 10),
-    paymentId: located.plan.paymentId,
-    paymentAmount: located.plan.paymentCents / 100,
-    overShortAmount: located.plan.overShortCents / 100,
-    overShortAccountId: accounts.overShortId,
-    privateNote: memo,
-  });
+  let result;
+  try {
+    result = await postCashDeposit(ctx, {
+      depositToAccountId: accounts.depositToId,
+      txnDate: (row.date ?? new Date()).toISOString().slice(0, 10),
+      paymentId: located.plan.paymentId,
+      paymentAmount: located.plan.paymentCents / 100,
+      overShortAmount: located.plan.overShortCents / 100,
+      overShortAccountId: accounts.overShortId,
+      privateNote: memo,
+    });
+  } catch (err) {
+    // QBO can reject (e.g. the payment was deposited by someone else in the
+    // meantime) — record it, never crash, never leave a half-written row.
+    await prisma.rowEvent.create({
+      data: { sheetRowId: rowId, eventType: "cash_deposit_error", eventMessage: `QBO rejected deposit: ${String(err)}` },
+    });
+    revalidatePath("/cash-sheet-sync/deposits");
+    return;
+  }
 
   await prisma.$transaction([
     prisma.qboTransaction.create({
@@ -370,7 +418,7 @@ export async function createCashDepositAction(formData: FormData) {
         }) — match the bank-feed line in QBO`,
         qboTransactionId: result.qboTransactionId,
         qboTransactionType: "Deposit",
-        qboAccountId: accounts.chaseId,
+        qboAccountId: accounts.depositToId,
         qboPostedAt: new Date(),
         // Freeze the snapshot so the engine tracks this as posted (never re-posts).
         originalHash: row.currentHash,
