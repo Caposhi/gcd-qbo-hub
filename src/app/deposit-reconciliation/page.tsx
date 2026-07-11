@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
-import { ingestDepositFilesAction } from "./actions";
+import { ingestDepositFilesAction, locateProposedPaymentsAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +47,15 @@ export default async function DepositReconciliationPage() {
       )}
 
       <h2>Proposed deposits</h2>
+      {editable && payouts.length > 0 && (
+        <form action={locateProposedPaymentsAction} className="row-actions" style={{ marginBottom: "0.75rem" }}>
+          <button className="btn secondary" type="submit">Locate payments in QBO (read-only)</button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+            Confirms each payout&apos;s charges exist as Undeposited-Funds payments before any deposit is created.
+            Nothing is written to QBO.
+          </span>
+        </form>
+      )}
       {payouts.length === 0 ? (
         <p className="muted">No payouts ingested yet. Drop your processor CSVs above.</p>
       ) : (

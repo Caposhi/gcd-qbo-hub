@@ -103,3 +103,62 @@ export async function ingestDepositFilesAction(formData: FormData) {
 
   revalidatePath("/deposit-reconciliation");
 }
+
+/**
+ * Read-only "propose" step: for every proposed payout, confirm each gross charge
+ * maps to a real Undeposited-Funds payment in QBO (by amount, within a window
+ * ending at the settlement date). Marks the matched payment id on each line and
+ * flips the payout to `matched` (all found) or `needs_review` (some missing —
+ * e.g. Back Office hasn't posted that day yet). Never creates anything in QBO.
+ */
+export async function locateProposedPaymentsAction() {
+  await requirePermission("edit_mappings");
+  const { getQboEnvironment } = await import("@/lib/config-store");
+  const { getContext } = await import("@/lib/qbo/client");
+  const { findPaymentsByAmount, shiftDate } = await import("@/lib/deposits/qbo-lookup");
+
+  const environment = await getQboEnvironment();
+  const ctx = await getContext(environment);
+
+  const payouts = await prisma.depPayout.findMany({
+    where: { status: "proposed" },
+    include: { lines: true },
+  });
+
+  for (const p of payouts) {
+    const start = shiftDate(p.settlementDate, -12);
+    const end = p.settlementDate;
+    const usedPaymentIds = new Set<string>();
+    let foundAll = true;
+
+    for (const line of p.lines) {
+      const cands = await findPaymentsByAmount(ctx, Number(line.amount), start, end);
+      const pick = cands.find((c) => !usedPaymentIds.has(c.id));
+      if (pick) {
+        usedPaymentIds.add(pick.id);
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: pick.id, matchedQboTxnType: "Payment" },
+        });
+      } else {
+        foundAll = false;
+      }
+    }
+
+    await prisma.depPayout.update({
+      where: { id: p.id },
+      data: { status: foundAll ? "matched" : "needs_review", deltaCents: foundAll ? 0 : null },
+    });
+    await prisma.depEvent.create({
+      data: {
+        payoutId: p.id,
+        eventType: "locate_payments",
+        message: foundAll
+          ? `All ${p.lines.length} charge payments located in QBO`
+          : "Some charge payments not found in QBO yet (Back Office may not have posted that day)",
+      },
+    });
+  }
+
+  revalidatePath("/deposit-reconciliation");
+}
