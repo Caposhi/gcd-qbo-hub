@@ -58,7 +58,7 @@ export interface CashDepositPost {
 
 interface DepositLine {
   Amount: number;
-  DetailType: "DepositLineDetail";
+  DetailType?: "DepositLineDetail";
   Description?: string;
   LinkedTxn?: Array<{ TxnId: string; TxnType: string }>;
   DepositLineDetail?: { AccountRef?: { value: string } };
@@ -66,13 +66,17 @@ interface DepositLine {
 
 export function buildCashDepositBody(input: CashDepositPost) {
   const lines: DepositLine[] = [
+    // Line that pulls an existing Payment out of Undeposited Funds: LinkedTxn +
+    // Amount ONLY. QBO rejects a linked line that also carries DetailType /
+    // DepositLineDetail (400) — that shape is only for direct account lines.
     {
       Amount: Number(input.paymentAmount.toFixed(2)),
-      DetailType: "DepositLineDetail",
       LinkedTxn: [{ TxnId: input.paymentId, TxnType: "Payment" }],
     },
   ];
   if (Math.round(input.overShortAmount * 100) !== 0) {
+    // Direct account line for the rounding plug — this one DOES use
+    // DepositLineDetail with the Cash over/short account.
     lines.push({
       Amount: Number(input.overShortAmount.toFixed(2)),
       DetailType: "DepositLineDetail",

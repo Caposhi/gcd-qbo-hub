@@ -387,9 +387,16 @@ export async function createCashDepositAction(formData: FormData) {
     });
   } catch (err) {
     // QBO can reject (e.g. the payment was deposited by someone else in the
-    // meantime) — record it, never crash, never leave a half-written row.
+    // meantime) — record it WITH the QBO fault detail (so the exact reason is
+    // visible), never crash, never leave a half-written row.
+    const detail = (err as { detail?: unknown })?.detail;
+    const detailStr = detail ? ` · ${JSON.stringify(detail)}` : "";
     await prisma.rowEvent.create({
-      data: { sheetRowId: rowId, eventType: "cash_deposit_error", eventMessage: `QBO rejected deposit: ${String(err)}` },
+      data: {
+        sheetRowId: rowId,
+        eventType: "cash_deposit_error",
+        eventMessage: `QBO rejected deposit: ${String(err)}${detailStr}`.slice(0, 1800),
+      },
     });
     revalidatePath("/cash-sheet-sync/deposits");
     return;
