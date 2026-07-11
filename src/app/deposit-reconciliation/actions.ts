@@ -52,11 +52,27 @@ export async function ingestDepositFilesAction(formData: FormData) {
 
   const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
 
+  // Dedupe: a payout is uniquely identified by (processor, sourceRef) — the
+  // Stripe trace-id / payout-id, or the Paymentech batch #. Re-dropping the same
+  // files in a different file-set (so the combined fileHash differs) must NOT
+  // re-create payouts. Seed from what already exists, then also guard within
+  // this ingest.
+  const existing = await prisma.depPayout.findMany({
+    select: { processor: true, sourceRef: true, settlementDate: true, netAmount: true },
+  });
+  const keyOf = (processor: string, sourceRef: string | null, settlementDate: string, netAmount: number) =>
+    sourceRef ? `${processor}|${sourceRef}` : `${processor}|${settlementDate}|${Math.round(netAmount * 100)}`;
+  const seen = new Set(existing.map((e) => keyOf(e.processor, e.sourceRef, e.settlementDate, Number(e.netAmount))));
+  let skipped = 0;
+
   const proposed = [
     ...result.paymentechDeposits,
     ...(result.tekmetric?.deposits ?? []),
   ];
   for (const d of proposed) {
+    const key = keyOf(d.processor, d.sourceRef ?? null, d.settlementDate, d.net);
+    if (seen.has(key)) { skipped++; continue; }
+    seen.add(key);
     await prisma.depPayout.create({
       data: {
         importId: imp.id,
@@ -80,6 +96,10 @@ export async function ingestDepositFilesAction(formData: FormData) {
   }
 
   for (const u of result.tekmetric?.unresolved ?? []) {
+    const sourceRef = u.payout.traceId ?? u.payout.id;
+    const key = keyOf("tekmetric", sourceRef, u.payout.arrivalDate, u.payout.amount);
+    if (seen.has(key)) { skipped++; continue; }
+    seen.add(key);
     await prisma.depPayout.create({
       data: {
         importId: imp.id,
@@ -90,8 +110,14 @@ export async function ingestDepositFilesAction(formData: FormData) {
         netAmount: dec(u.payout.amount),
         status: "needs_review",
         deltaCents: u.deltaCents,
-        sourceRef: u.payout.traceId ?? u.payout.id,
+        sourceRef,
       },
+    });
+  }
+
+  if (skipped > 0) {
+    await prisma.depEvent.create({
+      data: { eventType: "ingest_dedupe", message: `Skipped ${skipped} payout(s) already present (same processor + source ref).` },
     });
   }
 
@@ -105,11 +131,40 @@ export async function ingestDepositFilesAction(formData: FormData) {
 }
 
 /**
+ * Remove duplicate payouts (same processor + source ref), keeping the earliest
+ * — and never touching one already posted to QBO. One-time cleanup for payouts
+ * created before ingest was made dedupe-aware.
+ */
+export async function cleanupDuplicatePayoutsAction() {
+  await requirePermission("edit_mappings");
+  const all = await prisma.depPayout.findMany({ orderBy: { createdAt: "asc" } });
+  const seen = new Set<string>();
+  const dupeIds: string[] = [];
+  for (const p of all) {
+    const key = p.sourceRef
+      ? `${p.processor}|${p.sourceRef}`
+      : `${p.processor}|${p.settlementDate}|${Math.round(Number(p.netAmount) * 100)}`;
+    if (p.qboDepositId) { seen.add(key); continue; } // posted — always keep
+    if (seen.has(key)) dupeIds.push(p.id);
+    else seen.add(key);
+  }
+  if (dupeIds.length) {
+    await prisma.depPayout.deleteMany({ where: { id: { in: dupeIds } } }); // lines/events cascade
+  }
+  await prisma.depEvent.create({
+    data: { eventType: "dedupe", message: `Removed ${dupeIds.length} duplicate payout(s).` },
+  });
+  revalidatePath("/deposit-reconciliation");
+}
+
+/**
  * Read-only "propose" step: for every proposed payout, confirm each gross charge
  * maps to a real Undeposited-Funds payment in QBO (by amount, within a window
- * ending at the settlement date). Marks the matched payment id on each line and
- * flips the payout to `matched` (all found) or `needs_review` (some missing —
- * e.g. Back Office hasn't posted that day yet). Never creates anything in QBO.
+ * around the settlement date). Records a DIAGNOSTIC event per payout — which
+ * amounts were found (and how many candidates) vs. missing — so a "needs review"
+ * result is explainable, not a black box. Marks the matched payment id on each
+ * line; flips the payout to `matched` (all found) or `needs_review`. Never
+ * writes to QBO.
  */
 export async function locateProposedPaymentsAction() {
   await requirePermission("edit_mappings");
@@ -121,30 +176,48 @@ export async function locateProposedPaymentsAction() {
   const ctx = await getContext(environment);
 
   const payouts = await prisma.depPayout.findMany({
-    where: { status: "proposed" },
+    where: { status: { in: ["proposed", "needs_review", "matched"] } },
     include: { lines: true },
   });
 
+  let payoutsMatched = 0;
+  let payoutsReview = 0;
+
   for (const p of payouts) {
-    const start = shiftDate(p.settlementDate, -12);
-    const end = p.settlementDate;
+    if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
+    // Window: card payments post on/around the charge date, a few days before
+    // the payout arrival. Generous both ways to tolerate RO-vs-charge dating.
+    const start = shiftDate(p.settlementDate, -16);
+    const end = shiftDate(p.settlementDate, 2);
     const usedPaymentIds = new Set<string>();
-    let foundAll = true;
+    const detail: Array<{ amount: number; found: boolean; candidates: number }> = [];
+    let foundCount = 0;
 
     for (const line of p.lines) {
-      const cands = await findPaymentsByAmount(ctx, Number(line.amount), start, end);
+      const amt = Number(line.amount);
+      const cands = await findPaymentsByAmount(ctx, amt, start, end);
       const pick = cands.find((c) => !usedPaymentIds.has(c.id));
+      detail.push({ amount: amt, found: !!pick, candidates: cands.length });
       if (pick) {
         usedPaymentIds.add(pick.id);
+        foundCount++;
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: pick.id, matchedQboTxnType: "Payment" },
         });
       } else {
-        foundAll = false;
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: null, matchedQboTxnType: null },
+        });
       }
     }
 
+    const foundAll = foundCount === p.lines.length;
+    if (foundAll) payoutsMatched++;
+    else payoutsReview++;
+
+    const missing = detail.filter((d) => !d.found).map((d) => d.amount.toFixed(2));
     await prisma.depPayout.update({
       where: { id: p.id },
       data: { status: foundAll ? "matched" : "needs_review", deltaCents: foundAll ? 0 : null },
@@ -154,11 +227,19 @@ export async function locateProposedPaymentsAction() {
         payoutId: p.id,
         eventType: "locate_payments",
         message: foundAll
-          ? `All ${p.lines.length} charge payments located in QBO`
-          : "Some charge payments not found in QBO yet (Back Office may not have posted that day)",
+          ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).`
+          : `Located ${foundCount}/${p.lines.length}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`,
+        dataJson: { detail, start, end } as unknown as object,
       },
     });
   }
+
+  await prisma.depEvent.create({
+    data: {
+      eventType: "locate_summary",
+      message: `Locate run: ${payouts.length} payout(s) checked — ${payoutsMatched} matched, ${payoutsReview} need review · env ${environment}`,
+    },
+  });
 
   revalidatePath("/deposit-reconciliation");
 }
