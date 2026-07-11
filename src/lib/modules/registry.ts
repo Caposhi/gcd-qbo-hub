@@ -71,7 +71,7 @@ export const MODULES: ModuleDef[] = [
     icon: "🏦",
     basePath: "/deposit-reconciliation",
     tablePrefix: "dep_",
-    status: "planned",
+    status: "prototype",
     tagline: "Auto-build QBO deposits for Tekmetric & Chase payouts so the bank matches itself.",
     requiredPermission: "view_dashboard",
   },

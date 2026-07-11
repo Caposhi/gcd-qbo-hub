@@ -171,6 +171,7 @@ export async function locateProposedPaymentsAction() {
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate } = await import("@/lib/deposits/qbo-lookup");
+  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
 
   // Terminal-keying discrepancy tolerance: the amount charged at the Chase
   // terminal can differ from the RO/QBO payment by a small typo. Match within
@@ -201,11 +202,26 @@ export async function locateProposedPaymentsAction() {
   });
   for (const l of createdLines) if (l.matchedQboTxnId) globalUsed.add(l.matchedQboTxnId);
 
+  // Payments ALREADY on a QBO deposit (from any source, incl. prior manual
+  // reconciliation) over the full candidate span — a batch whose payments are
+  // all here is already reconciled, so we surface "already deposited" instead of
+  // a false "matched" that would only get blocked at create time.
+  let depositedIds = new Set<string>();
+  const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
+  if (settleDates.length) {
+    depositedIds = await collectDepositedPaymentIds(
+      ctx,
+      shiftDate(settleDates[0], -8),
+      shiftDate(settleDates[settleDates.length - 1], 4)
+    );
+  }
+
   const daysApart = (a: string, b: string) =>
     Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
   let payoutsMatched = 0;
   let payoutsReview = 0;
+  let payoutsAlreadyDeposited = 0;
 
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
@@ -214,39 +230,52 @@ export async function locateProposedPaymentsAction() {
     // no-reuse guard keep same-amount transactions on different days apart.
     const start = shiftDate(p.settlementDate, p.processor === "tekmetric" ? -6 : -3);
     const end = shiftDate(p.settlementDate, 2);
-    const detail: Array<{ amount: number; found: boolean; matchedAmount?: number; delta?: number; candidates: number }> = [];
+    const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; matchedAmount?: number; delta?: number; candidates: number }> = [];
     let foundCount = 0;
+    let depositedCount = 0;
 
     for (const line of p.lines) {
       const amt = Number(line.amount);
-      // Exact-amount candidates, preferring the one dated closest to settlement
-      // (a same-amount payment on a different day is deprioritized).
-      let cands = (await findPaymentsByAmount(ctx, amt, start, end))
-        .filter((c) => !globalUsed.has(c.id))
+      // Candidate pool: exact amount first; widen to the keying band only if no
+      // available exact match. "Available" = not claimed this run AND not already
+      // on a QBO deposit.
+      const exact = await findPaymentsByAmount(ctx, amt, start, end);
+      let pool = exact;
+      const availExact = exact
+        .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
         .sort((a, b) => daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate));
-      let pick = cands[0];
-      // Tolerant fallback (keying typo): nearest unused payment within the band,
-      // preferring closest amount then closest date.
+      let pick = availExact[0];
       if (!pick) {
-        cands = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end))
-          .filter((c) => !globalUsed.has(c.id))
+        const near = await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end);
+        pool = exact.concat(near);
+        pick = near
+          .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
           .sort(
             (a, b) =>
               Math.abs(a.amount - amt) - Math.abs(b.amount - amt) ||
               daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
-          );
-        pick = cands[0];
+          )[0];
       }
+
       if (pick) {
         globalUsed.add(pick.id);
         foundCount++;
-        detail.push({ amount: amt, found: true, matchedAmount: pick.amount, delta: Number((amt - pick.amount).toFixed(2)), candidates: cands.length });
+        detail.push({ amount: amt, found: true, matchedAmount: pick.amount, delta: Number((amt - pick.amount).toFixed(2)), candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: pick.id, matchedQboTxnType: "Payment" },
         });
+      } else if (pool.some((c) => depositedIds.has(c.id))) {
+        // A payment of this amount exists but is already on a deposit → this
+        // charge was reconciled previously.
+        depositedCount++;
+        detail.push({ amount: amt, found: false, alreadyDeposited: true, candidates: pool.length });
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: null, matchedQboTxnType: null },
+        });
       } else {
-        detail.push({ amount: amt, found: false, candidates: cands.length });
+        detail.push({ amount: amt, found: false, candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: null, matchedQboTxnType: null },
@@ -255,23 +284,29 @@ export async function locateProposedPaymentsAction() {
     }
 
     const foundAll = foundCount === p.lines.length;
+    const allDeposited = depositedCount === p.lines.length && p.lines.length > 0;
+    const status = foundAll ? "matched" : allDeposited ? "already_deposited" : "needs_review";
     if (foundAll) payoutsMatched++;
+    else if (allDeposited) payoutsAlreadyDeposited++;
     else payoutsReview++;
 
-    const missing = detail.filter((d) => !d.found).map((d) => d.amount.toFixed(2));
+    const missing = detail.filter((d) => !d.found && !d.alreadyDeposited).map((d) => d.amount.toFixed(2));
     const overShortCents = detail.reduce((s, d) => s + Math.round((d.delta ?? 0) * 100), 0);
     await prisma.depPayout.update({
       where: { id: p.id },
-      data: { status: foundAll ? "matched" : "needs_review", deltaCents: foundAll ? overShortCents : null },
+      data: { status, deltaCents: foundAll ? overShortCents : null },
     });
     const osNote = overShortCents !== 0 ? ` Over/short from keying: ${(overShortCents / 100).toFixed(2)} (booked to Cash over/short on deposit).` : "";
+    const message = foundAll
+      ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${osNote}`
+      : allDeposited
+        ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
+        : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`;
     await prisma.depEvent.create({
       data: {
         payoutId: p.id,
         eventType: "locate_payments",
-        message: foundAll
-          ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${osNote}`
-          : `Located ${foundCount}/${p.lines.length}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`,
+        message,
         dataJson: { detail, start, end, overShortCents } as unknown as object,
       },
     });
@@ -280,7 +315,7 @@ export async function locateProposedPaymentsAction() {
   await prisma.depEvent.create({
     data: {
       eventType: "locate_summary",
-      message: `Locate run: ${payouts.length} payout(s) checked — ${payoutsMatched} matched, ${payoutsReview} need review · env ${environment}`,
+      message: `Locate run: ${payouts.length} payout(s) checked — ${payoutsMatched} matched, ${payoutsAlreadyDeposited} already deposited, ${payoutsReview} need review · env ${environment}`,
     },
   });
 

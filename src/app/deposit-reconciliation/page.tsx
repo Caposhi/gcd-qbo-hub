@@ -138,6 +138,8 @@ export default async function DepositReconciliationPage() {
                       <span className="badge ok">created</span>
                     ) : p.status === "matched" ? (
                       <span className="badge ok">matched</span>
+                    ) : p.status === "already_deposited" ? (
+                      <span className="badge muted">already deposited</span>
                     ) : (
                       <span className="badge warn">
                         needs review{p.deltaCents ? ` (Δ ${(p.deltaCents / 100).toFixed(2)})` : ""}
@@ -160,7 +162,7 @@ export default async function DepositReconciliationPage() {
                     {editable && p.status === "matched" && p.processor === "tekmetric" && (
                       <span className="muted" style={{ fontSize: "0.72rem" }}>Tekmetric posting needs fee-JE support (coming)</span>
                     )}
-                    {createMsg.get(p.id) && createMsg.get(p.id)!.kind !== "create_deposit" && (
+                    {p.status === "matched" && createMsg.get(p.id) && createMsg.get(p.id)!.kind !== "create_deposit" && (
                       <div
                         className={`badge ${createMsg.get(p.id)!.kind === "create_error" ? "danger" : "warn"}`}
                         style={{ display: "inline-block", whiteSpace: "normal", maxWidth: 320, fontSize: "0.72rem", marginTop: 4 }}
