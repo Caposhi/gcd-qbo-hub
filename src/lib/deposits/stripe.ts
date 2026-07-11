@@ -123,7 +123,7 @@ export function reconstructTekmetricPayouts(
     }
     if (sumCents === targetCents && bucket.length > 0) {
       const grossCents = bucket.reduce((s, c) => s + toCents(c.gross), 0);
-      const lines: PayoutLine[] = bucket.map((c) => ({ amount: c.gross, brand: "", ref: c.id }));
+      const lines: PayoutLine[] = bucket.map((c) => ({ amount: c.gross, fee: c.fee, brand: "", ref: c.id }));
       deposits.push({
         processor: "tekmetric",
         settlementDate: payout.arrivalDate,
