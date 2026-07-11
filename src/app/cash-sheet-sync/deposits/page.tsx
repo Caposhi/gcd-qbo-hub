@@ -61,11 +61,11 @@ export default async function CashDepositsPage() {
     <>
       <h1>Cash Deposit Matching</h1>
       <p className="sub">
-        Customer cash collections (rows with an INV#/RO and a Bank Deposit amount) whose payment already sits in
+        Customer invoice cash (INV rows with an RO# and a Collected amount) whose Customer Payment already sits in
         Undeposited Funds. The hub finds that payment by RO#, builds the exact QBO Bank Deposit — the payment plus a
-        small <em>Cash over/short</em> plug when the deposited amount differs by rounding — and, once you create it,
-        QuickBooks auto-matches the bank-feed line. Nothing posts until you click <strong>Create deposit</strong> on a
-        row, and only when it ties out.
+        small <em>Cash over/short</em> plug when the collected amount differs from the payment by rounding (e.g. sheet
+        $241.00 vs payment $240.74 → +$0.26) — and, once you create it, QuickBooks auto-matches the bank-feed line.
+        Nothing posts until you click <strong>Create deposit</strong> on a row, and only when it ties out.
       </p>
 
       {!accountsReady && (
@@ -88,15 +88,15 @@ export default async function CashDepositsPage() {
 
       {rows.length === 0 ? (
         <p className="muted">
-          No candidate rows. These appear once a sync has scanned rows that carry both an INV#/RO and a Bank Deposit
-          amount and haven&apos;t been deposited yet.
+          No candidate rows. These appear once a sync has scanned INV rows that carry an RO# and a Collected amount and
+          haven&apos;t been deposited yet.
         </p>
       ) : (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Tab</th><th>Row</th><th>Date</th><th>Name</th><th>INV#/RO</th><th>Bank Deposit</th>
+                <th>Tab</th><th>Row</th><th>Date</th><th>Name</th><th>INV#/RO</th><th>Collected</th>
                 <th>Located payment</th><th>Over/short</th><th>Status</th><th></th>
               </tr>
             </thead>
@@ -115,7 +115,7 @@ export default async function CashDepositsPage() {
                     <td>{r.date ? r.date.toISOString().slice(0, 10) : ""}</td>
                     <td>{r.name}</td>
                     <td>{r.invNumber}</td>
-                    <td>{money(r.bankDeposit)}</td>
+                    <td>{money(r.amtCollected)}</td>
                     <td style={{ fontSize: "0.8rem" }}>
                       {created ? (
                         <span className="muted">—</span>
