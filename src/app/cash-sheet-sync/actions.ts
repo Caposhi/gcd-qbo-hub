@@ -9,7 +9,7 @@
  * requirePermission — never trusted from the client.
  */
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
+import { Prisma, type SheetRow } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { runSync } from "@/lib/cashsheet/engine";
@@ -272,92 +272,83 @@ export async function locateCashDepositsAction() {
   revalidatePath("/cash-sheet-sync/deposits");
 }
 
-/**
- * Create the QBO Bank Deposit for one cash-sheet row (owner-only). Re-locates
- * and re-verifies the tie-out from scratch (never trusts the cached preview),
- * gates on the rollout stage (no dry-run, valid creds), posts the deposit
- * linking the Undeposited-Funds payment (+ cash over/short plug), then stamps
- * the QBO id on the row so it is never created twice and the engine tracks it.
- * The operator confirms the bank-feed match in QBO afterward.
- */
-export async function createCashDepositAction(formData: FormData) {
-  const user = await requirePermission("approve_posting");
-  const rowId = String(formData.get("rowId") ?? "");
-  if (!rowId) throw new Error("Missing rowId");
+interface DepositContext {
+  gateEnv: "sandbox" | "live";
+  accounts: { depositToId: string; overShortId: string };
+  ctx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>>;
+}
 
+/**
+ * Resolve the shared context for creating deposits: the rollout gate (never
+ * dry-run, valid creds), the resolved Cash-on-hand / Cash-over-short accounts,
+ * and a live QBO context. Returns a blocked reason instead of throwing so both
+ * the single and batch actions surface it the same way.
+ */
+async function prepareDepositContext(): Promise<
+  { ok: true; value: DepositContext } | { ok: false; reason: string }
+> {
   const { canPostRow } = await import("@/lib/cashsheet/rollout");
   const { getRolloutStage } = await import("@/lib/config-store");
   const { hasValidCredentials } = await import("@/lib/qbo/oauth");
   const { getContext } = await import("@/lib/qbo/client");
-  const { postCashDeposit } = await import("@/lib/qbo/deposits");
-  const {
-    resolveDepositAccounts,
-    locateRow,
-    alreadyHasDeposit,
-  } = await import("@/lib/cashsheet/cash-deposit-service");
-  const { buildMemo } = await import("@/lib/cashsheet/memo");
-
-  try {
-  const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
-  if (!row) throw new Error("Row not found");
-  if (alreadyHasDeposit(row)) return; // idempotent — already deposited
+  const { resolveDepositAccounts } = await import("@/lib/cashsheet/cash-deposit-service");
 
   const stage = await getRolloutStage();
   const environment = await getQboEnvironment();
   const credsValid = await hasValidCredentials(environment);
-  // The operator explicitly clicking "Create" is the per-row approval; the gate
-  // still enforces "never in dry-run" and "valid credentials".
-  const gate = canPostRow({
-    stage,
-    credentialsValid: credsValid,
-    mappingRequiresApproval: false,
-    rowApproved: true,
-  });
-  if (!gate.allowed) {
-    await prisma.rowEvent.create({
-      data: { sheetRowId: rowId, eventType: "cash_deposit_blocked", eventMessage: `Not created: ${gate.reason}` },
-    });
-    revalidatePath("/cash-sheet-sync/deposits");
-    return;
-  }
+  // Clicking Create (single or batch) IS the approval; the gate still enforces
+  // "never in dry-run" and "valid credentials".
+  const gate = canPostRow({ stage, credentialsValid: credsValid, mappingRequiresApproval: false, rowApproved: true });
+  if (!gate.allowed) return { ok: false, reason: `Not created: ${gate.reason}` };
 
   const accounts = await resolveDepositAccounts();
   if (!accounts.depositToId || !accounts.overShortId) {
-    await prisma.rowEvent.create({
-      data: {
-        sheetRowId: rowId,
-        eventType: "cash_deposit_blocked",
-        eventMessage: `Account mapping unresolved (Cash on hand=${accounts.depositToId ?? "?"}, Cash over/short=${
-          accounts.overShortId ?? "?"
-        })`,
-      },
-    });
-    revalidatePath("/cash-sheet-sync/deposits");
-    return;
+    return {
+      ok: false,
+      reason: `Account mapping unresolved (Cash on hand=${accounts.depositToId ?? "?"}, Cash over/short=${
+        accounts.overShortId ?? "?"
+      })`,
+    };
   }
-
-  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
   const ctx = await getContext(gate.environment!);
+  return {
+    ok: true,
+    value: { gateEnv: gate.environment!, accounts: { depositToId: accounts.depositToId, overShortId: accounts.overShortId }, ctx },
+  };
+}
 
-  // Hard guard: re-scan deposits around this row's date and refuse if the
-  // payment is already on a deposit (protects against double-counting even if
-  // the cached preview was stale).
-  let depositedPaymentIds = new Set<string>();
-  if (row.date) {
-    const s = new Date(row.date.getTime());
-    s.setUTCDate(s.getUTCDate() - 14);
-    const e = new Date(row.date.getTime());
-    e.setUTCDate(e.getUTCDate() + 14);
-    depositedPaymentIds = await collectDepositedPaymentIds(ctx, s.toISOString().slice(0, 10), e.toISOString().slice(0, 10));
-  }
+type DepositOutcome =
+  | { status: "created"; depositId: string }
+  | { status: "skipped" }
+  | { status: "blocked"; reason: string }
+  | { status: "error"; reason: string };
 
-  const located = await locateRow(ctx, row, depositedPaymentIds);
+/**
+ * Create one QBO Bank Deposit for a row given already-resolved context. Always
+ * re-locates and re-verifies the tie-out from scratch (never trusts the cached
+ * preview), refuses if the payment is already deposited (double-count guard),
+ * posts the deposit linking the Undeposited-Funds payment (+ cash over/short
+ * plug), then stamps the QBO id on the row. Records events; does NOT revalidate
+ * (the caller does). Shared by the single-row and batch actions.
+ */
+async function postDepositForRow(
+  row: SheetRow,
+  dc: DepositContext,
+  userEmail: string,
+  depositedPaymentIds: Set<string>
+): Promise<DepositOutcome> {
+  const { postCashDeposit } = await import("@/lib/qbo/deposits");
+  const { locateRow, alreadyHasDeposit } = await import("@/lib/cashsheet/cash-deposit-service");
+  const { buildMemo } = await import("@/lib/cashsheet/memo");
+
+  if (alreadyHasDeposit(row)) return { status: "skipped" };
+
+  const located = await locateRow(dc.ctx, row, depositedPaymentIds);
   if (!located.found || !located.plan) {
     await prisma.rowEvent.create({
-      data: { sheetRowId: rowId, eventType: "cash_deposit_blocked", eventMessage: located.reason },
+      data: { sheetRowId: row.id, eventType: "cash_deposit_blocked", eventMessage: located.reason },
     });
-    revalidatePath("/cash-sheet-sync/deposits");
-    return;
+    return { status: "blocked", reason: located.reason };
   }
 
   const memo = buildMemo(
@@ -376,38 +367,34 @@ export async function createCashDepositAction(formData: FormData) {
 
   let result;
   try {
-    result = await postCashDeposit(ctx, {
-      depositToAccountId: accounts.depositToId,
+    result = await postCashDeposit(dc.ctx, {
+      depositToAccountId: dc.accounts.depositToId,
       txnDate: (row.date ?? new Date()).toISOString().slice(0, 10),
       paymentId: located.plan.paymentId,
       paymentAmount: located.plan.paymentCents / 100,
       overShortAmount: located.plan.overShortCents / 100,
-      overShortAccountId: accounts.overShortId,
+      overShortAccountId: dc.accounts.overShortId,
       privateNote: memo,
     });
   } catch (err) {
-    // QBO can reject (e.g. the payment was deposited by someone else in the
-    // meantime) — record it WITH the QBO fault detail (so the exact reason is
-    // visible), never crash, never leave a half-written row.
     const detail = (err as { detail?: unknown })?.detail;
     const detailStr = detail ? ` · ${JSON.stringify(detail)}` : "";
     await prisma.rowEvent.create({
       data: {
-        sheetRowId: rowId,
+        sheetRowId: row.id,
         eventType: "cash_deposit_error",
         eventMessage: `QBO rejected deposit: ${String(err)}${detailStr}`.slice(0, 1800),
       },
     });
-    revalidatePath("/cash-sheet-sync/deposits");
-    return;
+    return { status: "error", reason: String(err) };
   }
 
   await prisma.$transaction([
     prisma.qboTransaction.create({
       data: {
         sheetRowId: row.id,
-        qboCompanyId: gate.environment === "live" ? "live-realm" : "sandbox-realm",
-        qboEnvironment: gate.environment!,
+        qboCompanyId: dc.gateEnv === "live" ? "live-realm" : "sandbox-realm",
+        qboEnvironment: dc.gateEnv,
         qboTransactionId: result.qboTransactionId,
         qboTransactionType: "Deposit",
         qboSyncToken: result.qboSyncToken,
@@ -423,12 +410,11 @@ export async function createCashDepositAction(formData: FormData) {
           located.plan.paymentCents / 100
         ).toFixed(2)}${
           located.plan.overShortCents ? ` + over/short ${(located.plan.overShortCents / 100).toFixed(2)}` : ""
-        }) — match the bank-feed line in QBO`,
+        })`,
         qboTransactionId: result.qboTransactionId,
         qboTransactionType: "Deposit",
-        qboAccountId: accounts.depositToId,
+        qboAccountId: dc.accounts.depositToId,
         qboPostedAt: new Date(),
-        // Freeze the snapshot so the engine tracks this as posted (never re-posts).
         originalHash: row.currentHash,
         originalSnapshotJson: (row.currentSnapshotJson ?? Prisma.DbNull) as Prisma.InputJsonValue,
       },
@@ -438,24 +424,136 @@ export async function createCashDepositAction(formData: FormData) {
     data: {
       sheetRowId: row.id,
       eventType: "cash_deposit_created",
-      eventMessage: `Deposit ${result.qboTransactionId} created by ${user.email} (total ${
+      eventMessage: `Deposit ${result.qboTransactionId} created by ${userEmail} (total ${
         result.totalAmt?.toFixed(2) ?? located.depositedAmount.toFixed(2)
       })`,
       diffJson: { located, result: { id: result.qboTransactionId, totalAmt: result.totalAmt } } as unknown as object,
     },
   });
+  return { status: "created", depositId: result.qboTransactionId };
+}
 
-  revalidatePath("/cash-sheet-sync/deposits");
-  revalidatePath("/cash-sheet-sync/queue");
+/** Deposit-scan a date window and return the payment ids already on a deposit. */
+async function depositedIdsForWindow(
+  ctx: DepositContext["ctx"],
+  dates: Date[],
+  padDays: number
+): Promise<Set<string>> {
+  if (!dates.length) return new Set<string>();
+  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
+  const min = new Date(Math.min(...dates.map((d) => d.getTime())));
+  const max = new Date(Math.max(...dates.map((d) => d.getTime())));
+  min.setUTCDate(min.getUTCDate() - padDays);
+  max.setUTCDate(max.getUTCDate() + padDays);
+  return collectDepositedPaymentIds(ctx, min.toISOString().slice(0, 10), max.toISOString().slice(0, 10));
+}
+
+/**
+ * Create the QBO Bank Deposit for one cash-sheet row (owner-only). See
+ * postDepositForRow for the safety guarantees.
+ */
+export async function createCashDepositAction(formData: FormData) {
+  const user = await requirePermission("approve_posting");
+  const rowId = String(formData.get("rowId") ?? "");
+  if (!rowId) throw new Error("Missing rowId");
+
+  try {
+    const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
+    if (!row) throw new Error("Row not found");
+
+    const prep = await prepareDepositContext();
+    if (!prep.ok) {
+      await prisma.rowEvent.create({
+        data: { sheetRowId: rowId, eventType: "cash_deposit_blocked", eventMessage: prep.reason },
+      });
+      revalidatePath("/cash-sheet-sync/deposits");
+      return;
+    }
+
+    const depositedPaymentIds = await depositedIdsForWindow(prep.value.ctx, row.date ? [row.date] : [], 14);
+    await postDepositForRow(row, prep.value, user.email, depositedPaymentIds);
+
+    revalidatePath("/cash-sheet-sync/deposits");
+    revalidatePath("/cash-sheet-sync/queue");
   } catch (err) {
-    // Nothing is silent: any unexpected failure (QBO query, DB, etc.) is
-    // recorded against the row so it shows on the page instead of the button
-    // appearing to do nothing.
     await prisma.rowEvent.create({
       data: { sheetRowId: rowId, eventType: "cash_deposit_error", eventMessage: `Create failed: ${String(err)}` },
     });
     revalidatePath("/cash-sheet-sync/deposits");
   }
+}
+
+/**
+ * Batch automation (owner-only): create QBO deposits for every row a prior
+ * Locate marked "ready". Selection is limited to rows whose latest
+ * cash_deposit_plan event is found=true (so we don't re-query the whole backlog
+ * or spam blocked events) — but each row is still re-located and re-verified by
+ * postDepositForRow before anything posts, and the double-count guard runs from
+ * a single fresh deposit scan. This is the "manual batch" rung of the ladder,
+ * before any fully-unattended posting.
+ */
+export async function createAllReadyCashDepositsAction() {
+  const user = await requirePermission("approve_posting");
+  const { findCashDepositCandidates, alreadyHasDeposit } = await import("@/lib/cashsheet/cash-deposit-service");
+
+  const prep = await prepareDepositContext();
+  if (!prep.ok) {
+    await prisma.rowEvent.create({
+      data: { eventType: "cash_deposit_batch", eventMessage: `Batch blocked: ${prep.reason}` },
+    });
+    revalidatePath("/cash-sheet-sync/deposits");
+    return;
+  }
+
+  const candidates = (await findCashDepositCandidates()).filter((r) => !alreadyHasDeposit(r));
+
+  // Only attempt rows a recent Locate found as ready (latest plan event, found).
+  const planEvents = candidates.length
+    ? await prisma.rowEvent.findMany({
+        where: { sheetRowId: { in: candidates.map((r) => r.id) }, eventType: "cash_deposit_plan" },
+        orderBy: { createdAt: "desc" },
+      })
+    : [];
+  const readyRowIds = new Set<string>();
+  const seen = new Set<string>();
+  for (const e of planEvents) {
+    if (!e.sheetRowId || seen.has(e.sheetRowId)) continue;
+    seen.add(e.sheetRowId);
+    if ((e.diffJson as { found?: boolean } | null)?.found) readyRowIds.add(e.sheetRowId);
+  }
+  const ready = candidates.filter((r) => readyRowIds.has(r.id));
+
+  const depositedPaymentIds = await depositedIdsForWindow(
+    prep.value.ctx,
+    ready.map((r) => r.date).filter((d): d is Date => !!d),
+    14
+  );
+
+  let created = 0;
+  let blocked = 0;
+  let errored = 0;
+  for (const row of ready) {
+    try {
+      const outcome = await postDepositForRow(row, prep.value, user.email, depositedPaymentIds);
+      if (outcome.status === "created") created++;
+      else if (outcome.status === "blocked") blocked++;
+      else if (outcome.status === "error") errored++;
+    } catch (err) {
+      errored++;
+      await prisma.rowEvent.create({
+        data: { sheetRowId: row.id, eventType: "cash_deposit_error", eventMessage: `Create failed: ${String(err)}` },
+      });
+    }
+  }
+
+  await prisma.rowEvent.create({
+    data: {
+      eventType: "cash_deposit_batch",
+      eventMessage: `Batch create: ${created} created, ${blocked} blocked, ${errored} errored (of ${ready.length} ready; ${candidates.length} candidates) · env ${prep.value.gateEnv}`,
+    },
+  });
+  revalidatePath("/cash-sheet-sync/deposits");
+  revalidatePath("/cash-sheet-sync/queue");
 }
 
 export async function updateMappingAction(formData: FormData) {

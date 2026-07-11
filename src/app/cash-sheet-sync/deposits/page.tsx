@@ -9,7 +9,7 @@ import {
   resolveDepositAccounts,
   alreadyHasDeposit,
 } from "@/lib/cashsheet/cash-deposit-service";
-import { locateCashDepositsAction, createCashDepositAction } from "../actions";
+import { locateCashDepositsAction, createCashDepositAction, createAllReadyCashDepositsAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -78,11 +78,22 @@ export default async function CashDepositsPage() {
 
   const accountsReady = !!accounts.depositToId && !!accounts.overShortId;
 
-  // Last locate breadcrumb (visible feedback even for a zero-result run).
-  const lastLocate = await prisma.rowEvent.findFirst({
-    where: { eventType: "cash_deposit_locate_summary" },
-    orderBy: { createdAt: "desc" },
-  });
+  const readyCount = rows.filter((r) => {
+    const p = latestPlan.get(r.id);
+    return !alreadyHasDeposit(r) && !!p?.found && !!p?.plan;
+  }).length;
+
+  // Last locate / batch breadcrumbs (visible feedback even for a zero-result run).
+  const [lastLocate, lastBatch] = await Promise.all([
+    prisma.rowEvent.findFirst({
+      where: { eventType: "cash_deposit_locate_summary" },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.rowEvent.findFirst({
+      where: { eventType: "cash_deposit_batch" },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
 
   return (
     <>
@@ -119,9 +130,23 @@ export default async function CashDepositsPage() {
         </form>
       )}
 
+      {editable && accountsReady && readyCount > 0 && (
+        <form action={createAllReadyCashDepositsAction} className="row-actions" style={{ margin: "0.25rem 0 0.5rem" }}>
+          <button className="btn" type="submit">Create all {readyCount} ready deposit{readyCount === 1 ? "" : "s"}</button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+            Posts every row marked <em>ready</em> above, each re-verified and duplicate-guarded before it writes.
+          </span>
+        </form>
+      )}
+
       {lastLocate && (
         <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
           Last locate: {lastLocate.eventMessage} · {lastLocate.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
+      {lastBatch && (
+        <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
+          {lastBatch.eventMessage} · {lastBatch.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
         </p>
       )}
 
