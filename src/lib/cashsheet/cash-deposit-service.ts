@@ -12,7 +12,12 @@ import { findPaymentsInWindow } from "@/lib/qbo/deposits";
 import { matchPaymentByRo, planCashDeposit, type CashDepositPlan, type PaymentLike } from "./cash-deposit";
 import { RowStatus } from "./status";
 
-export const CHASE_ACCOUNT = "Chase Checking 9680";
+// Customer invoice cash clears from Undeposited Funds INTO Cash on hand (the
+// physical envelope), NOT the bank. The QBO register confirms this: e.g.
+// "GIEL, JOLITZA · Deposit $1,000 · Undeposited Funds" lands in the Cash-on-hand
+// register. (The envelope cash is later moved Cash-on-hand → Chase Checking as a
+// separate transfer — the sheet's Bank Deposit column, handled elsewhere.)
+export const DEPOSIT_TO_ACCOUNT = "Cash on hand";
 export const OVER_SHORT_ACCOUNT = "Cash over/short";
 
 /**
@@ -38,17 +43,17 @@ export async function findCashDepositCandidates() {
 }
 
 export interface ResolvedAccounts {
-  chaseId: string | null;
+  depositToId: string | null;
   overShortId: string | null;
 }
 
 export async function resolveDepositAccounts(): Promise<ResolvedAccounts> {
   const maps = await prisma.accountMapping.findMany({
-    where: { friendlyName: { in: [CHASE_ACCOUNT, OVER_SHORT_ACCOUNT] } },
+    where: { friendlyName: { in: [DEPOSIT_TO_ACCOUNT, OVER_SHORT_ACCOUNT] } },
   });
   const byName = new Map(maps.map((m) => [m.friendlyName, m.qboAccountId]));
   return {
-    chaseId: byName.get(CHASE_ACCOUNT) ?? null,
+    depositToId: byName.get(DEPOSIT_TO_ACCOUNT) ?? null,
     overShortId: byName.get(OVER_SHORT_ACCOUNT) ?? null,
   };
 }

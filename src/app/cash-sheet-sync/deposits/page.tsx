@@ -56,7 +56,7 @@ export default async function CashDepositsPage() {
     }
   }
 
-  const accountsReady = !!accounts.chaseId && !!accounts.overShortId;
+  const accountsReady = !!accounts.depositToId && !!accounts.overShortId;
 
   // Last locate breadcrumb (visible feedback even for a zero-result run).
   const lastLocate = await prisma.rowEvent.findFirst({
@@ -69,9 +69,9 @@ export default async function CashDepositsPage() {
       <h1>Cash Deposit Matching</h1>
       <p className="sub">
         Customer invoice cash (INV rows with an RO# and a Collected amount) whose Customer Payment already sits in
-        Undeposited Funds. The hub finds that payment by RO#, builds the exact QBO Bank Deposit — the payment plus a
-        small <em>Cash over/short</em> plug when the collected amount differs from the payment by rounding (e.g. sheet
-        $241.00 vs payment $240.74 → +$0.26) — and, once you create it, QuickBooks auto-matches the bank-feed line.
+        Undeposited Funds. The hub finds that payment by RO# and builds the exact QBO Bank Deposit <strong>into Cash on
+        hand</strong> that clears it out of Undeposited Funds — the payment plus a small <em>Cash over/short</em> plug
+        when the collected amount differs from the payment by rounding (e.g. sheet $241.00 vs payment $240.74 → +$0.26).
         Nothing posts until you click <strong>Create deposit</strong> on a row, and only when it ties out.
       </p>
       <p className="badge warn" style={{ display: "block", padding: "0.5rem 0.75rem" }}>
@@ -83,7 +83,7 @@ export default async function CashDepositsPage() {
 
       {!accountsReady && (
         <p className="badge danger">
-          Account mapping incomplete — need both “Chase Checking 9680” ({accounts.chaseId ?? "unresolved"}) and “Cash
+          Account mapping incomplete — need both “Cash on hand” ({accounts.depositToId ?? "unresolved"}) and “Cash
           over/short” ({accounts.overShortId ?? "unresolved"}). Resolve them on the Mappings page first.
         </p>
       )}
@@ -180,8 +180,9 @@ export default async function CashDepositsPage() {
       )}
 
       <p className="muted" style={{ marginTop: "1rem", fontSize: "0.85rem" }}>
-        After you create a deposit here, open QuickBooks → the Chase Checking bank feed and confirm the matching deposit
-        line (it should already be suggested). The hub records the deposit id against the row and never creates it twice.
+        Each deposit posts into Cash on hand and clears the customer payment out of Undeposited Funds (it does not touch
+        the bank feed — moving the envelope cash to Chase is the separate Bank Deposit transfer). The hub records the
+        deposit id against the row and never creates it twice; rows already deposited in QBO are marked accordingly.
       </p>
     </>
   );

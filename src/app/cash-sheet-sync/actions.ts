@@ -321,12 +321,12 @@ export async function createCashDepositAction(formData: FormData) {
   }
 
   const accounts = await resolveDepositAccounts();
-  if (!accounts.chaseId || !accounts.overShortId) {
+  if (!accounts.depositToId || !accounts.overShortId) {
     await prisma.rowEvent.create({
       data: {
         sheetRowId: rowId,
         eventType: "cash_deposit_blocked",
-        eventMessage: `Account mapping unresolved (Chase=${accounts.chaseId ?? "?"}, Cash over/short=${
+        eventMessage: `Account mapping unresolved (Cash on hand=${accounts.depositToId ?? "?"}, Cash over/short=${
           accounts.overShortId ?? "?"
         })`,
       },
@@ -373,15 +373,26 @@ export async function createCashDepositAction(formData: FormData) {
     row.rowUuid
   );
 
-  const result = await postCashDeposit(ctx, {
-    depositToAccountId: accounts.chaseId,
-    txnDate: (row.date ?? new Date()).toISOString().slice(0, 10),
-    paymentId: located.plan.paymentId,
-    paymentAmount: located.plan.paymentCents / 100,
-    overShortAmount: located.plan.overShortCents / 100,
-    overShortAccountId: accounts.overShortId,
-    privateNote: memo,
-  });
+  let result;
+  try {
+    result = await postCashDeposit(ctx, {
+      depositToAccountId: accounts.depositToId,
+      txnDate: (row.date ?? new Date()).toISOString().slice(0, 10),
+      paymentId: located.plan.paymentId,
+      paymentAmount: located.plan.paymentCents / 100,
+      overShortAmount: located.plan.overShortCents / 100,
+      overShortAccountId: accounts.overShortId,
+      privateNote: memo,
+    });
+  } catch (err) {
+    // QBO can reject (e.g. the payment was deposited by someone else in the
+    // meantime) — record it, never crash, never leave a half-written row.
+    await prisma.rowEvent.create({
+      data: { sheetRowId: rowId, eventType: "cash_deposit_error", eventMessage: `QBO rejected deposit: ${String(err)}` },
+    });
+    revalidatePath("/cash-sheet-sync/deposits");
+    return;
+  }
 
   await prisma.$transaction([
     prisma.qboTransaction.create({
@@ -407,7 +418,7 @@ export async function createCashDepositAction(formData: FormData) {
         }) — match the bank-feed line in QBO`,
         qboTransactionId: result.qboTransactionId,
         qboTransactionType: "Deposit",
-        qboAccountId: accounts.chaseId,
+        qboAccountId: accounts.depositToId,
         qboPostedAt: new Date(),
         // Freeze the snapshot so the engine tracks this as posted (never re-posts).
         originalHash: row.currentHash,
