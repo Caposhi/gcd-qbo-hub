@@ -1,6 +1,7 @@
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
+import { prisma } from "@/lib/db";
 import { getRolloutStage, getQboEnvironment, getSheetWritebackEnabled } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { ROLLOUT_STAGES, type RolloutStage } from "@/lib/cashsheet/rollout";
@@ -26,6 +27,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
     getSheetWritebackEnabled(),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
+  // Show the actual stored credential for the ACTIVE environment so it's obvious
+  // whether the sandbox or the real company is connected (they have different
+  // realm ids). A live stage with only a sandbox credential = not connected live.
+  const activeCred = await prisma.qboCredential
+    .findFirst({ where: { environment }, select: { realmId: true, connectedByEmail: true, accessTokenExpires: true } })
+    .catch(() => null);
   const idx = ROLLOUT_STAGES.indexOf(stage);
   const prev = idx > 0 ? ROLLOUT_STAGES[idx - 1] : null;
   const next = idx < ROLLOUT_STAGES.length - 1 ? ROLLOUT_STAGES[idx + 1] : null;
@@ -49,6 +56,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         Environment: <span className={`badge ${environment === "live" ? "danger" : "ok"}`}>{environment}</span>{" "}
         · Status:{" "}
         {credsValid ? <span className="badge ok">connected</span> : <span className="badge danger">setup required</span>}
+      </p>
+      <p className="muted" style={{ fontSize: "0.85rem" }}>
+        Connected company (realm) for <strong>{environment}</strong>:{" "}
+        <code>{activeCred?.realmId ?? "— none —"}</code>
+        {activeCred?.connectedByEmail ? ` · by ${activeCred.connectedByEmail}` : ""}
+        {environment === "live" && !activeCred ? " — no live credential yet; connect against your real company." : ""}
       </p>
       {can(user.role, "connect_qbo") ? (
         <a className="btn" href="/api/qbo/connect">
