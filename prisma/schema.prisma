@@ -413,6 +413,24 @@ model ProjScenario {
   @@map("proj_scenarios")
 }
 
+// Cached, NORMALIZED QBO report snapshot (Financial Reporting, Phase 1).
+// Keyed by report type + inclusive period + accounting method. `payloadJson`
+// holds the normalized metric series (never raw QBO), so pages render fast and
+// the later monthly AI job can read a stable baseline. Fetched through a TTL
+// cache with a permission-gated manual refresh; strictly read-only over QBO.
+model ProjReportSnapshot {
+  id          String   @id @default(cuid())
+  reportType  String // 'pnl' | 'balance_sheet' | 'ar_aging' | 'ap_aging' | 'customer_sales' | 'item_sales'
+  periodStart DateTime
+  periodEnd   DateTime
+  method      String // 'accrual' | 'cash'
+  payloadJson Json // normalized (not raw) metric series
+  fetchedAt   DateTime @default(now())
+
+  @@unique([reportType, periodStart, periodEnd, method])
+  @@map("proj_report_snapshot")
+}
+
 // ===========================================================================
 // AI Report Assistant module — ai_ prefixed (prototype)
 // ===========================================================================

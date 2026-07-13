@@ -42,7 +42,7 @@ export const MODULES: ModuleDef[] = [
     basePath: "/projections",
     tablePrefix: "proj_",
     status: "prototype",
-    tagline: "Project cash-flow forward from assumptions.",
+    tagline: "Interactive QBO reporting with period-over-period deltas, plus cash-flow scenarios.",
     requiredPermission: "view_projections",
   },
   {
