@@ -54,6 +54,13 @@ describe("findPayeeMapping", () => {
     expect(findPayeeMapping([MAPPING], "")).toBeUndefined();
     expect(findPayeeMapping([], "Bob's Auto Parts")).toBeUndefined();
   });
+
+  it("matches a learned raw-read alias (a consistent misread)", () => {
+    const withAlias: PayeeMappingLike = { ...MAPPING, rawAliases: ["FIXFORE"] };
+    expect(findPayeeMapping([withAlias], "FixFore")).toBe(withAlias);
+    // The canonical payee still matches too.
+    expect(findPayeeMapping([withAlias], "Bob's Auto Parts")).toBe(withAlias);
+  });
 });
 
 describe("classifyExtractedCheck", () => {

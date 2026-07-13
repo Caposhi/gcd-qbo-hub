@@ -637,6 +637,10 @@ model ChkPayeeMapping {
   qboVendorName       String?
   categoryAccountId   String?
   categoryAccountName String?
+  // Normalized raw reads that resolved to THIS mapping after a correction — so a
+  // consistent misread ("FixFore" for a payee Claude can't make out) is
+  // recognized next time and pre-fills the right vendor + category.
+  rawAliases          String[] @default([])
   timesConfirmed      Int      @default(0)
   active              Boolean  @default(true)
   createdAt           DateTime @default(now())

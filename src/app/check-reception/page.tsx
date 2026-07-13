@@ -177,9 +177,14 @@ export default async function CheckReceptionPage() {
                     </div>
                     <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                       <label style={{ fontSize: "0.78rem" }}>
-                        Payee (as read)
+                        Payee (as read) · optional
                         <br />
                         <input name="payee" defaultValue={c.payeeResolved ?? c.payeeRaw ?? ""} style={{ width: 220 }} />
+                        {c.payeeRaw && c.payeeResolved && c.payeeRaw !== c.payeeResolved && (
+                          <span style={{ display: "block", fontSize: "0.68rem", opacity: 0.55 }}>
+                            read as “{c.payeeRaw}”
+                          </span>
+                        )}
                       </label>
                       <div style={{ fontSize: "0.78rem" }}>
                         QBO vendor{c.qboVendorId ? " (suggested)" : ""}

@@ -28,6 +28,8 @@ export interface PayeeMappingLike {
   qboVendorName: string | null;
   categoryAccountId: string | null;
   categoryAccountName: string | null;
+  /** Normalized raw reads that also resolve to this mapping (learned aliases). */
+  rawAliases?: string[];
 }
 
 /**
@@ -40,14 +42,21 @@ export function normalizePayee(s: string | null | undefined): string {
   return (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-/** Find the learned mapping for a payee, if any (exact normalized match). */
+/**
+ * Find the learned mapping for a payee: exact normalized match on the confirmed
+ * payee first, then on any learned raw-read alias (so a consistent misread
+ * resolves to the right mapping).
+ */
 export function findPayeeMapping(
   mappings: PayeeMappingLike[],
   payee: string | null | undefined
 ): PayeeMappingLike | undefined {
   const key = normalizePayee(payee);
   if (!key) return undefined;
-  return mappings.find((m) => m.normalizedPayee === key);
+  return (
+    mappings.find((m) => m.normalizedPayee === key) ??
+    mappings.find((m) => (m.rawAliases ?? []).includes(key))
+  );
 }
 
 export interface ChecksClassification {

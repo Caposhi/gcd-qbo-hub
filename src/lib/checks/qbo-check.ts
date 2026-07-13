@@ -144,18 +144,27 @@ export async function listCategories(ctx: QboContext): Promise<CategoryOption[]>
 }
 
 /**
- * Suggest a category for a vendor the way QBO does: the account this vendor's
- * most recent Purchases were booked to. Returns null when the vendor has no
- * history. Read-only.
+ * Build a vendorId → usual-category map from recent Purchases (Checks/expenses),
+ * the way QBO auto-fills a vendor's last category. We scan the most recent
+ * Purchases ONCE and tally each vendor's most-frequent expense account — rather
+ * than filtering `Purchase` by `EntityRef` per vendor, which QBO's query API
+ * doesn't reliably support. Read-only.
  */
-export async function suggestCategoryForVendor(ctx: QboContext, vendorId: string): Promise<NamedRef | null> {
-  if (!vendorId) return null;
+export async function buildVendorCategoryMap(ctx: QboContext): Promise<Map<string, NamedRef>> {
   const res = await query<{ QueryResponse?: { Purchase?: any[] } }>(
     ctx,
-    `select * from Purchase where EntityRef = '${escapeQuery(vendorId)}' orderby TxnDate desc MAXRESULTS 20`
+    "select * from Purchase orderby TxnDate desc MAXRESULTS 1000"
   );
-  const tally = new Map<string, { name: string; count: number }>();
+  // vendorId -> (accountId -> {name, count})
+  const perVendor = new Map<string, Map<string, { name: string; count: number }>>();
   for (const p of res.QueryResponse?.Purchase ?? []) {
+    const vendorId = String(p.EntityRef?.value ?? "");
+    if (!vendorId) continue;
+    let tally = perVendor.get(vendorId);
+    if (!tally) {
+      tally = new Map();
+      perVendor.set(vendorId, tally);
+    }
     for (const line of p.Line ?? []) {
       const acct = line.AccountBasedExpenseLineDetail?.AccountRef;
       if (!acct?.value) continue;
@@ -165,11 +174,13 @@ export async function suggestCategoryForVendor(ctx: QboContext, vendorId: string
       else tally.set(id, { name: String(acct.name ?? ""), count: 1 });
     }
   }
-  let best: { id: string; name: string; count: number } | null = null;
-  for (const [id, v] of tally) {
-    if (!best || v.count > best.count) best = { id, name: v.name, count: v.count };
+  const out = new Map<string, NamedRef>();
+  for (const [vendorId, tally] of perVendor) {
+    let best: { id: string; name: string; count: number } | null = null;
+    for (const [id, v] of tally) if (!best || v.count > best.count) best = { id, name: v.name, count: v.count };
+    if (best) out.set(vendorId, { id: best.id, name: best.name });
   }
-  return best ? { id: best.id, name: best.name } : null;
+  return out;
 }
 
 export interface CheckPost {
