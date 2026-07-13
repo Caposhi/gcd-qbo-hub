@@ -8,6 +8,8 @@
 import { loadReporting } from "@/lib/projections/report-service";
 import { loadBaseline } from "@/lib/projections/baseline-service";
 import type { AccountingMethod } from "@/lib/projections/reports";
+import { isTekmetricConfigured } from "@/lib/tekmetric/client";
+import { readOperationsSnapshot } from "@/lib/tekmetric/snapshot";
 import type { MonthRange, MonthlyContext, MonthlyKpi } from "./orchestration";
 
 function money2(v: number): string {
@@ -64,6 +66,55 @@ export async function buildMonthlyContext(
       }
     : null;
 
+  // Operational actuals from Tekmetric for the same month, read from the cache
+  // (no network here — the monthly cron refreshes it first when configured).
+  // Absent → ops stays null and the officers note ops data isn't available.
+  let ops: MonthlyContext["ops"] = null;
+  if (isTekmetricConfigured()) {
+    try {
+      const snap = await readOperationsSnapshot(
+        { start: month.start, end: month.end },
+        "prior_period"
+      );
+      if (snap.data) {
+        const d = snap.data;
+        ops = {
+          kpis: {
+            roCount: d.kpis.roCount.value,
+            aro: d.kpis.aro.value,
+            grossProfit: d.kpis.grossProfit.value,
+            grossMarginPct: d.kpis.grossMarginPct.value,
+            carCount: d.kpis.carCount.value,
+          },
+          utilization: d.techUtilization.slice(0, 12).map((u) => ({
+            tech: u.technicianName,
+            utilizationPct: u.utilizationPct,
+            billedHours: u.billedHours,
+            effectiveLaborRate: u.effectiveLaborRate,
+            postedLaborRate: u.postedLaborRate,
+          })),
+          revenueByMake: [...d.revenueByMake]
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, 6)
+            .map((m) => ({
+              make: m.make,
+              revenue: m.revenue,
+              grossMarginPct: m.grossMarginPct,
+              roCount: m.roCount,
+            })),
+          advisors: d.advisorPerformance.slice(0, 8).map((a) => ({
+            advisor: a.advisorName,
+            roCount: a.roCount,
+            totalSales: a.totalSales,
+            grossMarginPct: a.grossMarginPct,
+          })),
+        };
+      }
+    } catch {
+      ops = null; // never let an ops read break the council context
+    }
+  }
+
   return {
     month,
     method,
@@ -75,5 +126,6 @@ export async function buildMonthlyContext(
     topItems: reporting.revenueByItem.map((i) => ({ name: i.name, amount: i.value })),
     expenseBreakdown: reporting.expenseBreakdown.map((e) => ({ name: e.name, amount: e.value })),
     baseline,
+    ops,
   };
 }

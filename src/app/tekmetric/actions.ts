@@ -19,6 +19,7 @@ import { refreshOperations } from "@/lib/tekmetric/snapshot";
 import {
   comparisonRange,
   presetRange,
+  shopToday,
   type ComparisonMode,
   type DatePreset,
 } from "@/lib/tekmetric/periods";
@@ -29,12 +30,12 @@ export async function refreshTekmetricAction(formData: FormData) {
   const preset = (String(formData.get("preset") ?? "last_month") || "last_month") as DatePreset;
   const comparison = (String(formData.get("comparison") ?? "prior_period") || "prior_period") as ComparisonMode;
 
-  const period = presetRange(preset, new Date());
+  const period = presetRange(preset, shopToday());
   const prior = comparisonRange(period, comparison);
   const params = new URLSearchParams({ preset, comparison });
 
   try {
-    await refreshOperations(period, prior);
+    await refreshOperations(period, comparison, prior);
   } catch (err) {
     // Surface the failure as a notice instead of crashing the page; the
     // redirect() below throws NEXT_REDIRECT which propagates out as a redirect.

@@ -20,12 +20,14 @@ HUB_HANDOFF §10).
    `TekTechUtilization` / `TekRevenueByMake` / `TekAdvisorPerformance`, plus
    `TekKpiSummary` and the `TekOperationsData` container). Committed first so the
    Phase 3 session can code its COO/CRO/CDA agents against it.
-2. **Read-only API client** — `src/lib/tekmetric/client.ts`. Client-credentials
-   token exchange (HTTP Basic → bearer, cached in memory, never persisted or
-   logged), Spring-style pagination (`fetchAll`), 429/5xx exponential backoff
-   with jitter (cap 60s), sandbox/production base-URL toggle. Only ever issues
-   GETs (+ the one token POST). Raw response types live in
-   `src/lib/tekmetric/raw.ts` and never leak past normalize.
+2. **Read-only API client** — `src/lib/tekmetric/client.ts`. Uses a
+   pre-provisioned, long-lived bearer token (`TEKMETRIC_TOKEN`) sent directly as
+   `Authorization: Bearer …` — **no client-credentials exchange happens in-app**
+   (the token is read from env, never persisted or logged). Spring-style
+   pagination (`fetchAll`), 429/5xx exponential backoff with jitter (cap 60s),
+   sandbox/production base-URL toggle. Only ever issues GETs — no write endpoint
+   and no token POST. Raw response types live in `src/lib/tekmetric/raw.ts` and
+   never leak past normalize.
 3. **Pure normalization + metrics** — `src/lib/tekmetric/normalize.ts` (no IO,
    Vitest-tested). Maps raw cents → dollar shapes and computes gross profit per
    RO/job, technician utilization (billed vs. available hours, effective vs.

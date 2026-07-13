@@ -264,3 +264,72 @@ long-form board report).
    tested, but has not been run against the live Anthropic API from here — the
    first real monthly run (with the key set) should be watched for token spend
    and structured-output conformance before trusting the cron unattended.
+
+---
+
+## Post-merge review + Phase 4 integration (Session continuation)
+
+A full review of the merged Phases 1–3 + the parallel Tekmetric T1 work, the
+confirmed fixes, and the first real Tekmetric→AI integration. Health:
+typecheck clean, **242 tests pass**, `next build` compiles.
+
+### Review outcome
+
+- **Reporting fix (PR #39):** correct — repaired three real Phase-1 normalizer
+  bugs (dropped summary-only P&L totals, inner sub-total shadowing Total
+  Expenses, sales chart picking Avg Price) with regression fixtures.
+- **Tekmetric T1 (PRs #36–38):** all safety requirements verified (read-only,
+  gated refresh, validate-on-read, secret discipline, cache-only page); the
+  metrics math (cents→dollars, effective/posted labor rate + discount
+  allocation, deleted/void exclusion, delta signs) is correct. Fixes below.
+
+### Confirmed issues fixed
+
+1. **HIGH — Tekmetric snapshot key omitted the comparison mode.** KPI deltas are
+   computed against the comparison, but the row was keyed by
+   `(entity, periodStart, periodEnd)` only, so refreshing a period under
+   `prior_period` then `prior_year` overwrote, and the page could show one
+   baseline while labeling another. Added `comparison` to the `TekSnapshot`
+   unique key (migration `00000000000010_tek_snapshot_comparison`) and threaded
+   the mode through `readOperationsSnapshot` / `refreshOperations` / page.
+2. **MEDIUM — prior-year leap-day overflow** in `tekmetric/periods.ts`: a Feb-29
+   boundary rolled to Mar 1. Now clamps day-of-month to the prior year's month
+   length (regression test added).
+3. **LOW/MED — UTC "today"** at the page and refresh action could disagree near
+   UTC midnight (a US-evening refresh wrote a row the page didn't read). Added
+   `shopToday()` (resolves the calendar date in `SYNC_TZ`, default
+   America/New_York); both call sites use it.
+4. **Deploy/doc hygiene:** added `TEKMETRIC_*` to `render.yaml` (were only in
+   `.env.example`); corrected the token-model contradiction in
+   `docs/PROGRESS_tekmetric.md`.
+
+### New: Tekmetric ops data → AI C-suite
+
+The council now reads real operational actuals:
+- `buildMonthlyContext` reads the month's Tekmetric snapshot (cache only) and
+  adds an `ops` block (KPIs, technician utilization, revenue-by-make, advisor
+  performance) to the shared context; `renderContext` emits an
+  `OPERATIONS (Tekmetric)` section. Absent/misconfigured → `ops: null`, and the
+  officers note ops data wasn't refreshed rather than guessing.
+- The monthly council run best-effort refreshes the prior month's Tekmetric
+  snapshot first (only when configured; a failure never blocks the run).
+- COO / CRO / Chief Data Analyst persona prompts now direct those officers to
+  ground analysis in the ops section (utilization + labor rates, advisor
+  performance, cross-linking make/utilization to margin).
+
+### Still open (need a decision or a backfill — deliberately not faked)
+
+1. **Projections v2 ← Tekmetric scenarios.** The six `needs_tekmetric` templates
+   (per-tech/advisor/make, utilization, …) stay deferred: the regression engine
+   needs *history*, but Tekmetric currently has only per-period on-demand
+   snapshots. Unblocking them needs a **Tekmetric monthly backfill job** (window
+   TBD — 24/36/84 months) to build a historical series, then engine work to
+   model operational drivers. per-bay and warranty-comeback additionally have no
+   Tekmetric data source in the current contract.
+2. **Call-transcript service (CRO agent, handoff §9).** Not started — blocked on
+   the owner's decision: does the transcript service emit *structured* insights
+   (sentiment/upsell/booking) or *raw transcripts*? That decides thin-read vs.
+   aggregation-layer.
+3. **Live validation.** The AI council has still never run against the live
+   Anthropic API; the first monthly run (key set) should be watched for spend
+   vs. the $15 cap, and the Tekmetric refresh against the live shop.

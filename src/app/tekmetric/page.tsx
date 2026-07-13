@@ -10,6 +10,7 @@ import {
   DEFAULT_PRESET,
   comparisonRange,
   presetRange,
+  shopToday,
   type ComparisonMode,
   type DatePreset,
 } from "@/lib/tekmetric/periods";
@@ -94,10 +95,12 @@ export default async function TekmetricPage({
     ? (searchParams.comparison as ComparisonMode)
     : DEFAULT_COMPARISON;
 
-  const period = presetRange(preset, new Date());
+  const period = presetRange(preset, shopToday());
   const priorPeriod = comparisonRange(period, comparison);
 
-  const { data, fetchedAt } = configured ? await readOperationsSnapshot(period) : { data: null, fetchedAt: null };
+  const { data, fetchedAt } = configured
+    ? await readOperationsSnapshot(period, comparison)
+    : { data: null, fetchedAt: null };
 
   return (
     <>

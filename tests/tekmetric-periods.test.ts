@@ -42,6 +42,12 @@ describe("comparisonRange", () => {
   it("none yields no comparison", () => {
     expect(comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "none")).toBeNull();
   });
+
+  it("prior_year clamps a Feb-29 boundary to Feb 28 in a non-leap prior year", () => {
+    // 2024 is a leap year, 2023 is not: Feb 29 must map to Feb 28, not roll to Mar 1.
+    const leapFeb = { start: "2024-02-01", end: "2024-02-29" };
+    expect(comparisonRange(leapFeb, "prior_year")).toEqual({ start: "2023-02-01", end: "2023-02-28" });
+  });
 });
 
 describe("date → ZonedDateTime widening (Tekmetric requires full datetimes)", () => {

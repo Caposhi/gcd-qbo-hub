@@ -749,9 +749,14 @@ model TekSnapshot {
   entity      String // 'repair_orders' | 'jobs' | 'technicians' | 'appointments' | 'vehicles' | 'derived_metrics'
   periodStart DateTime
   periodEnd   DateTime
+  // The comparison mode baked into payloadJson's KPI deltas
+  // ('prior_period' | 'prior_year' | 'none'). Part of the key so a period
+  // refreshed under one comparison never overwrites — or is misread as — the
+  // same period under another (the deltas differ).
+  comparison  String   @default("prior_period")
   payloadJson Json // normalized (not raw) TekOperationsData
   fetchedAt   DateTime @default(now())
 
-  @@unique([entity, periodStart, periodEnd])
+  @@unique([entity, periodStart, periodEnd, comparison])
   @@map("tek_snapshot")
 }

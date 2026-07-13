@@ -55,8 +55,15 @@ services:
         value: https://gcd-qbo-hub.onrender.com/api/qbo/callback
       - key: QBO_REALM_ID
         sync: false
-      # --- AI Report Assistant (prototype) ---
+      # --- AI Report Assistant (prototype) + AI C-suite (Phase 3) ---
       - key: ANTHROPIC_API_KEY
+        sync: false
+      # --- Tekmetric integration (read-only shop-management data) ---
+      - key: TEKMETRIC_BASE_URL
+        value: https://shop.tekmetric.com
+      - key: TEKMETRIC_TOKEN
+        sync: false
+      - key: TEKMETRIC_SHOP_ID
         sync: false
       # --- SendGrid ---
       - key: SENDGRID_API_KEY

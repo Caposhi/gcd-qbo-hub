@@ -166,12 +166,43 @@ describe("orchestration — prior month + context", () => {
         partsPctOfRevenue: 0.4,
         laborPctOfRevenue: 0.6,
       },
+      ops: null,
     };
     const a = renderContext(ctx);
     const b = renderContext(ctx);
     expect(a).toBe(b); // deterministic
     expect(a).toContain("Total Revenue: $39,000");
     expect(a).toContain("DERIVED BASELINE");
+    // No Tekmetric snapshot → no OPERATIONS section (officers note it's absent).
+    expect(a).not.toContain("OPERATIONS (Tekmetric");
+  });
+
+  it("renders the OPERATIONS (Tekmetric) section when ops data is present", () => {
+    const ctx: MonthlyContext = {
+      month: { start: "2026-06-01", end: "2026-06-30", label: "Jun 2026" },
+      method: "accrual",
+      kpis: [],
+      trend: [],
+      arTotal: 0,
+      apTotal: 0,
+      topCustomers: [],
+      topItems: [],
+      expenseBreakdown: [],
+      baseline: null,
+      ops: {
+        kpis: { roCount: 120, aro: 640, grossProfit: 42000, grossMarginPct: 55, carCount: 98 },
+        utilization: [
+          { tech: "Hans", utilizationPct: 82, billedHours: 132, effectiveLaborRate: 118, postedLaborRate: 135 },
+        ],
+        revenueByMake: [{ make: "BMW", revenue: 41000, grossMarginPct: 57, roCount: 62 }],
+        advisors: [{ advisor: "Dana", roCount: 70, totalSales: 48000, grossMarginPct: 54 }],
+      },
+    };
+    const out = renderContext(ctx);
+    expect(out).toContain("OPERATIONS (Tekmetric");
+    expect(out).toContain("Hans");
+    expect(out).toContain("BMW");
+    expect(out).toContain("Dana");
   });
 });
 

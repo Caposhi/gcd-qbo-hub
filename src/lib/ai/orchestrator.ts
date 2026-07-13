@@ -25,6 +25,9 @@ import {
 } from "./insights";
 import { debatingOfficers, ceo, auditor, board, type Persona } from "./personas";
 import { buildMonthlyContext } from "./context";
+import { isTekmetricConfigured } from "@/lib/tekmetric/client";
+import { refreshOperations } from "@/lib/tekmetric/snapshot";
+import { comparisonRange } from "@/lib/tekmetric/periods";
 import {
   priorMonthRange,
   renderContext,
@@ -98,6 +101,19 @@ export async function runCouncil(opts: RunCouncilOptions): Promise<RunCouncilRes
   if (!isCouncilConfigured()) return finish("not_configured", 0);
 
   try {
+    // Best-effort: refresh this month's Tekmetric operations snapshot so the
+    // shared context carries fresh ops actuals (utilization, revenue-by-make,
+    // advisor performance). Read-only over QBO; a Tekmetric failure or missing
+    // config must never block the council — the ops section just stays absent.
+    if (opts.kind === "monthly" && isTekmetricConfigured()) {
+      try {
+        const tekPeriod = { start: month.start, end: month.end };
+        await refreshOperations(tekPeriod, "prior_period", comparisonRange(tekPeriod, "prior_period"));
+      } catch {
+        /* ignore — ops data is optional context */
+      }
+    }
+
     const ctx = await buildMonthlyContext(month, method, opts.now);
     if (!ctx) return finish("not_connected", 0);
     const shared = renderContext(ctx);
