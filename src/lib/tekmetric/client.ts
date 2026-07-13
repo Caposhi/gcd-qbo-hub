@@ -165,22 +165,35 @@ export async function resolveShopIds(): Promise<string[]> {
 
 // ---- Entity fetchers (read-only) ------------------------------------------
 //
-// `start`/`end` are ISO dates the Tekmetric endpoints accept as filters. Jobs
-// arrive embedded in each repair order, so no separate /jobs sweep is needed.
+// The date-filtered endpoints require a full ISO-8601 *datetime* (Tekmetric
+// parses these as ZonedDateTime and rejects a bare `YYYY-MM-DD` with a 400), so
+// `toStartOfDay`/`toEndOfDay` widen an inclusive date range into datetime
+// bounds. Jobs arrive embedded in each repair order, so no separate /jobs sweep
+// is needed.
 
 export interface TekDateRange {
-  /** ISO-8601 start (inclusive). */
+  /** ISO date (YYYY-MM-DD) or datetime, inclusive start. */
   start: string;
-  /** ISO-8601 end (inclusive). */
+  /** ISO date (YYYY-MM-DD) or datetime, inclusive end. */
   end: string;
+}
+
+/** `YYYY-MM-DD` → start-of-day UTC datetime; pass through if already a datetime. */
+export function toStartOfDay(iso: string): string {
+  return iso.includes("T") ? iso : `${iso}T00:00:00Z`;
+}
+
+/** `YYYY-MM-DD` → end-of-day UTC datetime; pass through if already a datetime. */
+export function toEndOfDay(iso: string): string {
+  return iso.includes("T") ? iso : `${iso}T23:59:59Z`;
 }
 
 /** Repair orders POSTED within the range (revenue-recognition window). */
 export async function fetchRepairOrders(shopId: string, range: TekDateRange): Promise<TekRawRepairOrder[]> {
   return fetchAll<TekRawRepairOrder>("/repair-orders", {
     shop: shopId,
-    postedDateStart: range.start,
-    postedDateEnd: range.end,
+    postedDateStart: toStartOfDay(range.start),
+    postedDateEnd: toEndOfDay(range.end),
   });
 }
 
@@ -191,8 +204,8 @@ export async function fetchVehicles(shopId: string): Promise<TekRawVehicle[]> {
 export async function fetchAppointments(shopId: string, range: TekDateRange): Promise<TekRawAppointment[]> {
   return fetchAll<TekRawAppointment>("/appointments", {
     shop: shopId,
-    start: range.start,
-    end: range.end,
+    start: toStartOfDay(range.start),
+    end: toEndOfDay(range.end),
   });
 }
 
