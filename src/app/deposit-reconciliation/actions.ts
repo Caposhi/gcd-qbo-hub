@@ -347,169 +347,232 @@ export async function locateProposedPaymentsAction() {
   revalidatePath("/deposit-reconciliation");
 }
 
-/**
- * Create the QBO Bank Deposit for one matched payout (owner-only), into Chase
- * Checking 9680, so the bank-feed line auto-matches.
- *   - Paymentech: link the gross Undeposited-Funds payments; plug any small
- *     terminal-keying over/short to Cash over/short. Total = batch amount.
- *   - Tekmetric: link the gross payments AND each charge's fee journal entry
- *     (negative, by fee amount). Total = Σpayments − Σfees = payout net.
- * Guards: rollout stage (never dry-run, valid creds), all lines located, a fresh
- * double-count scan (never re-deposit a payment already on a deposit), and an
- * exact-sum checksum that must equal the payout net or nothing posts.
- */
-export async function createDepositFromPayoutAction(formData: FormData) {
-  const user = await requirePermission("edit_mappings");
-  const payoutId = String(formData.get("payoutId") ?? "");
-  if (!payoutId) throw new Error("Missing payoutId");
+const daysApart = (a: string, b: string) =>
+  Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
+interface DepCreateContext {
+  gateEnv: "sandbox" | "live";
+  ctx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>>;
+  chaseId: string;
+  overShortId: string | null;
+}
+
+/** Resolve the shared context for creating deposits: rollout gate (never
+ * dry-run, valid creds) + the Chase Checking / Cash over/short accounts + a live
+ * QBO context. Returns a reason instead of throwing so single + batch surface it
+ * the same way. */
+async function prepareDepCreateContext(): Promise<{ ok: true; value: DepCreateContext } | { ok: false; reason: string }> {
   const { canPostRow } = await import("@/lib/cashsheet/rollout");
   const { getQboEnvironment, getRolloutStage } = await import("@/lib/config-store");
   const { hasValidCredentials } = await import("@/lib/qbo/oauth");
   const { getContext } = await import("@/lib/qbo/client");
+
+  const stage = await getRolloutStage();
+  const environment = await getQboEnvironment();
+  const credsValid = await hasValidCredentials(environment);
+  const gate = canPostRow({ stage, credentialsValid: credsValid, mappingRequiresApproval: false, rowApproved: true });
+  if (!gate.allowed) return { ok: false, reason: `Not created: ${gate.reason}` };
+
+  const chase = await prisma.accountMapping.findFirst({ where: { friendlyName: "Chase Checking 9680" } });
+  if (!chase?.qboAccountId) return { ok: false, reason: "Chase Checking 9680 account mapping unresolved." };
+  const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
+  const ctx = await getContext(gate.environment!);
+  return { ok: true, value: { gateEnv: gate.environment!, ctx, chaseId: chase.qboAccountId, overShortId: os?.qboAccountId ?? null } };
+}
+
+type DepCreateOutcome = { status: "created" | "skipped" | "blocked" | "error"; message?: string };
+
+/**
+ * Create the QBO Bank Deposit for ONE matched payout into Chase Checking 9680,
+ * so the bank-feed line auto-matches. Records events; does NOT revalidate.
+ *   - Paymentech: link gross Undeposited-Funds payments; plug small terminal-
+ *     keying over/short to Cash over/short. Total = batch amount.
+ *   - Tekmetric: link gross payments AND each charge's fee journal entry
+ *     (negative, matched by the payment's customer). Total = Σpay − Σfees = net.
+ * Guards: matched + all located, fresh double-count scan, exact-sum checksum
+ * (must equal payout net or nothing posts). `feeUsed` is shared across a batch
+ * so a fee JE backs only one deposit.
+ */
+async function createOneDeposit(
+  payout: Prisma.DepPayoutGetPayload<{ include: { lines: true } }>,
+  dc: DepCreateContext,
+  userEmail: string,
+  feeUsed: Set<string>
+): Promise<DepCreateOutcome> {
   const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedPaymentIds } = await import(
     "@/lib/qbo/deposits"
   );
   const { shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
   const { findFeeJournalEntries, matchFeesByCustomer } = await import("@/lib/qbo/journal-entries");
 
-  const blocked = async (message: string) => {
-    await prisma.depEvent.create({ data: { payoutId, eventType: "create_blocked", message } });
-    revalidatePath("/deposit-reconciliation");
+  const blockedP = async (message: string): Promise<DepCreateOutcome> => {
+    await prisma.depEvent.create({ data: { payoutId: payout.id, eventType: "create_blocked", message } });
+    return { status: "blocked", message };
   };
-  const daysApartLocal = (a: string, b: string) =>
-    Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
+  if (payout.qboDepositId) return { status: "skipped" };
+  if (payout.status !== "matched") return blockedP("Not matched — run Locate first so every charge is confirmed.");
+  const unlocated = payout.lines.filter((l) => !l.matchedQboTxnId);
+  if (unlocated.length) return blockedP(`${unlocated.length} line(s) not located — re-run Locate.`);
+
+  // Double-count guard: refuse if any matched payment is already on a deposit.
+  const deposited = await collectDepositedPaymentIds(
+    dc.ctx,
+    shiftDate(payout.settlementDate, -16),
+    shiftDate(payout.settlementDate, 2)
+  );
+  const already = payout.lines.filter((l) => l.matchedQboTxnId && deposited.has(l.matchedQboTxnId));
+  if (already.length) return blockedP(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
+
+  const ids = payout.lines.map((l) => l.matchedQboTxnId as string);
+  const details = await getPaymentDetails(dc.ctx, ids);
+  if (ids.some((id) => !details.has(id))) return blockedP("Could not read some matched payment amounts from QBO — re-run Locate.");
+  const payments = ids.map((id) => ({ id, amount: details.get(id)!.amount }));
+  const sumPayCents = payments.reduce((s, p) => s + Math.round(p.amount * 100), 0);
+  const netCents = Math.round(Number(payout.netAmount) * 100);
+
+  const feeStart = shiftDate(payout.settlementDate, payout.processor === "tekmetric" ? -6 : -3);
+  const feeEnd = shiftDate(payout.settlementDate, 2);
+
+  let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
+  let plug: { accountId: string; amount: number; description: string } | undefined;
+
+  if (payout.processor === "tekmetric") {
+    const feeJEs = await findFeeJournalEntries(dc.ctx, feeStart, feeEnd);
+    const customers = ids.map((id) => details.get(id)!.customerName);
+    const { linked, missing } = matchFeesByCustomer(feeJEs, customers, payout.settlementDate, feeUsed, daysApart);
+    if (missing.length) return blockedP(`Fee journal entry not found for: ${missing.join(", ")} (searched ${feeStart}…${feeEnd}) — re-run Locate.`);
+    journalEntries = linked.map((je) => ({ id: je.jeId, lineId: je.ufLineId, amount: -je.amount }));
+    const sumFeeCents = linked.reduce((s, je) => s + Math.round(je.amount * 100), 0);
+    const totalCents = sumPayCents - sumFeeCents;
+    if (totalCents !== netCents) {
+      return blockedP(
+        `Checksum mismatch (tekmetric): payments ${(sumPayCents / 100).toFixed(2)} − fees ${(sumFeeCents / 100).toFixed(
+          2
+        )} = ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`
+      );
+    }
+  } else {
+    const plugCents = netCents - sumPayCents;
+    if (Math.abs(plugCents) > 1000) {
+      return blockedP(`Over/short ${(plugCents / 100).toFixed(2)} exceeds the $10 keying tolerance — investigate before posting.`);
+    }
+    if (plugCents !== 0) {
+      if (!dc.overShortId) return blockedP("Cash over/short account mapping unresolved.");
+      plug = { accountId: dc.overShortId, amount: plugCents / 100, description: "Card terminal keying over/short" };
+    }
+  }
+
+  const input = {
+    depositToAccountId: dc.chaseId,
+    txnDate: payout.settlementDate,
+    privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
+    payments,
+    journalEntries,
+    plug,
+  };
+  const totalCents = linkedDepositTotalCents(buildLinkedDepositBody(input));
+  if (totalCents !== netCents) {
+    return blockedP(`Checksum mismatch: deposit ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`);
+  }
+
+  let result;
+  try {
+    result = await postLinkedDeposit(dc.ctx, input);
+  } catch (err) {
+    const detail = (err as { detail?: unknown })?.detail;
+    await prisma.depEvent.create({
+      data: {
+        payoutId: payout.id,
+        eventType: "create_error",
+        message: `QBO rejected deposit: ${String(err)}${detail ? ` · ${JSON.stringify(detail)}` : ""}`.slice(0, 1800),
+      },
+    });
+    return { status: "error", message: String(err) };
+  }
+
+  await prisma.depPayout.update({
+    where: { id: payout.id },
+    data: { status: "created", qboDepositId: result.qboTransactionId, deltaCents: 0 },
+  });
+  await prisma.depEvent.create({
+    data: {
+      payoutId: payout.id,
+      eventType: "create_deposit",
+      message: `Created Chase Checking deposit ${result.qboTransactionId} for ${(netCents / 100).toFixed(2)} (${payments.length} payments${
+        journalEntries?.length ? ` − ${journalEntries.length} fee JEs` : ""
+      }) by ${userEmail}.`,
+      dataJson: { depositId: result.qboTransactionId, totalAmt: result.totalAmt } as unknown as object,
+    },
+  });
+  return { status: "created" };
+}
+
+/** Create the deposit for one matched payout (owner-only). */
+export async function createDepositFromPayoutAction(formData: FormData) {
+  const user = await requirePermission("edit_mappings");
+  const payoutId = String(formData.get("payoutId") ?? "");
+  if (!payoutId) throw new Error("Missing payoutId");
   try {
     const payout = await prisma.depPayout.findUnique({ where: { id: payoutId }, include: { lines: true } });
     if (!payout) throw new Error("Payout not found");
-    if (payout.qboDepositId) return; // already created — idempotent
-    if (payout.status !== "matched") return blocked("Not matched — run Locate first so every charge is confirmed.");
-    const unlocated = payout.lines.filter((l) => !l.matchedQboTxnId);
-    if (unlocated.length) return blocked(`${unlocated.length} line(s) not located — re-run Locate.`);
-
-    const stage = await getRolloutStage();
-    const environment = await getQboEnvironment();
-    const credsValid = await hasValidCredentials(environment);
-    const gate = canPostRow({ stage, credentialsValid: credsValid, mappingRequiresApproval: false, rowApproved: true });
-    if (!gate.allowed) return blocked(`Not created: ${gate.reason}`);
-
-    const chase = await prisma.accountMapping.findFirst({ where: { friendlyName: "Chase Checking 9680" } });
-    if (!chase?.qboAccountId) return blocked("Chase Checking 9680 account mapping unresolved.");
-
-    const ctx = await getContext(gate.environment!);
-
-    // Double-count guard: refuse if any matched payment is already on a deposit.
-    const deposited = await collectDepositedPaymentIds(
-      ctx,
-      shiftDate(payout.settlementDate, -16),
-      shiftDate(payout.settlementDate, 2)
-    );
-    const already = payout.lines.filter((l) => l.matchedQboTxnId && deposited.has(l.matchedQboTxnId));
-    if (already.length) {
-      return blocked(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
-    }
-
-    // Link each payment at its ACTUAL QBO amount (+ customer, for fee matching).
-    const ids = payout.lines.map((l) => l.matchedQboTxnId as string);
-    const details = await getPaymentDetails(ctx, ids);
-    if (ids.some((id) => !details.has(id))) {
-      return blocked("Could not read some matched payment amounts from QBO — re-run Locate.");
-    }
-    const payments = ids.map((id) => ({ id, amount: details.get(id)!.amount }));
-    const sumPayCents = payments.reduce((s, p) => s + Math.round(p.amount * 100), 0);
-    const netCents = Math.round(Number(payout.netAmount) * 100);
-
-    const feeStart = shiftDate(payout.settlementDate, payout.processor === "tekmetric" ? -6 : -3);
-    const feeEnd = shiftDate(payout.settlementDate, 2);
-
-    let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
-    let plug: { accountId: string; amount: number; description: string } | undefined;
-
-    if (payout.processor === "tekmetric") {
-      // Link each charge's fee journal entry (negative), matched by the payment's
-      // CUSTOMER name (the JE description carries it). Deposit = Σpayments − Σfees
-      // must equal the payout net (no plug — Stripe amounts are exact); a mismatch
-      // means a fee didn't match and we don't post.
-      const feeJEs = await findFeeJournalEntries(ctx, feeStart, feeEnd);
-      const customers = ids.map((id) => details.get(id)!.customerName);
-      const { linked, missing } = matchFeesByCustomer(feeJEs, customers, payout.settlementDate, new Set(), daysApartLocal);
-      if (missing.length) {
-        return blocked(`Fee journal entry not found for: ${missing.join(", ")} (searched ${feeStart}…${feeEnd}) — re-run Locate.`);
-      }
-      journalEntries = linked.map((je) => ({ id: je.jeId, lineId: je.ufLineId, amount: -je.amount }));
-      const sumFeeCents = linked.reduce((s, je) => s + Math.round(je.amount * 100), 0);
-      const totalCents = sumPayCents - sumFeeCents;
-      if (totalCents !== netCents) {
-        return blocked(
-          `Checksum mismatch (tekmetric): payments ${(sumPayCents / 100).toFixed(2)} − fees ${(sumFeeCents / 100).toFixed(
-            2
-          )} = ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`
-        );
-      }
-    } else {
-      // Paymentech: no fee JEs; plug any small terminal-keying over/short to the
-      // bank total via Cash over/short.
-      const plugCents = netCents - sumPayCents;
-      const KEYING_CAP_CENTS = 1000; // $10
-      if (Math.abs(plugCents) > KEYING_CAP_CENTS) {
-        return blocked(`Over/short ${(plugCents / 100).toFixed(2)} exceeds the $10 keying tolerance — investigate before posting.`);
-      }
-      if (plugCents !== 0) {
-        const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
-        if (!os?.qboAccountId) return blocked("Cash over/short account mapping unresolved.");
-        plug = { accountId: os.qboAccountId, amount: plugCents / 100, description: "Card terminal keying over/short" };
-      }
-    }
-
-    const input = {
-      depositToAccountId: chase.qboAccountId,
-      txnDate: payout.settlementDate,
-      privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
-      payments,
-      journalEntries,
-      plug,
-    };
-
-    // Exact-sum checksum: the built deposit MUST equal the payout net or we never post.
-    const totalCents = linkedDepositTotalCents(buildLinkedDepositBody(input));
-    if (totalCents !== netCents) {
-      return blocked(`Checksum mismatch: deposit ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`);
-    }
-
-    let result;
-    try {
-      result = await postLinkedDeposit(ctx, input);
-    } catch (err) {
-      const detail = (err as { detail?: unknown })?.detail;
-      await prisma.depEvent.create({
-        data: {
-          payoutId,
-          eventType: "create_error",
-          message: `QBO rejected deposit: ${String(err)}${detail ? ` · ${JSON.stringify(detail)}` : ""}`.slice(0, 1800),
-        },
-      });
+    const prep = await prepareDepCreateContext();
+    if (!prep.ok) {
+      await prisma.depEvent.create({ data: { payoutId, eventType: "create_blocked", message: prep.reason } });
       revalidatePath("/deposit-reconciliation");
       return;
     }
-
-    await prisma.depPayout.update({
-      where: { id: payoutId },
-      data: { status: "created", qboDepositId: result.qboTransactionId, deltaCents: 0 },
-    });
-    await prisma.depEvent.create({
-      data: {
-        payoutId,
-        eventType: "create_deposit",
-        message: `Created Chase Checking deposit ${result.qboTransactionId} for ${(netCents / 100).toFixed(2)} (${payments.length} payments${
-          journalEntries?.length ? ` − ${journalEntries.length} fee JEs` : ""
-        }) by ${user.email}.`,
-        dataJson: { depositId: result.qboTransactionId, totalAmt: result.totalAmt } as unknown as object,
-      },
-    });
+    await createOneDeposit(payout, prep.value, user.email, new Set());
     revalidatePath("/deposit-reconciliation");
   } catch (err) {
     await prisma.depEvent.create({ data: { payoutId, eventType: "create_error", message: `Create failed: ${String(err)}` } });
     revalidatePath("/deposit-reconciliation");
   }
+}
+
+/**
+ * Batch (owner-only): create deposits for EVERY matched, not-yet-created payout
+ * in one click — the month-end action. Each payout is created by the same
+ * guarded core (double-count scan, fee matching, exact-sum checksum); per-payout
+ * failures are isolated and a batch summary is recorded. Fee JEs are de-duped
+ * across the batch so one JE never backs two deposits.
+ */
+export async function createAllMatchedDepositsAction() {
+  const user = await requirePermission("edit_mappings");
+  const prep = await prepareDepCreateContext();
+  if (!prep.ok) {
+    await prisma.depEvent.create({ data: { eventType: "create_batch", message: `Batch blocked: ${prep.reason}` } });
+    revalidatePath("/deposit-reconciliation");
+    return;
+  }
+
+  const matched = await prisma.depPayout.findMany({
+    where: { status: "matched", qboDepositId: null },
+    include: { lines: true },
+    orderBy: [{ settlementDate: "asc" }, { createdAt: "asc" }],
+  });
+
+  const feeUsed = new Set<string>();
+  let created = 0;
+  let blocked = 0;
+  let errored = 0;
+  for (const payout of matched) {
+    try {
+      const outcome = await createOneDeposit(payout, prep.value, user.email, feeUsed);
+      if (outcome.status === "created") created++;
+      else if (outcome.status === "blocked") blocked++;
+      else if (outcome.status === "error") errored++;
+    } catch (err) {
+      errored++;
+      await prisma.depEvent.create({ data: { payoutId: payout.id, eventType: "create_error", message: `Create failed: ${String(err)}` } });
+    }
+  }
+
+  await prisma.depEvent.create({
+    data: {
+      eventType: "create_batch",
+      message: `Batch create: ${created} created, ${blocked} blocked, ${errored} errored (of ${matched.length} matched) · env ${prep.value.gateEnv}`,
+    },
+  });
+  revalidatePath("/deposit-reconciliation");
 }
