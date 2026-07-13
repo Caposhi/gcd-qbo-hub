@@ -75,6 +75,16 @@ export const MODULES: ModuleDef[] = [
     tagline: "Auto-build QBO deposits for Tekmetric & Chase payouts so the bank matches itself.",
     requiredPermission: "view_dashboard",
   },
+  {
+    id: "check-reception",
+    name: "Check Reception",
+    icon: "🧾",
+    basePath: "/check-reception",
+    tablePrefix: "chk_",
+    status: "prototype",
+    tagline: "Read handwritten checks from a Chase PDF and build the QBO Check so the bank matches itself.",
+    requiredPermission: "view_dashboard",
+  },
 ];
 
 export function getModule(id: string): ModuleDef | undefined {
