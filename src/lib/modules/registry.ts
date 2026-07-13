@@ -85,6 +85,16 @@ export const MODULES: ModuleDef[] = [
     tagline: "Read handwritten checks from a Chase PDF and build the QBO Check so the bank matches itself.",
     requiredPermission: "view_dashboard",
   },
+  {
+    id: "tekmetric",
+    name: "Tekmetric Operations",
+    icon: "🔧",
+    basePath: "/tekmetric",
+    tablePrefix: "tek_",
+    status: "prototype",
+    tagline: "Read-only shop-management KPIs: ARO, gross profit, tech utilization, revenue by make, advisor performance.",
+    requiredPermission: "view_tekmetric",
+  },
 ];
 
 export function getModule(id: string): ModuleDef | undefined {
