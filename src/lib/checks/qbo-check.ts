@@ -88,6 +88,90 @@ export async function findChecksByDocNumber(
   return out;
 }
 
+// --- list helpers for the typeahead dropdowns -----------------------------
+
+export interface NamedRef {
+  id: string;
+  name: string;
+}
+
+/** All active vendors (id + DisplayName) for the vendor dropdown. Read-only. */
+export async function listVendors(ctx: QboContext): Promise<NamedRef[]> {
+  const res = await query<{ QueryResponse?: { Vendor?: any[] } }>(
+    ctx,
+    "select Id, DisplayName from Vendor where Active = true MAXRESULTS 1000"
+  );
+  return (res.QueryResponse?.Vendor ?? [])
+    .map((v) => ({ id: String(v.Id), name: String(v.DisplayName ?? "") }))
+    .filter((v) => v.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export interface CategoryOption extends NamedRef {
+  accountType: string;
+  /** Expense-family accounts (the usual check target) sort first in the UI. */
+  isExpense: boolean;
+}
+
+const EXPENSE_TYPES = new Set(["Expense", "Other Expense", "Cost of Goods Sold"]);
+// QBO forbids posting a check line directly to these special/system types.
+const NON_POSTABLE_TYPES = new Set(["Accounts Receivable", "Accounts Payable"]);
+
+/**
+ * Postable accounts for the category dropdown. Expense-family accounts sort to
+ * the top (the usual bill-pay target); liability/asset/equity follow so
+ * loan/credit-card/owner-draw checks can still be categorized. Read-only.
+ */
+export async function listCategories(ctx: QboContext): Promise<CategoryOption[]> {
+  const res = await query<{ QueryResponse?: { Account?: any[] } }>(
+    ctx,
+    "select Id, Name, FullyQualifiedName, AccountType from Account where Active = true MAXRESULTS 1000"
+  );
+  const out: CategoryOption[] = [];
+  for (const a of res.QueryResponse?.Account ?? []) {
+    const accountType = String(a.AccountType ?? "");
+    if (NON_POSTABLE_TYPES.has(accountType)) continue;
+    out.push({
+      id: String(a.Id),
+      name: String(a.FullyQualifiedName ?? a.Name ?? ""),
+      accountType,
+      isExpense: EXPENSE_TYPES.has(accountType),
+    });
+  }
+  return out
+    .filter((a) => a.name)
+    .sort((a, b) => Number(b.isExpense) - Number(a.isExpense) || a.name.localeCompare(b.name));
+}
+
+/**
+ * Suggest a category for a vendor the way QBO does: the account this vendor's
+ * most recent Purchases were booked to. Returns null when the vendor has no
+ * history. Read-only.
+ */
+export async function suggestCategoryForVendor(ctx: QboContext, vendorId: string): Promise<NamedRef | null> {
+  if (!vendorId) return null;
+  const res = await query<{ QueryResponse?: { Purchase?: any[] } }>(
+    ctx,
+    `select * from Purchase where EntityRef = '${escapeQuery(vendorId)}' orderby TxnDate desc MAXRESULTS 20`
+  );
+  const tally = new Map<string, { name: string; count: number }>();
+  for (const p of res.QueryResponse?.Purchase ?? []) {
+    for (const line of p.Line ?? []) {
+      const acct = line.AccountBasedExpenseLineDetail?.AccountRef;
+      if (!acct?.value) continue;
+      const id = String(acct.value);
+      const prev = tally.get(id);
+      if (prev) prev.count++;
+      else tally.set(id, { name: String(acct.name ?? ""), count: 1 });
+    }
+  }
+  let best: { id: string; name: string; count: number } | null = null;
+  for (const [id, v] of tally) {
+    if (!best || v.count > best.count) best = { id, name: v.name, count: v.count };
+  }
+  return best ? { id: best.id, name: best.name } : null;
+}
+
 export interface CheckPost {
   bankAccountId: string; // paid-from (Chase Checking 9680)
   vendor: VendorRef;

@@ -67,6 +67,23 @@ export async function ingestCheckPdfAction(formData: FormData) {
   const mappings = (await prisma.chkPayeeMapping.findMany({ where: { active: true } })) as PayeeMappingLike[];
   const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
 
+  // Best-effort QBO prefill: fetch the vendor list once and, for each check,
+  // suggest the closest vendor (fuzzy) and — when there's no learned mapping —
+  // that vendor's usual category from its QBO history, the way QBO auto-fills.
+  // If QBO isn't reachable we still ingest; the dropdowns just start blank.
+  let vendors: Awaited<ReturnType<typeof import("@/lib/checks/qbo-check").listVendors>> = [];
+  let vendorCtx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>> | null = null;
+  try {
+    const { getQboEnvironment } = await import("@/lib/config-store");
+    const { getContext } = await import("@/lib/qbo/client");
+    const { listVendors } = await import("@/lib/checks/qbo-check");
+    vendorCtx = await getContext(await getQboEnvironment());
+    vendors = await listVendors(vendorCtx);
+  } catch {
+    vendorCtx = null;
+  }
+  const categoryByVendor = new Map<string, { id: string; name: string } | null>();
+
   const batch = await prisma.chkBatch.create({
     data: {
       fileHash,
@@ -78,10 +95,64 @@ export async function ingestCheckPdfAction(formData: FormData) {
   });
 
   let ready = 0;
+  let skipped = 0;
   for (const c of extraction.checks) {
+    // A page with neither a check number nor an amount isn't a check (Chase
+    // downloads often start with a cover/summary page) — skip it, don't nag.
+    if (!c.checkNumber && c.amount === null) {
+      await prisma.chkCheck.create({
+        data: {
+          batchId: batch.id,
+          page: c.page,
+          checkNumber: c.checkNumber,
+          amount: null,
+          checkDate: c.date,
+          payeeRaw: c.payee,
+          memo: c.memo,
+          confidence: c.confidence,
+          extractionJson: c as unknown as object,
+          status: "skipped",
+          statusReason: "No check number or amount — likely a cover/summary page.",
+        },
+      });
+      skipped++;
+      continue;
+    }
+
     const mapping = findPayeeMapping(mappings, c.payee);
     const cls = classifyExtractedCheck(c, mapping);
     if (cls.status === "ready") ready++;
+
+    // Prefill vendor + category suggestions (mapping wins; else fuzzy vendor +
+    // that vendor's historical category).
+    let vendorId = cls.qboVendorId;
+    let vendorName = cls.qboVendorName;
+    let categoryId = cls.categoryAccountId;
+    let categoryName = cls.categoryAccountName;
+    if (!mapping && vendorCtx) {
+      const { bestVendorMatch } = await import("@/lib/checks/match");
+      const { suggestCategoryForVendor } = await import("@/lib/checks/qbo-check");
+      const vm = bestVendorMatch(c.payee, vendors);
+      if (vm) {
+        vendorId = vm.id;
+        vendorName = vm.name;
+        if (!categoryId) {
+          if (!categoryByVendor.has(vm.id)) {
+            try {
+              categoryByVendor.set(vm.id, await suggestCategoryForVendor(vendorCtx, vm.id));
+            } catch {
+              categoryByVendor.set(vm.id, null);
+            }
+          }
+          const cat = categoryByVendor.get(vm.id);
+          if (cat) {
+            categoryId = cat.id;
+            categoryName = cat.name;
+          }
+        }
+      }
+    }
+
     await prisma.chkCheck.create({
       data: {
         batchId: batch.id,
@@ -94,22 +165,25 @@ export async function ingestCheckPdfAction(formData: FormData) {
         confidence: c.confidence,
         extractionJson: c as unknown as object,
         payeeResolved: cls.payeeResolved,
-        qboVendorId: cls.qboVendorId,
-        qboVendorName: cls.qboVendorName,
-        categoryAccountId: cls.categoryAccountId,
-        categoryAccountName: cls.categoryAccountName,
+        qboVendorId: vendorId,
+        qboVendorName: vendorName,
+        categoryAccountId: categoryId,
+        categoryAccountName: categoryName,
         status: cls.status,
         statusReason: cls.reason,
       },
     });
   }
 
+  const counted = extraction.checks.length - skipped;
   await prisma.chkEvent.create({
     data: {
       eventType: "ingest",
-      message: `Read ${extraction.checks.length} check(s) from ${f.name || "PDF"} — ${ready} ready (learned mapping), ${
-        extraction.checks.length - ready
-      } need review.`,
+      message: `Read ${extraction.checks.length} page(s) from ${f.name || "PDF"} — ${counted} check(s) (${ready} ready, ${
+        counted - ready
+      } need review)${skipped ? `, ${skipped} non-check page(s) skipped` : ""}${
+        vendorCtx ? "" : " · QBO not reached, dropdowns unfilled"
+      }.`,
       dataJson: { usage: extraction.usage } as unknown as object,
     },
   });
@@ -129,7 +203,9 @@ export async function classifyCheckAction(formData: FormData) {
 
   const payee = String(formData.get("payee") ?? "").trim();
   const vendorName = String(formData.get("vendorName") ?? "").trim() || payee;
+  const vendorId = String(formData.get("vendorId") ?? "").trim();
   const categoryName = String(formData.get("categoryName") ?? "").trim();
+  const categoryId = String(formData.get("categoryId") ?? "").trim();
   const checkNumber = String(formData.get("checkNumber") ?? "").trim();
   const amountRaw = String(formData.get("amount") ?? "").trim();
   const checkDate = String(formData.get("checkDate") ?? "").trim();
@@ -153,9 +229,17 @@ export async function classifyCheckAction(formData: FormData) {
     const { resolveAccountByName, resolveOrCreateVendor } = await import("@/lib/checks/qbo-check");
     const ctx = await getContext(await getQboEnvironment());
 
-    const account = await resolveAccountByName(ctx, categoryName);
-    if (!account) return fail(`No active QBO account named "${categoryName}". Check the exact account name.`);
-    const vendor = await resolveOrCreateVendor(ctx, vendorName);
+    // Prefer the id chosen from the dropdown; fall back to resolving the typed
+    // name (and, for a vendor, creating it if it's genuinely new).
+    const account =
+      categoryId
+        ? { value: categoryId, name: categoryName }
+        : await resolveAccountByName(ctx, categoryName);
+    if (!account) return fail(`No active QBO account named "${categoryName}". Pick one from the list.`);
+    const vendor =
+      vendorId
+        ? { value: vendorId, name: vendorName }
+        : await resolveOrCreateVendor(ctx, vendorName);
     if (!vendor) return fail(`Could not resolve or create the QBO vendor "${vendorName}".`);
 
     await prisma.chkCheck.update({
