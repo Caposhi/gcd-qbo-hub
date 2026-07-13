@@ -78,6 +78,24 @@ export async function getPaymentAmounts(ctx: QboContext, ids: string[]): Promise
   return out;
 }
 
+/** Fetch amount + customer name for a set of payment ids (fee-JE matching). */
+export async function getPaymentDetails(
+  ctx: QboContext,
+  ids: string[]
+): Promise<Map<string, { amount: number; customerName: string }>> {
+  const out = new Map<string, { amount: number; customerName: string }>();
+  if (ids.length === 0) return out;
+  const list = ids.map((id) => `'${escapeQuery(id)}'`).join(",");
+  const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
+    ctx,
+    `select Id, TotalAmt, CustomerRef from Payment where Id in (${list})`
+  );
+  for (const p of res.QueryResponse?.Payment ?? []) {
+    out.set(String(p.Id), { amount: Number(p.TotalAmt), customerName: String(p.CustomerRef?.name ?? "") });
+  }
+  return out;
+}
+
 /** Shift a YYYY-MM-DD date by N days (negative = earlier). */
 export function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);

@@ -31,6 +31,55 @@ function escapeQuery(v: string): string {
   return v.replace(/'/g, "\\'");
 }
 
+/** Customer segment of a Back Office fee memo: "FEE | Credit Card: <brand> | <NAME> | <date>". */
+export function customerFromFeeMemo(memo: string): string {
+  const parts = (memo ?? "").split("|").map((s) => s.trim());
+  return parts[2] ?? "";
+}
+
+/** Normalize a customer name for matching (upper, alphanumerics only). */
+export function normCustomer(s: string): string {
+  return (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+export interface FeeMatch {
+  linked: FeeJournalEntry[];
+  /** Customers for which no fee JE was found. */
+  missing: string[];
+}
+
+/**
+ * Match one fee journal entry per payment by customer name (the JE description
+ * carries the customer), nearest date, de-duped via `used`. This is how a
+ * Tekmetric payout's fees are located — independent of any stored per-charge
+ * fee, so it works on data ingested before fees were captured.
+ */
+export function matchFeesByCustomer(
+  feeJEs: FeeJournalEntry[],
+  customers: string[],
+  settlementDate: string,
+  used: Set<string>,
+  daysApart: (a: string, b: string) => number,
+  maxDays = 12
+): FeeMatch {
+  const linked: FeeJournalEntry[] = [];
+  const missing: string[] = [];
+  for (const cust of customers) {
+    const key = normCustomer(cust);
+    if (!key) { missing.push(cust); continue; }
+    const je = feeJEs
+      .filter((j) => !used.has(j.jeId) && normCustomer(j.customerName) === key && daysApart(j.date, settlementDate) <= maxDays)
+      .sort((a, b) => daysApart(a.date, settlementDate) - daysApart(b.date, settlementDate))[0];
+    if (je) {
+      used.add(je.jeId);
+      linked.push(je);
+    } else {
+      missing.push(cust);
+    }
+  }
+  return { linked, missing };
+}
+
 /**
  * Fee journal entries (their Undeposited-Funds credit line) with TxnDate in
  * [startDate, endDate]. Only entries whose UF line looks like a Back Office card
@@ -63,7 +112,9 @@ export async function findFeeJournalEntries(
         jeId: String(je.Id),
         ufLineId: String(line.Id),
         amount: Number(line.Amount ?? 0),
-        customerName: String(d.Entity?.EntityRef?.name ?? ""),
+        // Prefer the line's Entity; fall back to the customer segment of the
+        // memo "FEE | Credit Card: <brand> | <NAME> | <date>".
+        customerName: String(d.Entity?.EntityRef?.name ?? "") || customerFromFeeMemo(memo),
         memo,
         date: String(je.TxnDate ?? ""),
       });
