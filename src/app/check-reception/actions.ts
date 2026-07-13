@@ -72,17 +72,18 @@ export async function ingestCheckPdfAction(formData: FormData) {
   // that vendor's usual category from its QBO history, the way QBO auto-fills.
   // If QBO isn't reachable we still ingest; the dropdowns just start blank.
   let vendors: Awaited<ReturnType<typeof import("@/lib/checks/qbo-check").listVendors>> = [];
-  let vendorCtx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>> | null = null;
+  let vendorCategory = new Map<string, { id: string; name: string }>();
+  let qboReached = false;
   try {
     const { getQboEnvironment } = await import("@/lib/config-store");
     const { getContext } = await import("@/lib/qbo/client");
-    const { listVendors } = await import("@/lib/checks/qbo-check");
-    vendorCtx = await getContext(await getQboEnvironment());
-    vendors = await listVendors(vendorCtx);
+    const { listVendors, buildVendorCategoryMap } = await import("@/lib/checks/qbo-check");
+    const ctx = await getContext(await getQboEnvironment());
+    [vendors, vendorCategory] = await Promise.all([listVendors(ctx), buildVendorCategoryMap(ctx)]);
+    qboReached = true;
   } catch {
-    vendorCtx = null;
+    qboReached = false;
   }
-  const categoryByVendor = new Map<string, { id: string; name: string } | null>();
 
   const batch = await prisma.chkBatch.create({
     data: {
@@ -123,32 +124,22 @@ export async function ingestCheckPdfAction(formData: FormData) {
     const cls = classifyExtractedCheck(c, mapping);
     if (cls.status === "ready") ready++;
 
-    // Prefill vendor + category suggestions (mapping wins; else fuzzy vendor +
-    // that vendor's historical category).
+    // Prefill vendor + category suggestions (learned mapping wins; else fuzzy
+    // match to an EXISTING QBO vendor + that vendor's usual category).
     let vendorId = cls.qboVendorId;
     let vendorName = cls.qboVendorName;
     let categoryId = cls.categoryAccountId;
     let categoryName = cls.categoryAccountName;
-    if (!mapping && vendorCtx) {
+    if (!mapping && qboReached) {
       const { bestVendorMatch } = await import("@/lib/checks/match");
-      const { suggestCategoryForVendor } = await import("@/lib/checks/qbo-check");
       const vm = bestVendorMatch(c.payee, vendors);
       if (vm) {
         vendorId = vm.id;
         vendorName = vm.name;
-        if (!categoryId) {
-          if (!categoryByVendor.has(vm.id)) {
-            try {
-              categoryByVendor.set(vm.id, await suggestCategoryForVendor(vendorCtx, vm.id));
-            } catch {
-              categoryByVendor.set(vm.id, null);
-            }
-          }
-          const cat = categoryByVendor.get(vm.id);
-          if (cat) {
-            categoryId = cat.id;
-            categoryName = cat.name;
-          }
+        const cat = vendorCategory.get(vm.id);
+        if (cat && !categoryId) {
+          categoryId = cat.id;
+          categoryName = cat.name;
         }
       }
     }
@@ -182,7 +173,7 @@ export async function ingestCheckPdfAction(formData: FormData) {
       message: `Read ${extraction.checks.length} page(s) from ${f.name || "PDF"} — ${counted} check(s) (${ready} ready, ${
         counted - ready
       } need review)${skipped ? `, ${skipped} non-check page(s) skipped` : ""}${
-        vendorCtx ? "" : " · QBO not reached, dropdowns unfilled"
+        qboReached ? "" : " · QBO not reached, dropdowns unfilled"
       }.`,
       dataJson: { usage: extraction.usage } as unknown as object,
     },
@@ -191,18 +182,26 @@ export async function ingestCheckPdfAction(formData: FormData) {
 }
 
 /**
- * Confirm/correct one check's classification: set the payee, resolve (or create)
- * the QBO vendor, resolve the expense category by name, save, and TEACH the
- * payee→category mapping. On success the check becomes "ready". Corrected
- * check-number / amount / date are also saved.
+ * Confirm/correct one check's classification: resolve the QBO vendor and expense
+ * category, save, and TEACH the mapping. On success the check becomes "ready".
+ *
+ * Two behaviors the owner asked for:
+ *  - Never create a near-duplicate vendor. If the vendor field wasn't picked from
+ *    the dropdown (no id) and the typed name closely matches an existing QBO
+ *    vendor ("Interstate Batteries" ≈ "Interstate Battery"), we USE the existing
+ *    one instead of creating a new vendor.
+ *  - Learn the handwriting. The "payee as read" is optional — when it's a misread
+ *    Claude couldn't place (or blank), the vendor is enough. If the raw read
+ *    differs from the confirmed payee, we store it as an alias so the same
+ *    handwriting pre-fills next time.
  */
 export async function classifyCheckAction(formData: FormData) {
   const user = await requirePermission("edit_mappings");
   const checkId = String(formData.get("checkId") ?? "");
   if (!checkId) throw new Error("Missing checkId");
 
-  const payee = String(formData.get("payee") ?? "").trim();
-  const vendorName = String(formData.get("vendorName") ?? "").trim() || payee;
+  const payeeInput = String(formData.get("payee") ?? "").trim();
+  const vendorName = String(formData.get("vendorName") ?? "").trim();
   const vendorId = String(formData.get("vendorId") ?? "").trim();
   const categoryName = String(formData.get("categoryName") ?? "").trim();
   const categoryId = String(formData.get("categoryId") ?? "").trim();
@@ -217,8 +216,11 @@ export async function classifyCheckAction(formData: FormData) {
     revalidatePath(PATH);
   };
 
-  if (!payee) return fail("A payee is required.");
-  if (!categoryName) return fail("An expense category (QBO account name) is required.");
+  // Payee (as read) is optional — the confirmed vendor is what matters. Use the
+  // vendor name as the display/key when no payee was read.
+  const payee = payeeInput || vendorName;
+  if (!vendorName && !vendorId) return fail("A QBO vendor is required.");
+  if (!categoryName && !categoryId) return fail("An expense category is required.");
   const amount = amountRaw ? Number(amountRaw) : NaN;
   if (!checkNumber) return fail("A check number is required.");
   if (!Number.isFinite(amount) || amount <= 0) return fail("A positive amount is required.");
@@ -226,20 +228,39 @@ export async function classifyCheckAction(formData: FormData) {
   try {
     const { getQboEnvironment } = await import("@/lib/config-store");
     const { getContext } = await import("@/lib/qbo/client");
-    const { resolveAccountByName, resolveOrCreateVendor } = await import("@/lib/checks/qbo-check");
+    const { resolveAccountByName, resolveOrCreateVendor, listVendors } = await import("@/lib/checks/qbo-check");
+    const { bestVendorMatch } = await import("@/lib/checks/match");
     const ctx = await getContext(await getQboEnvironment());
 
+    const check = await prisma.chkCheck.findUnique({ where: { id: checkId } });
+
     // Prefer the id chosen from the dropdown; fall back to resolving the typed
-    // name (and, for a vendor, creating it if it's genuinely new).
-    const account =
-      categoryId
-        ? { value: categoryId, name: categoryName }
-        : await resolveAccountByName(ctx, categoryName);
+    // name.
+    const account = categoryId
+      ? { value: categoryId, name: categoryName }
+      : await resolveAccountByName(ctx, categoryName);
     if (!account) return fail(`No active QBO account named "${categoryName}". Pick one from the list.`);
-    const vendor =
-      vendorId
-        ? { value: vendorId, name: vendorName }
-        : await resolveOrCreateVendor(ctx, vendorName);
+
+    let vendor: { value: string; name: string } | null;
+    let vendorNote = "";
+    if (vendorId) {
+      vendor = { value: vendorId, name: vendorName || payee };
+    } else {
+      // No dropdown pick: before creating anything, look hard for an existing
+      // vendor whose name closely matches (plural/spelling drift, partial name).
+      const vendors = await listVendors(ctx);
+      const near = bestVendorMatch(vendorName, vendors, 0.82);
+      const exact = vendors.find((v) => v.name.toLowerCase() === vendorName.toLowerCase());
+      if (exact) {
+        vendor = { value: exact.id, name: exact.name };
+      } else if (near) {
+        vendor = { value: near.id, name: near.name };
+        vendorNote = ` Matched existing vendor "${near.name}" (you typed "${vendorName}") instead of creating a duplicate.`;
+      } else {
+        vendor = await resolveOrCreateVendor(ctx, vendorName);
+        if (vendor) vendorNote = ` Created new vendor "${vendor.name}".`;
+      }
+    }
     if (!vendor) return fail(`Could not resolve or create the QBO vendor "${vendorName}".`);
 
     await prisma.chkCheck.update({
@@ -254,12 +275,20 @@ export async function classifyCheckAction(formData: FormData) {
         categoryAccountId: account.value,
         categoryAccountName: account.name,
         status: "ready",
-        statusReason: `Confirmed by ${user.email}.`,
+        statusReason: `Confirmed by ${user.email}.${vendorNote}`,
       },
     });
 
     if (remember) {
       const key = normalizePayee(payee);
+      // Learn the raw read as an alias when it differs from the confirmed payee
+      // (a misread Claude couldn't place) — so the same handwriting resolves next
+      // time. Skip if it equals the key or is blank.
+      const rawKey = normalizePayee(check?.payeeRaw);
+      const aliasToAdd = rawKey && rawKey !== key ? rawKey : null;
+      const existing = await prisma.chkPayeeMapping.findUnique({ where: { normalizedPayee: key } });
+      const aliases = new Set(existing?.rawAliases ?? []);
+      if (aliasToAdd) aliases.add(aliasToAdd);
       await prisma.chkPayeeMapping.upsert({
         where: { normalizedPayee: key },
         create: {
@@ -269,6 +298,7 @@ export async function classifyCheckAction(formData: FormData) {
           qboVendorName: vendor.name,
           categoryAccountId: account.value,
           categoryAccountName: account.name,
+          rawAliases: aliasToAdd ? [aliasToAdd] : [],
           timesConfirmed: 1,
         },
         update: {
@@ -277,6 +307,7 @@ export async function classifyCheckAction(formData: FormData) {
           qboVendorName: vendor.name,
           categoryAccountId: account.value,
           categoryAccountName: account.name,
+          rawAliases: [...aliases],
           timesConfirmed: { increment: 1 },
           active: true,
         },
@@ -287,7 +318,7 @@ export async function classifyCheckAction(formData: FormData) {
       data: {
         checkId,
         eventType: "classify",
-        message: `Classified check ${checkNumber} → ${vendor.name} / ${account.name}${remember ? " (mapping learned)" : ""}.`,
+        message: `Classified check ${checkNumber} → ${vendor.name} / ${account.name}${remember ? " (mapping learned)" : ""}.${vendorNote}`,
       },
     });
     revalidatePath(PATH);
