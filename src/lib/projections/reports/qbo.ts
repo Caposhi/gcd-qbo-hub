@@ -167,6 +167,22 @@ function walk(
         kind: "data",
         depth,
       });
+    } else if (row.Summary?.ColData) {
+      // A summary-only row: QBO emits the single-line P&L totals (Gross Profit,
+      // Net Operating Income, Net Income) as a row carrying a `group` code and a
+      // `Summary` but NO `Header`/`Rows` and NO top-level `ColData`. Without this
+      // branch those totals are dropped entirely and read back as 0. Capture the
+      // summary as a section_summary so findByGroup can resolve it.
+      const s = colDataToValues(row.Summary.ColData);
+      out.push({
+        group: path,
+        groupCode: ownGroup ?? parentGroup,
+        label: s.label,
+        values: s.values,
+        rawValues: s.rawValues,
+        kind: "section_summary",
+        depth,
+      });
     }
   }
 }
