@@ -390,3 +390,75 @@ Integrated the sibling **gcd-webhook-server** transcript service
   transcript service.
 - First live run still wants watching (Anthropic $15 cap, Tekmetric + transcript
   refresh against the live services).
+
+---
+
+## UI/Theme redesign — GCD brand shell (visual pass)
+
+A **visual-only** overhaul from the Claude Design handoff: the dark navy/teal
+theme is replaced by the German Car Depot brand (royal blue `#18479F` + lemondrop
+yellow `#F8E000`) on an Apple-clean, light, spacious surface. **No domain logic,
+API routes, Prisma schema, rollout ladder, or read-only guarantees changed** —
+posting/gating is untouched.
+
+### Foundations
+- `src/app/globals.css` replaced with the brand token system + utility layer
+  (`.app-shell`, `.sidebar`, `.topbar`, `.env-pill`, `.card`, `.kpi-card`,
+  `.segmented`, `.filter-pill`, `.btn.{primary,accent,secondary,ghost,danger}`,
+  `.badge`, `.notice`, `table.gcd`, `.num`, `.delta.up/.down`). Eurostile
+  `@font-face` (6 OTFs in `public/fonts/`), disc logo + wordmark in
+  `public/assets/`, `lucide-react` for stroke icons.
+- **Temporary back-compat shim** (`globals.css` §10): re-aliases the legacy dark
+  vars (`--panel`, `--panel-2`, `--border`, `--text`, `--muted`, `--accent`, …)
+  onto the new light tokens and restyles dropped legacy classes, so un-migrated
+  modules (Cash Sheet Sync, Deposit Reconciliation, Check Reception, Coworker
+  Portal, auth/legal) stay legible during the phased rollout. Delete once every
+  page uses the new classes. **Fixed a self-referential `--danger: var(--danger)`
+  in the handoff shim** that would have formed an invalid CSS cycle and broken
+  every danger color app-wide (the new token already carries that name).
+
+### App shell (`src/app/layout.tsx`)
+- Two-part shell: fixed left **Sidebar** + sticky frosted **TopBar** + routed
+  content, with **GCD Pal** mounted once.
+- `Sidebar.tsx` (client): brand row, nav grouped **Workspace / Finance /
+  Operations** driven off `MODULES` (new `group` + `lucide` fields on `ModuleDef`;
+  icon *names* stay strings so the registry is server-serializable), active state
+  via `usePathname()` + the signature lemondrop bar, user chip.
+- `TopBar.tsx` (client): breadcrumb + Eurostile title + a search affordance +
+  the **env pill** (Sandbox/Live/Setup-required), fed by the server-derived QBO
+  environment so it can never disagree with the rollout stage.
+
+### Charts (`src/app/components/chart-theme.tsx`)
+- Shared Recharts theme (`CHART` brand palette, `axisProps`, `gridProps`,
+  `barCursor`, `money`, `percent`, `GcdTooltip`, `Legend`). Rethemed
+  `projections/reporting/Charts.tsx`, `projections/v2/ProjectionCharts.tsx`, and
+  `tekmetric/charts.tsx`: the old dark `tooltipStyle` bubbles are replaced by the
+  white `GcdTooltip` (navy text, soft navy shadow) — the fix for the low-contrast
+  hover popups. Dead dark `CHART_COLORS` removed from `reporting/format.ts`.
+
+### GCD Pal (`src/app/components/AiPal.tsx`)
+- Bottom-right companion, collapsed by default; per-module suggestion bullets
+  that route to `/assistant?q=<seeded prompt>`; hidden on `/assistant` and
+  `/auth/*`. **Copy is intentionally generic — it names what to look at and seeds
+  a question but never states figures** (this is an accounting tool; the Pal must
+  not invent numbers). A later pass can wire a live read-only
+  `GET /api/assistant/insights` endpoint and keep this static map as fallback.
+
+### Rethemed modules (this pass)
+- **Home** — hero + accent bar; module grid as hoverable brand cards with Lucide
+  icons and status badges.
+- **Financial Projections** — page header + `.segmented` sub-tab switcher; charts
+  rethemed. Inner panels (Reporting/Projections/Scenarios/Council) ride the shim
+  for now.
+- **Tekmetric Operations** — KPI cards with the good/bad delta rule, light filter
+  selects, `table.gcd` advisor table, rethemed charts.
+- **AI Report Assistant** — Apple-style chat (royal user bubbles, light assistant
+  bubbles, animated typing dots), conversation rail, and **`?q=` auto-send** so
+  GCD Pal suggestions open a seeded first message.
+
+### Deferred (ride the compat shim; a later phase migrates them)
+- Cash Sheet Sync (live module — deliberately not touched this pass), Deposit
+  Reconciliation, Check Reception, Coworker Portal, auth/legal pages, and the
+  Projections inner panels. GCD Pal live insight endpoint.
+
+Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds.

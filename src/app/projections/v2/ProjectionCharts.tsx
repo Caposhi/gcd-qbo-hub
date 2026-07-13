@@ -22,16 +22,8 @@ import {
   ReferenceLine,
   Cell,
 } from "recharts";
-import { CHART_COLORS, money } from "../reporting/format";
-
-const tooltipStyle: React.CSSProperties = {
-  background: "var(--panel)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text)",
-  fontSize: "0.8rem",
-};
-const axisProps = { stroke: CHART_COLORS.axis, tick: { fill: CHART_COLORS.axis, fontSize: 11 } } as const;
+import { money } from "../reporting/format";
+import { CHART, axisProps, gridProps, barCursor, GcdTooltip } from "@/app/components/chart-theme";
 
 export interface ProjRow {
   label: string;
@@ -43,22 +35,18 @@ export function ProjectionChart({ data }: { data: ProjRow[] }) {
   return (
     <ResponsiveContainer width="100%" height={300}>
       <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-        <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="3 3" vertical={false} />
+        <CartesianGrid {...gridProps} />
         <XAxis dataKey="label" {...axisProps} interval="preserveStartEnd" minTickGap={24} />
         <YAxis {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} width={68} />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          formatter={(v: number, name) => [money(Number(v)), name]}
-          cursor={{ fill: "rgba(255,255,255,0.04)" }}
-        />
-        <Legend wrapperStyle={{ fontSize: "0.8rem", color: "var(--muted)" }} />
-        <ReferenceLine y={0} stroke={CHART_COLORS.axis} strokeDasharray="2 2" />
-        <Bar dataKey="netIncome" name="Net Income" fill={CHART_COLORS.netIncome} radius={[3, 3, 0, 0]} maxBarSize={40} />
+        <Tooltip content={<GcdTooltip fmt={(n) => money(n)} />} cursor={barCursor} />
+        <Legend wrapperStyle={{ fontSize: "0.8rem", color: "var(--text-muted)" }} />
+        <ReferenceLine y={0} stroke={CHART.axis} strokeDasharray="2 2" />
+        <Bar dataKey="netIncome" name="Net Income" fill={CHART.netIncome} radius={[6, 6, 0, 0]} maxBarSize={40} />
         <Line
           dataKey="endingCash"
           name="Ending Cash"
           type="monotone"
-          stroke={CHART_COLORS.revenue}
+          stroke={CHART.revenue}
           strokeWidth={2}
           dot={false}
         />
@@ -82,25 +70,58 @@ export function TornadoChart({ data, metricLabel }: { data: TornadoDatum[]; metr
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 8 }}>
-        <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="3 3" horizontal={false} />
+        <CartesianGrid stroke={CHART.grid} strokeDasharray="3 3" horizontal={false} />
         <XAxis type="number" {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} />
         <YAxis type="category" dataKey="label" {...axisProps} width={150} tickLine={false} />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          cursor={{ fill: "rgba(255,255,255,0.04)" }}
-          formatter={(v: number, _n, item) => {
-            const d = item?.payload as TornadoDatum | undefined;
-            return d
-              ? [`${money(d.swing)}  ( ${money(d.low)} → ${money(d.high)} )`, `${metricLabel} swing`]
-              : [money(Number(v)), "swing"];
-          }}
-        />
-        <Bar dataKey="swing" radius={[0, 4, 4, 0]} maxBarSize={28}>
+        <Tooltip content={<TornadoTooltip metricLabel={metricLabel} />} cursor={barCursor} />
+        <Bar dataKey="swing" radius={[0, 6, 6, 0]} maxBarSize={28}>
           {data.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS.bar} fillOpacity={i === 0 ? 1 : 0.7} />
+            <Cell key={i} fill={CHART.bar} fillOpacity={i === 0 ? 1 : 0.7} />
           ))}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+/** Light-card tooltip for the tornado: shows the swing and its low→high range. */
+function TornadoTooltip({
+  active,
+  payload,
+  metricLabel,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: TornadoDatum }>;
+  metricLabel?: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 12,
+        boxShadow: "var(--shadow-lg)",
+        padding: "10px 13px",
+        fontSize: 12,
+        color: "var(--text-strong)",
+        minWidth: 180,
+        pointerEvents: "none",
+      }}
+    >
+      <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 13, marginBottom: 6, color: "var(--navy-blue)" }}>
+        {d.label}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
+        <span style={{ color: "var(--text-muted)" }}>{metricLabel ?? "Metric"} swing</span>
+        <span style={{ fontWeight: 700, color: "var(--navy-blue)" }}>{money(d.swing)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginTop: 3, color: "var(--text-muted)" }}>
+        <span>Range</span>
+        <span>{money(d.low)} → {money(d.high)}</span>
+      </div>
+    </div>
   );
 }
