@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
+import { Combobox, type ComboOption } from "./Combobox";
 import {
   ingestCheckPdfAction,
   classifyCheckAction,
@@ -16,6 +17,27 @@ function money(v: unknown): string {
   return v === null || v === undefined ? "—" : `$${Number(v).toFixed(2)}`;
 }
 
+/**
+ * QBO vendor + category lists for the typeahead dropdowns. Best-effort: if QBO
+ * isn't connected the review form degrades to free-text inputs (empty lists).
+ */
+async function loadQboLists(): Promise<{ vendors: ComboOption[]; categories: ComboOption[]; reached: boolean }> {
+  try {
+    const { getQboEnvironment } = await import("@/lib/config-store");
+    const { getContext } = await import("@/lib/qbo/client");
+    const { listVendors, listCategories } = await import("@/lib/checks/qbo-check");
+    const ctx = await getContext(await getQboEnvironment());
+    const [vendors, categories] = await Promise.all([listVendors(ctx), listCategories(ctx)]);
+    return {
+      vendors: vendors.map((v) => ({ id: v.id, name: v.name })),
+      categories: categories.map((c) => ({ id: c.id, name: c.name, hint: c.accountType })),
+      reached: true,
+    };
+  } catch {
+    return { vendors: [], categories: [], reached: false };
+  }
+}
+
 export default async function CheckReceptionPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -27,6 +49,12 @@ export default async function CheckReceptionPage() {
     include: { batch: { select: { fileName: true, createdAt: true } } },
   });
   const readyCount = checks.filter((c) => c.status === "ready" && !c.qboPurchaseId).length;
+
+  // Only pay the QBO round-trip when there are checks to classify.
+  const needsForms = editable && checks.some((c) => c.status !== "created" && c.status !== "skipped");
+  const { vendors, categories, reached } = needsForms
+    ? await loadQboLists()
+    : { vendors: [], categories: [], reached: true };
 
   const lastIngest = await prisma.chkEvent.findFirst({
     where: { eventType: { in: ["ingest", "ingest_error"] } },
@@ -153,17 +181,37 @@ export default async function CheckReceptionPage() {
                         <br />
                         <input name="payee" defaultValue={c.payeeResolved ?? c.payeeRaw ?? ""} style={{ width: 220 }} />
                       </label>
-                      <label style={{ fontSize: "0.78rem" }}>
-                        QBO vendor (blank = same as payee)
+                      <div style={{ fontSize: "0.78rem" }}>
+                        QBO vendor{c.qboVendorId ? " (suggested)" : ""}
                         <br />
-                        <input name="vendorName" defaultValue={c.qboVendorName ?? ""} style={{ width: 220 }} />
-                      </label>
+                        <Combobox
+                          name="vendor"
+                          options={vendors}
+                          defaultName={c.qboVendorName ?? c.payeeResolved ?? c.payeeRaw ?? ""}
+                          defaultId={c.qboVendorId ?? ""}
+                          allowCreate
+                          placeholder="Type to search vendors…"
+                          width={240}
+                        />
+                      </div>
                     </div>
-                    <label style={{ fontSize: "0.78rem" }}>
-                      Expense category (exact QBO account name)
+                    <div style={{ fontSize: "0.78rem" }}>
+                      Expense category{c.categoryAccountId ? " (suggested)" : ""}
                       <br />
-                      <input name="categoryName" defaultValue={c.categoryAccountName ?? ""} style={{ width: 300 }} />
-                    </label>
+                      <Combobox
+                        name="category"
+                        options={categories}
+                        defaultName={c.categoryAccountName ?? ""}
+                        defaultId={c.categoryAccountId ?? ""}
+                        placeholder="Type to search categories…"
+                        width={320}
+                      />
+                    </div>
+                    {!reached && (
+                      <span className="muted" style={{ fontSize: "0.7rem" }}>
+                        QBO not reached — vendor/category lists are empty; type the exact name.
+                      </span>
+                    )}
                     <label style={{ fontSize: "0.78rem", display: "flex", gap: "0.35rem", alignItems: "center" }}>
                       <input type="checkbox" name="remember" defaultChecked /> Remember this payee → category for next
                       time
