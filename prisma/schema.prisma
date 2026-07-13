@@ -734,3 +734,24 @@ model ChkEvent {
   @@index([checkId])
   @@map("chk_events")
 }
+
+// ===========================================================================
+// Tekmetric integration module — tek_ prefixed (Build Phase 4 groundwork)
+// Read-only shop-management data (repair orders, jobs, technicians, service
+// advisors, appointments, vehicles) pulled from the Tekmetric API and cached
+// as NORMALIZED (never raw) payloads. A fetch-through cache keyed by entity +
+// date range; refreshed by a permission-gated manual action. See
+// docs/PROGRESS_tekmetric.md and src/lib/tekmetric/*.
+// ===========================================================================
+
+model TekSnapshot {
+  id          String   @id @default(cuid())
+  entity      String // 'repair_orders' | 'jobs' | 'technicians' | 'appointments' | 'vehicles' | 'derived_metrics'
+  periodStart DateTime
+  periodEnd   DateTime
+  payloadJson Json // normalized (not raw) TekOperationsData
+  fetchedAt   DateTime @default(now())
+
+  @@unique([entity, periodStart, periodEnd])
+  @@map("tek_snapshot")
+}
