@@ -562,3 +562,99 @@ model DepEvent {
   @@index([payoutId])
   @@map("dep_events")
 }
+
+// ===========================================================================
+// Check Reception module — chk_ prefixed (prototype)
+// Drop a Chase PDF of check images (one check per page); the hub reads each
+// handwritten check with Claude vision, proposes the vendor + expense category
+// from a learned payee→category mapping, and (on approval) creates the QBO
+// Check so the Chase bank-feed line auto-matches. Review-first: handwriting is
+// imperfect, so every extracted check is shown for confirmation before any
+// QBO write. Mirrors Deposit Reconciliation's propose → create-you-match ladder.
+// ===========================================================================
+
+// One ingested PDF. fileHash makes re-dropping the same file idempotent.
+model ChkBatch {
+  id              String   @id @default(cuid())
+  fileHash        String   @unique
+  fileName        String?
+  pageCount       Int      @default(0)
+  checkCount      Int      @default(0)
+  uploadedByEmail String?
+  createdAt       DateTime @default(now())
+
+  checks ChkCheck[]
+
+  @@map("chk_batches")
+}
+
+// One check read from a page. The extracted fields come from Claude vision and
+// may be imperfect — status stays reviewable until an owner confirms and the
+// QBO Check is created. qboPurchaseId is unique so a check posts at most once.
+model ChkCheck {
+  id                  String   @id @default(cuid())
+  batchId             String
+  page                Int // 1-based page in the PDF
+
+  // Extracted (Claude vision) — review-first.
+  checkNumber         String?
+  amount              Decimal? @db.Decimal(12, 2)
+  checkDate           String? // YYYY-MM-DD as read from the check
+  payeeRaw            String? // "Pay to the order of", as written
+  memo                String?
+  confidence          String? // high | medium | low (model self-report)
+  extractionJson      Json? // full structured read, for audit
+
+  // Classification (learned mapping + owner confirmation).
+  payeeResolved       String?
+  qboVendorId         String?
+  qboVendorName       String?
+  categoryAccountId   String?
+  categoryAccountName String?
+
+  status              String   @default("needs_review") // needs_review | ready | created | skipped
+  statusReason        String?
+  qboPurchaseId       String?  @unique
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  batch  ChkBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  events ChkEvent[]
+
+  @@index([batchId])
+  @@index([status])
+  @@map("chk_checks")
+}
+
+// Learned payee → vendor + expense-category mapping. Keyed by normalized payee;
+// remembers the vendor and account last confirmed so the next check to the same
+// payee pre-fills and posts with one click.
+model ChkPayeeMapping {
+  id                  String   @id @default(cuid())
+  normalizedPayee     String   @unique
+  payeeDisplay        String
+  qboVendorId         String?
+  qboVendorName       String?
+  categoryAccountId   String?
+  categoryAccountName String?
+  timesConfirmed      Int      @default(0)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("chk_payee_mappings")
+}
+
+model ChkEvent {
+  id        String   @id @default(cuid())
+  checkId   String?
+  eventType String
+  message   String   @db.Text
+  dataJson  Json?
+  createdAt DateTime @default(now())
+
+  check ChkCheck? @relation(fields: [checkId], references: [id], onDelete: Cascade)
+
+  @@index([checkId])
+  @@map("chk_events")
+}

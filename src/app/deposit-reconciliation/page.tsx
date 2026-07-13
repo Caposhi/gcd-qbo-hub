@@ -7,6 +7,7 @@ import {
   locateProposedPaymentsAction,
   cleanupDuplicatePayoutsAction,
   createDepositFromPayoutAction,
+  createAllMatchedDepositsAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,11 @@ export default async function DepositReconciliationPage() {
     where: { eventType: "locate_summary" },
     orderBy: { createdAt: "desc" },
   });
+  const lastBatch = await prisma.depEvent.findFirst({
+    where: { eventType: "create_batch" },
+    orderBy: { createdAt: "desc" },
+  });
+  const matchedCount = payouts.filter((p) => p.status === "matched" && !p.qboDepositId).length;
 
   // Flag likely duplicates (same processor + source ref) so the cleanup button
   // only shows when there's something to clean.
@@ -106,9 +112,23 @@ export default async function DepositReconciliationPage() {
           </span>
         </form>
       )}
+      {editable && matchedCount > 0 && (
+        <form action={createAllMatchedDepositsAction} className="row-actions" style={{ marginBottom: "0.5rem" }}>
+          <button className="btn" type="submit">Create all {matchedCount} matched deposit{matchedCount === 1 ? "" : "s"}</button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+            Posts every matched payout (Paymentech + Tekmetric) in one go — each re-verified and checksum-gated. Then
+            match each in the Chase bank feed.
+          </span>
+        </form>
+      )}
       {lastLocate && (
         <p className="muted" style={{ fontSize: "0.8rem" }}>
           {lastLocate.message} · {lastLocate.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
+      {lastBatch && (
+        <p className="muted" style={{ fontSize: "0.8rem" }}>
+          {lastBatch.message} · {lastBatch.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
         </p>
       )}
       {payouts.length === 0 ? (
