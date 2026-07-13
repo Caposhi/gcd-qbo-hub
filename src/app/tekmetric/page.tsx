@@ -66,7 +66,7 @@ function KpiTile({ label, kpi, format }: { label: string; kpi: TekKpi; format: K
 export default async function TekmetricPage({
   searchParams,
 }: {
-  searchParams: { preset?: string; comparison?: string };
+  searchParams: { preset?: string; comparison?: string; error?: string };
 }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -111,6 +111,12 @@ export default async function TekmetricPage({
         <div className="notice">
           Tekmetric is not configured. Set <code>TEKMETRIC_TOKEN</code> and{" "}
           <code>TEKMETRIC_SHOP_ID</code> (and <code>TEKMETRIC_BASE_URL</code>) to enable it.
+        </div>
+      )}
+
+      {searchParams.error && (
+        <div className="notice danger">
+          Refresh failed: {searchParams.error}. The last cached data (if any) is shown below.
         </div>
       )}
 

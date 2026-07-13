@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { presetRange, comparisonRange } from "@/lib/tekmetric/periods";
+import { toStartOfDay, toEndOfDay } from "@/lib/tekmetric/client";
 
 // Fixed "today" = Mon 2026-07-13 (UTC) so ranges are deterministic.
 const TODAY = new Date("2026-07-13T12:00:00Z");
@@ -40,5 +41,17 @@ describe("comparisonRange", () => {
 
   it("none yields no comparison", () => {
     expect(comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "none")).toBeNull();
+  });
+});
+
+describe("date → ZonedDateTime widening (Tekmetric requires full datetimes)", () => {
+  it("widens a bare date to start/end of UTC day", () => {
+    expect(toStartOfDay("2026-06-01")).toBe("2026-06-01T00:00:00Z");
+    expect(toEndOfDay("2026-06-30")).toBe("2026-06-30T23:59:59Z");
+  });
+
+  it("passes through a value that already has a time component", () => {
+    expect(toStartOfDay("2026-06-01T09:30:00Z")).toBe("2026-06-01T09:30:00Z");
+    expect(toEndOfDay("2026-06-30T23:00:00Z")).toBe("2026-06-30T23:00:00Z");
   });
 });
