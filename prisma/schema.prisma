@@ -413,6 +413,24 @@ model ProjScenario {
   @@map("proj_scenarios")
 }
 
+// Cached, NORMALIZED QBO report snapshot (Financial Reporting, Phase 1).
+// Keyed by report type + inclusive period + accounting method. `payloadJson`
+// holds the normalized metric series (never raw QBO), so pages render fast and
+// the later monthly AI job can read a stable baseline. Fetched through a TTL
+// cache with a permission-gated manual refresh; strictly read-only over QBO.
+model ProjReportSnapshot {
+  id          String   @id @default(cuid())
+  reportType  String // 'pnl' | 'balance_sheet' | 'ar_aging' | 'ap_aging' | 'customer_sales' | 'item_sales'
+  periodStart DateTime
+  periodEnd   DateTime
+  method      String // 'accrual' | 'cash'
+  payloadJson Json // normalized (not raw) metric series
+  fetchedAt   DateTime @default(now())
+
+  @@unique([reportType, periodStart, periodEnd, method])
+  @@map("proj_report_snapshot")
+}
+
 // ===========================================================================
 // AI Report Assistant module — ai_ prefixed (prototype)
 // ===========================================================================
@@ -443,6 +461,60 @@ model AiMessage {
 
   @@index([conversationId])
   @@map("ai_messages")
+}
+
+// AI C-suite (Phase 3): one council meeting (monthly cron) or on-demand run.
+model AiAgentRun {
+  id             String   @id @default(cuid())
+  kind           String // 'monthly' | 'on_demand'
+  monthLabel     String // e.g. 'Jun 2026'
+  periodStart    DateTime
+  periodEnd      DateTime
+  method         String // 'accrual' | 'cash'
+  status         String // 'running' | 'complete' | 'failed' | 'not_connected' | 'not_configured'
+  model          String   @default("claude-opus-4-8")
+  spentUsd       Float    @default(0)
+  ceoTakeaway    String? // cached for quick list display
+  error          String?
+  createdByEmail String?
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+
+  reports     AiAgentReport[]
+  boardReport AiBoardReport?
+
+  @@index([kind, startedAt])
+  @@map("ai_agent_run")
+}
+
+// One agent's structured insight within a run (officer, CEO, or auditor).
+model AiAgentReport {
+  id          String   @id @default(cuid())
+  runId       String
+  personaId   String
+  personaName String
+  layer       String // 'officer' | 'auditor' | 'board'
+  takeaway    String
+  insightJson Json // validated AgentInsight
+  createdAt   DateTime @default(now())
+
+  run AiAgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@map("ai_agent_report")
+}
+
+// The independent Board's end-of-month report for a run.
+model AiBoardReport {
+  id         String   @id @default(cuid())
+  runId      String   @unique
+  takeaway   String
+  reportJson Json // validated BoardReport
+  createdAt  DateTime @default(now())
+
+  run AiAgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("ai_board_report")
 }
 
 // ===========================================================================

@@ -1,189 +1,121 @@
+/**
+ * Financial Projections module (§1) — shell + tab router.
+ *
+ * Phase 1 turns this into a financial-reporting hub. Two sub-tabs live under the
+ * one route so the scenario prototype stays reachable and nothing regresses:
+ *   - Reporting (default): live, read-only QBO actuals with KPI deltas + charts.
+ *   - Scenarios: the original manual-assumption cash-flow engine.
+ *
+ * Filters (date range, comparison, method, granularity) are URL search params so
+ * the Reporting tab recomputes server-side on every change.
+ */
 import Link from "next/link";
-import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
-import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
 import {
-  projectCashFlow,
-  parseAssumptions,
-  summarize,
-} from "@/lib/projections/engine";
-import { createScenarioAction } from "./actions";
+  isRangePreset,
+  isComparisonMode,
+  isAccountingMethod,
+  type RangePreset,
+  type ComparisonMode,
+  type AccountingMethod,
+  type Granularity,
+} from "@/lib/projections/reports";
+import type { ReportFilters } from "@/lib/projections/report-service";
+import { can } from "@/lib/auth/roles";
+import { ReportingPanel } from "./reporting/ReportingPanel";
+import type { FilterState } from "./reporting/FilterBar";
+import { ProjectionsPanel } from "./v2/ProjectionsPanel";
+import { ScenariosPanel } from "./ScenariosPanel";
+import { AiCouncilPanel } from "./ai/AiCouncilPanel";
 
 export const dynamic = "force-dynamic";
 
-const inputStyle: React.CSSProperties = {
-  padding: "0.3rem",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
-  width: "100%",
-};
+type Tab = "reporting" | "projections" | "scenarios" | "council";
 
-/** Format money as $#,##0.00. */
-function money(v: number): string {
-  return v.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+interface SP {
+  tab?: string;
+  scenario?: string;
+  run?: string;
+  preset?: string;
+  cmp?: string;
+  method?: string;
+  gran?: string;
+  start?: string;
+  end?: string;
 }
 
-export default async function ProjectionsPage({
-  searchParams,
-}: {
-  searchParams: { scenario?: string };
-}) {
+function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
+  const preset: RangePreset = isRangePreset(sp.preset) ? sp.preset : "this_month";
+  const comparison: ComparisonMode = isComparisonMode(sp.cmp) ? sp.cmp : "prior_period";
+  const method: AccountingMethod = isAccountingMethod(sp.method) ? sp.method : "accrual";
+  const granularity: Granularity =
+    sp.gran === "quarter" || sp.gran === "year" ? sp.gran : "month";
+  const customStart = sp.start || undefined;
+  const customEnd = sp.end || undefined;
+
+  const filters: ReportFilters = { preset, comparison, method, granularity, customStart, customEnd };
+  const state: FilterState = { preset, comparison, method, granularity, customStart, customEnd };
+  return { filters, state };
+}
+
+function TabLink({ tab, active, children }: { tab: Tab; active: boolean; children: React.ReactNode }) {
+  return (
+    <Link className={`btn ${active ? "" : "secondary"}`} href={`/projections?tab=${tab}`}>
+      {children}
+    </Link>
+  );
+}
+
+export default async function ProjectionsPage({ searchParams }: { searchParams: SP }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const editable = can(user.role, "edit_projections");
-  const scenarios = await prisma.projScenario.findMany({
-    where: { active: true },
-    orderBy: { updatedAt: "desc" },
-  });
-
-  const selected =
-    scenarios.find((s) => s.id === searchParams.scenario) ?? scenarios[0] ?? null;
-
-  const rows = selected ? projectCashFlow(parseAssumptions(selected.assumptionsJson)) : [];
-  const summary = selected ? summarize(rows) : null;
+  const canViewCouncil = can(user.role, "view_ai_council");
+  const requested = searchParams.tab;
+  const tab: Tab =
+    requested === "scenarios"
+      ? "scenarios"
+      : requested === "projections"
+        ? "projections"
+        : requested === "council" && canViewCouncil
+          ? "council"
+          : "reporting";
+  const { filters, state } = parseFilters(searchParams);
+  const canRefresh = can(user.role, "view_projections");
 
   return (
     <>
       <h1>📈 Financial Projections</h1>
-      <p className="sub">
-        Project cash-flow forward from a set of assumptions. Prototype module — scenarios are
-        stored per assumption set and recomputed on the fly by a pure, unit-tested engine.
-      </p>
 
-      {scenarios.length === 0 ? (
-        <div className="notice">
-          No projection scenarios yet.{" "}
-          {editable
-            ? "Create your first one with the form below."
-            : "An owner_admin needs to create one before projections can be viewed."}
-        </div>
-      ) : (
-        <>
-          <h2>Scenarios</h2>
-          <div className="row-actions" style={{ flexWrap: "wrap" }}>
-            {scenarios.map((s) => (
-              <Link
-                key={s.id}
-                className={`btn ${selected && s.id === selected.id ? "" : "secondary"}`}
-                href={`/projections?scenario=${s.id}`}
-              >
-                {s.name}
-              </Link>
-            ))}
-          </div>
+      <div className="row-actions">
+        <TabLink tab="reporting" active={tab === "reporting"}>
+          Reporting
+        </TabLink>
+        <TabLink tab="projections" active={tab === "projections"}>
+          Projections
+        </TabLink>
+        <TabLink tab="scenarios" active={tab === "scenarios"}>
+          Scenarios
+        </TabLink>
+        {canViewCouncil && (
+          <TabLink tab="council" active={tab === "council"}>
+            AI Council
+          </TabLink>
+        )}
+      </div>
 
-          {selected && summary && (
-            <>
-              <h2 style={{ marginTop: "1.5rem" }}>{selected.name}</h2>
-              {selected.description && <p className="muted">{selected.description}</p>}
-
-              <div className="tiles">
-                <div className="tile">
-                  <div className="n">{money(summary.endingBalance)}</div>
-                  <div className="l">Ending balance</div>
-                </div>
-                <div className={`tile ${summary.lowestBalance < 0 ? "danger" : ""}`}>
-                  <div className="n">{money(summary.lowestBalance)}</div>
-                  <div className="l">Lowest balance ({summary.lowestMonthLabel})</div>
-                </div>
-                <div className="tile">
-                  <div className="n">{money(summary.totalNet)}</div>
-                  <div className="l">Total net</div>
-                </div>
-              </div>
-
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Month</th>
-                      <th>Inflow</th>
-                      <th>Outflow</th>
-                      <th>Net</th>
-                      <th>Ending balance</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <tr key={r.monthIndex}>
-                        <td>{r.label}</td>
-                        <td>{money(r.inflow)}</td>
-                        <td>{money(r.outflow)}</td>
-                        <td>{money(r.net)}</td>
-                        <td>
-                          {r.endingBalance < 0 ? (
-                            <span className="badge danger">{money(r.endingBalance)}</span>
-                          ) : (
-                            money(r.endingBalance)
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </>
+      {tab === "reporting" && (
+        <ReportingPanel filters={filters} filterState={state} canRefresh={canRefresh} />
       )}
-
-      <h2 style={{ marginTop: "1.5rem" }}>New scenario</h2>
-      {editable ? (
-        <form action={createScenarioAction} className="card">
-          <div className="grid">
-            <label className="kv">
-              <span>Name</span>
-              <input name="name" placeholder="e.g. Base case" style={inputStyle} required />
-            </label>
-            <label className="kv">
-              <span>Description</span>
-              <input name="description" placeholder="Optional notes" style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Opening balance</span>
-              <input name="openingBalance" type="number" step="0.01" defaultValue={0} style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Horizon (months, 1–60)</span>
-              <input name="horizonMonths" type="number" min={1} max={60} defaultValue={12} style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Monthly inflow</span>
-              <input name="monthlyInflow" type="number" step="0.01" defaultValue={0} style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Monthly outflow</span>
-              <input name="monthlyOutflow" type="number" step="0.01" defaultValue={0} style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Monthly growth %</span>
-              <input name="monthlyGrowthPct" type="number" step="0.01" defaultValue={0} style={inputStyle} />
-            </label>
-            <label className="kv">
-              <span>Start label (e.g. Jul 2026)</span>
-              <input name="startLabel" placeholder="Jul 2026" style={inputStyle} />
-            </label>
-          </div>
-          <div className="row-actions" style={{ marginTop: "1rem" }}>
-            <button className="btn" type="submit">
-              Create scenario
-            </button>
-          </div>
-        </form>
-      ) : (
-        <p className="muted">
-          You are a {user.role}: you can view projections, but only an owner_admin can create or
-          edit scenarios.
-        </p>
+      {tab === "projections" && (
+        <ProjectionsPanel user={user} selectedScenarioId={searchParams.scenario} />
+      )}
+      {tab === "scenarios" && (
+        <ScenariosPanel user={user} selectedScenarioId={searchParams.scenario} />
+      )}
+      {tab === "council" && canViewCouncil && (
+        <AiCouncilPanel user={user} selectedRunId={searchParams.run} />
       )}
     </>
   );

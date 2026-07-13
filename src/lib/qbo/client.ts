@@ -105,6 +105,16 @@ export async function post<T = unknown>(ctx: QboContext, entity: string, body: u
   return request<T>(ctx, "POST", entity, body);
 }
 
+/**
+ * Read-only GET against an Accounting API path (e.g. `reports/ProfitAndLoss?...`).
+ * Reuses the same base-URL-per-environment, bearer auth (auto-refresh via
+ * `getContext`), and minorversion as every other call. Used by the Reports
+ * client (src/lib/qbo/reports.ts), which is strictly read-only.
+ */
+export async function get<T = unknown>(ctx: QboContext, path: string): Promise<T> {
+  return request<T>(ctx, "GET", path);
+}
+
 /** List active accounts (for the Account Mapping resolution UI, §14). */
 export async function listAccounts(ctx: QboContext): Promise<Array<{ Id: string; Name: string; FullyQualifiedName: string; AccountType: string; AccountSubType?: string }>> {
   const res = await query<{ QueryResponse?: { Account?: any[] } }>(
