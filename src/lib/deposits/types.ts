@@ -12,6 +12,9 @@ export type Processor = "paymentech" | "tekmetric";
 export interface PayoutLine {
   /** Positive gross charge amount. */
   amount: number;
+  /** Per-charge processor fee (Tekmetric/Stripe); 0 for Chase daily batches.
+   * Matched to the QBO fee journal entry by amount + date at deposit time. */
+  fee?: number;
   /** Card brand as the processor reports it (Visa/Mastercard/Other/…). */
   brand: string;
   /** Processor reference (batch sequence, charge id) — audit aid, not a key. */

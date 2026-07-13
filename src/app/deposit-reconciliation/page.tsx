@@ -153,14 +153,11 @@ export default async function DepositReconciliationPage() {
                   </td>
                   <td className="muted" style={{ fontSize: "0.78rem" }}>{p.sourceRef ?? "—"}</td>
                   <td>
-                    {editable && p.status === "matched" && p.processor === "paymentech" && !p.qboDepositId && (
+                    {editable && p.status === "matched" && !p.qboDepositId && (
                       <form action={createDepositFromPayoutAction}>
                         <input type="hidden" name="payoutId" value={p.id} />
                         <button className="btn" type="submit">Create deposit</button>
                       </form>
-                    )}
-                    {editable && p.status === "matched" && p.processor === "tekmetric" && (
-                      <span className="muted" style={{ fontSize: "0.72rem" }}>Tekmetric posting needs fee-JE support (coming)</span>
                     )}
                     {p.status === "matched" && createMsg.get(p.id) && createMsg.get(p.id)!.kind !== "create_deposit" && (
                       <div

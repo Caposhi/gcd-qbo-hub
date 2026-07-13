@@ -87,6 +87,7 @@ export async function ingestDepositFilesAction(formData: FormData) {
         lines: {
           create: d.lines.map((l) => ({
             amount: dec(l.amount),
+            feeAmount: l.fee ? dec(l.fee) : null,
             brand: l.brand || null,
             ref: l.ref || null,
           })),
@@ -172,6 +173,7 @@ export async function locateProposedPaymentsAction() {
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate } = await import("@/lib/deposits/qbo-lookup");
   const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
+  const { findFeeJournalEntries } = await import("@/lib/qbo/journal-entries");
 
   // Terminal-keying discrepancy tolerance: the amount charged at the Chase
   // terminal can differ from the RO/QBO payment by a small typo. Match within
@@ -207,14 +209,16 @@ export async function locateProposedPaymentsAction() {
   // all here is already reconciled, so we surface "already deposited" instead of
   // a false "matched" that would only get blocked at create time.
   let depositedIds = new Set<string>();
+  let feeJEs: Awaited<ReturnType<typeof findFeeJournalEntries>> = [];
   const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
   if (settleDates.length) {
-    depositedIds = await collectDepositedPaymentIds(
-      ctx,
-      shiftDate(settleDates[0], -8),
-      shiftDate(settleDates[settleDates.length - 1], 4)
-    );
+    const spanStart = shiftDate(settleDates[0], -8);
+    const spanEnd = shiftDate(settleDates[settleDates.length - 1], 4);
+    depositedIds = await collectDepositedPaymentIds(ctx, spanStart, spanEnd);
+    feeJEs = await findFeeJournalEntries(ctx, spanStart, spanEnd);
   }
+  // Fee JEs claimed this run (a JE backs only one payout).
+  const feeUsedGlobal = new Set<string>();
 
   const daysApart = (a: string, b: string) =>
     Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
@@ -285,23 +289,49 @@ export async function locateProposedPaymentsAction() {
 
     const foundAll = foundCount === p.lines.length;
     const allDeposited = depositedCount === p.lines.length && p.lines.length > 0;
-    const status = foundAll ? "matched" : allDeposited ? "already_deposited" : "needs_review";
-    if (foundAll) payoutsMatched++;
-    else if (allDeposited) payoutsAlreadyDeposited++;
+
+    // Tekmetric: also confirm each charge's fee journal entry exists (by fee
+    // amount) so "matched" means the full deposit (payments + fees) can be built.
+    let feesNeeded = 0;
+    let feesFound = 0;
+    if (p.processor === "tekmetric" && foundAll) {
+      for (const line of p.lines) {
+        const fee = line.feeAmount ? Number(line.feeAmount) : 0;
+        if (fee <= 0) continue;
+        feesNeeded++;
+        const feeC = Math.round(fee * 100);
+        const je = feeJEs
+          .filter((j) => !feeUsedGlobal.has(j.jeId) && Math.round(j.amount * 100) === feeC && daysApart(j.date, p.settlementDate) <= 10)
+          .sort((a, b) => daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate))[0];
+        if (je) {
+          feeUsedGlobal.add(je.jeId);
+          feesFound++;
+        }
+      }
+    }
+    const feesOk = p.processor !== "tekmetric" || feesFound === feesNeeded;
+
+    const status = foundAll && feesOk ? "matched" : allDeposited ? "already_deposited" : "needs_review";
+    if (status === "matched") payoutsMatched++;
+    else if (status === "already_deposited") payoutsAlreadyDeposited++;
     else payoutsReview++;
 
     const missing = detail.filter((d) => !d.found && !d.alreadyDeposited).map((d) => d.amount.toFixed(2));
     const overShortCents = detail.reduce((s, d) => s + Math.round((d.delta ?? 0) * 100), 0);
     await prisma.depPayout.update({
       where: { id: p.id },
-      data: { status, deltaCents: foundAll ? overShortCents : null },
+      data: { status, deltaCents: status === "matched" ? overShortCents : null },
     });
     const osNote = overShortCents !== 0 ? ` Over/short from keying: ${(overShortCents / 100).toFixed(2)} (booked to Cash over/short on deposit).` : "";
-    const message = foundAll
-      ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${osNote}`
-      : allDeposited
-        ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
-        : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`;
+    const feeNote = p.processor === "tekmetric" && feesNeeded ? ` ${feesFound}/${feesNeeded} fee JEs located.` : "";
+    const message =
+      foundAll && feesOk
+        ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${feeNote}${osNote}`
+        : foundAll && !feesOk
+          ? `Payments located, but only ${feesFound}/${feesNeeded} fee journal entries found — re-run once Back Office has posted them.`
+          : allDeposited
+            ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
+            : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`;
     await prisma.depEvent.create({
       data: {
         payoutId: p.id,
@@ -323,14 +353,15 @@ export async function locateProposedPaymentsAction() {
 }
 
 /**
- * Create the QBO Bank Deposit for one matched PAYMENTECH payout (owner-only).
- * Paymentech deposits are pure gross card sales (fees billed monthly, not
- * netted), so the deposit just links the matched Undeposited-Funds payments into
- * Chase Checking 9680 — total = the batch amount = what Chase deposited, so the
- * bank-feed line auto-matches. Tekmetric payouts are NOT postable here yet
- * (they need the fee journal-entry links). Guards: rollout stage (never
- * dry-run, valid creds), all lines located, exact-sum checksum, and a fresh
- * double-count scan so a payment already on a deposit is never re-deposited.
+ * Create the QBO Bank Deposit for one matched payout (owner-only), into Chase
+ * Checking 9680, so the bank-feed line auto-matches.
+ *   - Paymentech: link the gross Undeposited-Funds payments; plug any small
+ *     terminal-keying over/short to Cash over/short. Total = batch amount.
+ *   - Tekmetric: link the gross payments AND each charge's fee journal entry
+ *     (negative, by fee amount). Total = Σpayments − Σfees = payout net.
+ * Guards: rollout stage (never dry-run, valid creds), all lines located, a fresh
+ * double-count scan (never re-deposit a payment already on a deposit), and an
+ * exact-sum checksum that must equal the payout net or nothing posts.
  */
 export async function createDepositFromPayoutAction(formData: FormData) {
   const user = await requirePermission("edit_mappings");
@@ -345,19 +376,19 @@ export async function createDepositFromPayoutAction(formData: FormData) {
     "@/lib/qbo/deposits"
   );
   const { shiftDate, getPaymentAmounts } = await import("@/lib/deposits/qbo-lookup");
+  const { findFeeJournalEntries } = await import("@/lib/qbo/journal-entries");
 
   const blocked = async (message: string) => {
     await prisma.depEvent.create({ data: { payoutId, eventType: "create_blocked", message } });
     revalidatePath("/deposit-reconciliation");
   };
+  const daysApartLocal = (a: string, b: string) =>
+    Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
   try {
     const payout = await prisma.depPayout.findUnique({ where: { id: payoutId }, include: { lines: true } });
     if (!payout) throw new Error("Payout not found");
     if (payout.qboDepositId) return; // already created — idempotent
-    if (payout.processor !== "paymentech") {
-      return blocked("Tekmetric deposits aren't postable yet — they need fee journal-entry links (coming).");
-    }
     if (payout.status !== "matched") return blocked("Not matched — run Locate first so every charge is confirmed.");
     const unlocated = payout.lines.filter((l) => !l.matchedQboTxnId);
     if (unlocated.length) return blocked(`${unlocated.length} line(s) not located — re-run Locate.`);
@@ -384,32 +415,63 @@ export async function createDepositFromPayoutAction(formData: FormData) {
       return blocked(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
     }
 
-    // Link each payment at its ACTUAL QBO amount (which may differ from the
-    // terminal-charged line amount by a keying typo), then plug the difference
-    // to the bank total via Cash over/short so the deposit ties to what Chase
-    // actually deposited.
+    // Link each payment at its ACTUAL QBO amount.
     const ids = payout.lines.map((l) => l.matchedQboTxnId as string);
     const amounts = await getPaymentAmounts(ctx, ids);
     if (ids.some((id) => !amounts.has(id))) {
       return blocked("Could not read some matched payment amounts from QBO — re-run Locate.");
     }
     const payments = ids.map((id) => ({ id, amount: amounts.get(id) as number }));
-
-    const sumCents = payments.reduce((s, p) => s + Math.round(p.amount * 100), 0);
+    const sumPayCents = payments.reduce((s, p) => s + Math.round(p.amount * 100), 0);
     const netCents = Math.round(Number(payout.netAmount) * 100);
-    const plugCents = netCents - sumCents; // over/short needed so deposit == bank
-    const KEYING_CAP_CENTS = 1000; // $10
-    if (Math.abs(plugCents) > KEYING_CAP_CENTS) {
-      return blocked(
-        `Over/short ${(plugCents / 100).toFixed(2)} exceeds the $10 keying tolerance — investigate before posting.`
-      );
-    }
 
+    const feeStart = shiftDate(payout.settlementDate, payout.processor === "tekmetric" ? -6 : -3);
+    const feeEnd = shiftDate(payout.settlementDate, 2);
+
+    let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
     let plug: { accountId: string; amount: number; description: string } | undefined;
-    if (plugCents !== 0) {
-      const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
-      if (!os?.qboAccountId) return blocked("Cash over/short account mapping unresolved.");
-      plug = { accountId: os.qboAccountId, amount: plugCents / 100, description: "Card terminal keying over/short" };
+
+    if (payout.processor === "tekmetric") {
+      // Link each charge's fee journal entry (negative), matched by fee amount.
+      // Deposit = Σpayments − Σfees must equal the payout net (no plug — Stripe
+      // amounts are exact); a mismatch means a fee didn't match and we don't post.
+      const feeJEs = await findFeeJournalEntries(ctx, feeStart, feeEnd);
+      const feeUsed = new Set<string>();
+      journalEntries = [];
+      let sumFeeCents = 0;
+      for (const line of payout.lines) {
+        const fee = line.feeAmount ? Number(line.feeAmount) : 0;
+        if (fee <= 0) continue;
+        const feeC = Math.round(fee * 100);
+        const je = feeJEs
+          .filter((j) => !feeUsed.has(j.jeId) && Math.round(j.amount * 100) === feeC)
+          .sort((a, b) => daysApartLocal(a.date, payout.settlementDate) - daysApartLocal(b.date, payout.settlementDate))[0];
+        if (!je) return blocked(`Fee journal entry for ${fee.toFixed(2)} not found in ${feeStart}…${feeEnd} — re-run Locate.`);
+        feeUsed.add(je.jeId);
+        journalEntries.push({ id: je.jeId, lineId: je.ufLineId, amount: -fee });
+        sumFeeCents += feeC;
+      }
+      const totalCents = sumPayCents - sumFeeCents;
+      if (totalCents !== netCents) {
+        return blocked(
+          `Checksum mismatch (tekmetric): payments ${(sumPayCents / 100).toFixed(2)} − fees ${(sumFeeCents / 100).toFixed(
+            2
+          )} = ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`
+        );
+      }
+    } else {
+      // Paymentech: no fee JEs; plug any small terminal-keying over/short to the
+      // bank total via Cash over/short.
+      const plugCents = netCents - sumPayCents;
+      const KEYING_CAP_CENTS = 1000; // $10
+      if (Math.abs(plugCents) > KEYING_CAP_CENTS) {
+        return blocked(`Over/short ${(plugCents / 100).toFixed(2)} exceeds the $10 keying tolerance — investigate before posting.`);
+      }
+      if (plugCents !== 0) {
+        const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
+        if (!os?.qboAccountId) return blocked("Cash over/short account mapping unresolved.");
+        plug = { accountId: os.qboAccountId, amount: plugCents / 100, description: "Card terminal keying over/short" };
+      }
     }
 
     const input = {
@@ -417,6 +479,7 @@ export async function createDepositFromPayoutAction(formData: FormData) {
       txnDate: payout.settlementDate,
       privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
       payments,
+      journalEntries,
       plug,
     };
 
@@ -450,7 +513,9 @@ export async function createDepositFromPayoutAction(formData: FormData) {
       data: {
         payoutId,
         eventType: "create_deposit",
-        message: `Created Chase Checking deposit ${result.qboTransactionId} for ${(netCents / 100).toFixed(2)} (${payments.length} payments) by ${user.email}.`,
+        message: `Created Chase Checking deposit ${result.qboTransactionId} for ${(netCents / 100).toFixed(2)} (${payments.length} payments${
+          journalEntries?.length ? ` − ${journalEntries.length} fee JEs` : ""
+        }) by ${user.email}.`,
         dataJson: { depositId: result.qboTransactionId, totalAmt: result.totalAmt } as unknown as object,
       },
     });
