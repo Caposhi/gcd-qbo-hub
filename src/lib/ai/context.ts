@@ -10,6 +10,8 @@ import { loadBaseline } from "@/lib/projections/baseline-service";
 import type { AccountingMethod } from "@/lib/projections/reports";
 import { isTekmetricConfigured } from "@/lib/tekmetric/client";
 import { readOperationsSnapshot } from "@/lib/tekmetric/snapshot";
+import { isTranscriptsConfigured } from "@/lib/transcripts/client";
+import { readTranscriptSnapshot } from "@/lib/transcripts/snapshot";
 import type { MonthRange, MonthlyContext, MonthlyKpi } from "./orchestration";
 
 function money2(v: number): string {
@@ -115,6 +117,25 @@ export async function buildMonthlyContext(
     }
   }
 
+  // Aggregated customer-call insights from the transcript service (cache only).
+  let transcripts: MonthlyContext["transcripts"] = null;
+  if (isTranscriptsConfigured()) {
+    try {
+      const snap = await readTranscriptSnapshot({ start: month.start, end: month.end });
+      if (snap.data) {
+        transcripts = {
+          totalInbound: snap.data.totalInbound,
+          transcripts: snap.data.transcripts,
+          analyzedPct: snap.data.analyzedPct,
+          topKeywords: snap.data.topKeywords,
+          negativeSamples: snap.data.negativeSamples.map((s) => s.summary),
+        };
+      }
+    } catch {
+      transcripts = null;
+    }
+  }
+
   return {
     month,
     method,
@@ -127,5 +148,6 @@ export async function buildMonthlyContext(
     expenseBreakdown: reporting.expenseBreakdown.map((e) => ({ name: e.name, amount: e.value })),
     baseline,
     ops,
+    transcripts,
   };
 }

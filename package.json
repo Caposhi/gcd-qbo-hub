@@ -19,7 +19,8 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "sync:dry-run": "tsx scripts/dry-run.ts",
-    "sync:backfill": "tsx scripts/backfill.ts"
+    "sync:backfill": "tsx scripts/backfill.ts",
+    "tekmetric:backfill": "tsx scripts/tekmetric-backfill.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

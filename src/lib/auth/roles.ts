@@ -44,7 +44,10 @@ export type Permission =
   | "run_ai_council"
   // Tekmetric integration module (Build Phase 4 groundwork) — read-only
   | "view_tekmetric"
-  | "refresh_tekmetric";
+  | "refresh_tekmetric"
+  // Call-transcript integration (Build Phase 4) — read-only aggregated insights
+  | "view_transcripts"
+  | "refresh_transcripts";
 
 const PERMISSIONS: Record<Role, Permission[]> = {
   owner_admin: [
@@ -71,6 +74,9 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     // Tekmetric: owners can view the operations page and trigger a refresh.
     "view_tekmetric",
     "refresh_tekmetric",
+    // Transcripts: owners can view aggregated call insights and refresh them.
+    "view_transcripts",
+    "refresh_transcripts",
   ],
   reviewer: [
     "view_dashboard",
@@ -88,6 +94,8 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "view_ai_council",
     // Reviewers can view Tekmetric operations, but not trigger a refresh.
     "view_tekmetric",
+    // Reviewers can read aggregated call insights, but not trigger a refresh.
+    "view_transcripts",
   ],
   // The coworker role is now active for the "Ask My Client" portal (§1): a
   // coworker can view the portal and answer questions directed at them, but has

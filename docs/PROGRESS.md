@@ -333,3 +333,60 @@ The council now reads real operational actuals:
 3. **Live validation.** The AI council has still never run against the live
    Anthropic API; the first monthly run (key set) should be watched for spend
    vs. the $15 cap, and the Tekmetric refresh against the live shop.
+
+---
+
+## Phase 4 completion — Tekmetric backfill + call-transcript integration
+
+Closes the two items left open above. Health: typecheck clean, **247 tests
+pass**, `next build` compiles.
+
+### Tekmetric 24-month backfill
+
+- Pure `monthRangesBack(now, 24)` (tested) enumerates the trailing 24 full
+  months, matching the QBO backfill window.
+- `scripts/tekmetric-backfill.ts` (`npm run tekmetric:backfill [-- <months>]`)
+  snapshots one `tek_snapshot` row per month via the same gated refresh path.
+  Read-only over Tekmetric; requires `TEKMETRIC_*` + `DATABASE_URL`. This gives
+  the operational history the trend charts and (future) projection scenarios
+  need.
+
+### Call-transcript service integration (CRO agent)
+
+Integrated the sibling **gcd-webhook-server** transcript service
+(`/api/admin/transcripts/*`, guarded by `ADMIN_SECRET`). The hub reads
+**aggregated insights only** — never raw utterances (handoff §9).
+- `src/lib/transcripts/client.ts` — read-only client (`/stats`, `/keywords`,
+  `/insights-status`, `/search?sentiment=NEGATIVE`); GETs only, secret sent via
+  `x-admin-secret` header; degrades to "not configured".
+- `src/lib/transcripts/aggregate.ts` — **pure** `buildTranscriptInsights`
+  (call volume, transcript coverage, AI-analysis %, top keyword topics, and a
+  sample of negative-sentiment AI summaries) + `parseTranscriptInsights`
+  validate-on-read. Unit-tested.
+- `src/lib/transcripts/snapshot.ts` + `transcript_snapshot` table (migration
+  `00000000000011`) — fetch-through cache; refresh is the only network path.
+- **AI wiring:** `buildMonthlyContext` adds a `transcripts` block; `renderContext`
+  emits a `CUSTOMER CALLS (transcript service)` section; the **CRO** persona now
+  grounds its analysis in call topics + the negative sample. The monthly council
+  run best-effort refreshes the month's transcript insights first (only when
+  configured; a failure never blocks the run).
+- Permissions `view_transcripts` (owner + reviewer) / `refresh_transcripts`
+  (owner) in `roles.ts`; `TRANSCRIPTS_BASE_URL` / `TRANSCRIPTS_SECRET` added to
+  `.env.example` and `render.yaml`. Env decisions: **24-month** backfill window;
+  transcript service exposes structured aggregates (used) + a chatbot + monthly
+  full analysis (its own UI stays in the webhook server).
+
+### Notes / still open
+
+- The hub feeds the **CRO agent** aggregated call insights; it deliberately does
+  NOT duplicate the webhook server's transcript-search UI (that already exists).
+  A thin hub `/transcripts` panel could be added later if wanted.
+- **Projection scenarios** (per-make/advisor/utilization) can now be built on the
+  backfilled Tekmetric history — still a separate engine-modeling step; the
+  data groundwork (24-month snapshots) is in place.
+- The transcript `/search` endpoint returns a page (not a true total) per
+  sentiment, so the negative-call figure is an explicit **sample**, labeled as
+  such to the CRO. A true monthly count would want an aggregate endpoint on the
+  transcript service.
+- First live run still wants watching (Anthropic $15 cap, Tekmetric + transcript
+  refresh against the live services).

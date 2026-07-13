@@ -113,6 +113,34 @@ export function comparisonRange(range: TekPeriod, mode: ComparisonMode): TekPeri
 export const DEFAULT_PRESET: DatePreset = "last_month";
 export const DEFAULT_COMPARISON: ComparisonMode = "prior_period";
 
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The `count` full calendar months ending with the month BEFORE `today`
+ * (oldest first). Used by the backfill to snapshot per-month history so trend
+ * charts and the projections engine have a series to work with. Pure.
+ */
+export function monthRangesBack(
+  today: Date,
+  count: number
+): Array<{ start: string; end: string; label: string }> {
+  const y = today.getUTCFullYear();
+  const m = today.getUTCMonth();
+  const out: Array<{ start: string; end: string; label: string }> = [];
+  // i = 1 is the prior full month; i = count is the oldest.
+  for (let i = count; i >= 1; i--) {
+    const monthOffset = m - i;
+    const yy = y + Math.floor(monthOffset / 12);
+    const mm = ((monthOffset % 12) + 12) % 12;
+    out.push({
+      start: iso(utc(yy, mm, 1)),
+      end: iso(utc(yy, mm, daysInMonth(yy, mm))),
+      label: `${MONTH_ABBR[mm]} ${yy}`,
+    });
+  }
+  return out;
+}
+
 /**
  * The one clock-reading helper: "today" as a UTC date whose Y/M/D equal the
  * calendar date in the shop's timezone (SYNC_TZ, default America/New_York).

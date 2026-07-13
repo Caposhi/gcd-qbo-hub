@@ -82,6 +82,14 @@ export interface MonthlyContext {
     revenueByMake: Array<{ make: string; revenue: number; grossMarginPct: number; roCount: number }>;
     advisors: Array<{ advisor: string; roCount: number; totalSales: number; grossMarginPct: number }>;
   };
+  /** Aggregated customer-call insights from the transcript service, when available. */
+  transcripts: null | {
+    totalInbound: number;
+    transcripts: number;
+    analyzedPct: number;
+    topKeywords: Array<{ keyword: string; mentions: number; calls: number }>;
+    negativeSamples: string[];
+  };
 }
 
 function money(v: number): string {
@@ -159,6 +167,23 @@ export function renderContext(ctx: MonthlyContext): string {
       for (const a of o.advisors) {
         lines.push(`    - ${a.advisor}: ${a.roCount} ROs, ${money(a.totalSales)} sales, ${a.grossMarginPct.toFixed(0)}% margin`);
       }
+    }
+  }
+  if (ctx.transcripts) {
+    const t = ctx.transcripts;
+    lines.push("");
+    lines.push("CUSTOMER CALLS (transcript service — aggregated, not raw calls):");
+    lines.push(
+      `  ${t.totalInbound} inbound calls · ${t.transcripts} transcribed · ${t.analyzedPct}% AI-analyzed`
+    );
+    if (t.topKeywords.length) {
+      lines.push(
+        `  Top call topics: ${t.topKeywords.map((k) => `${k.keyword} (${k.calls} calls)`).join(", ")}`
+      );
+    }
+    if (t.negativeSamples.length) {
+      lines.push("  Sample of negative-sentiment calls (AI summaries; a sample, not a full count):");
+      for (const s of t.negativeSamples) lines.push(`    - ${s}`);
     }
   }
   return lines.join("\n");

@@ -65,6 +65,11 @@ services:
         sync: false
       - key: TEKMETRIC_SHOP_ID
         sync: false
+      # --- Call-transcript service (read-only aggregated insights) ---
+      - key: TRANSCRIPTS_BASE_URL
+        value: https://gcd-webhook-server.onrender.com
+      - key: TRANSCRIPTS_SECRET
+        sync: false
       # --- SendGrid ---
       - key: SENDGRID_API_KEY
         sync: false

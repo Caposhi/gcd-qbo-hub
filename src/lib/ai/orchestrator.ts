@@ -28,6 +28,8 @@ import { buildMonthlyContext } from "./context";
 import { isTekmetricConfigured } from "@/lib/tekmetric/client";
 import { refreshOperations } from "@/lib/tekmetric/snapshot";
 import { comparisonRange } from "@/lib/tekmetric/periods";
+import { isTranscriptsConfigured } from "@/lib/transcripts/client";
+import { refreshTranscriptInsights } from "@/lib/transcripts/snapshot";
 import {
   priorMonthRange,
   renderContext,
@@ -111,6 +113,14 @@ export async function runCouncil(opts: RunCouncilOptions): Promise<RunCouncilRes
         await refreshOperations(tekPeriod, "prior_period", comparisonRange(tekPeriod, "prior_period"));
       } catch {
         /* ignore — ops data is optional context */
+      }
+    }
+    // Same for aggregated customer-call insights from the transcript service.
+    if (opts.kind === "monthly" && isTranscriptsConfigured()) {
+      try {
+        await refreshTranscriptInsights({ start: month.start, end: month.end });
+      } catch {
+        /* ignore — transcript insights are optional context */
       }
     }
 

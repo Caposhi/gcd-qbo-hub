@@ -760,3 +760,18 @@ model TekSnapshot {
   @@unique([entity, periodStart, periodEnd, comparison])
   @@map("tek_snapshot")
 }
+
+// Call-transcript integration (Build Phase 4). Cache of AGGREGATED monthly call
+// insights read from the sibling gcd-webhook-server transcript service — never
+// raw transcript utterances (handoff §9). Read-only over that service.
+model TranscriptSnapshot {
+  id          String   @id @default(cuid())
+  entity      String // 'monthly_insights'
+  periodStart DateTime
+  periodEnd   DateTime
+  payloadJson Json // normalized TranscriptInsights
+  fetchedAt   DateTime @default(now())
+
+  @@unique([entity, periodStart, periodEnd])
+  @@map("transcript_snapshot")
+}

@@ -167,14 +167,16 @@ describe("orchestration — prior month + context", () => {
         laborPctOfRevenue: 0.6,
       },
       ops: null,
+      transcripts: null,
     };
     const a = renderContext(ctx);
     const b = renderContext(ctx);
     expect(a).toBe(b); // deterministic
     expect(a).toContain("Total Revenue: $39,000");
     expect(a).toContain("DERIVED BASELINE");
-    // No Tekmetric snapshot → no OPERATIONS section (officers note it's absent).
+    // No Tekmetric / transcript snapshots → those sections are absent.
     expect(a).not.toContain("OPERATIONS (Tekmetric");
+    expect(a).not.toContain("CUSTOMER CALLS");
   });
 
   it("renders the OPERATIONS (Tekmetric) section when ops data is present", () => {
@@ -197,12 +199,22 @@ describe("orchestration — prior month + context", () => {
         revenueByMake: [{ make: "BMW", revenue: 41000, grossMarginPct: 57, roCount: 62 }],
         advisors: [{ advisor: "Dana", roCount: 70, totalSales: 48000, grossMarginPct: 54 }],
       },
+      transcripts: {
+        totalInbound: 500,
+        transcripts: 410,
+        analyzedPct: 95,
+        topKeywords: [{ keyword: "warranty", mentions: 30, calls: 22 }],
+        negativeSamples: ["Caller upset about a repeat oil leak after service."],
+      },
     };
     const out = renderContext(ctx);
     expect(out).toContain("OPERATIONS (Tekmetric");
     expect(out).toContain("Hans");
     expect(out).toContain("BMW");
     expect(out).toContain("Dana");
+    expect(out).toContain("CUSTOMER CALLS");
+    expect(out).toContain("warranty");
+    expect(out).toContain("repeat oil leak");
   });
 });
 
