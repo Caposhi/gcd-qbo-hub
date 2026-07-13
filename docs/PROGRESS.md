@@ -172,3 +172,95 @@ the derived values and the overrides (no black boxes).
 4. **Cash-flow fidelity.** The engine approximates operating cash flow as net
    income (no working-capital timing). If the AI is going to reason about the
    build-out cash crunch, decide whether Phase 3 needs A/R & A/P timing folded in.
+
+---
+
+## Phase 3 — AI C-suite (personas, orchestration, monthly cron, budget cap, UI) ✅
+
+**Status:** complete. `npm run typecheck` and `npm run test` pass (211 tests,
+19 new); `npm run build` compiles. The council is **fully wired but dormant
+until `ANTHROPIC_API_KEY` is set** — with no key it records runs and shows a
+"not configured" state instead of spending anything.
+
+### What shipped
+
+A fourth **AI Council** tab on `/projections` (gated by `view_ai_council`): a
+team of AI officers debate the month, an independent auditor and board review
+their work, and each brings its specialty in plain language beside the numbers —
+progressive disclosure (one-line takeaway → 2–4 bullets → expandable memo →
+long-form board report).
+
+- **Personas** (`src/lib/ai/personas.ts`, pure): six debating officers — CMO,
+  **Pacman** (CFO/CPA), **Cam** (Controller/CMA), COO, Chief Data Analyst, CRO —
+  plus a **CEO** who synthesizes last, and the **independent layer**: **Al**
+  (Chief Auditor) and the **Board of Directors**. The finance trio's voice
+  mirrors `gcd-cfo-team`. The firewall is structural (`layer` field).
+- **Orchestration** (`orchestrator.ts` + pure `orchestration.ts`): build the
+  shared cached context → officers' first-pass memos (concurrent) → budget-gated
+  multi-round debate (each officer sees the *others*, probes the weakest
+  assumption) → CEO synthesis → **Al audits from raw data only** → the **Board
+  reviews the finished officer set + Al's findings**. The firewall (`visiblePeers`)
+  is unit-tested: the auditor is provably never fed officer analysis.
+- **$15 budget cap** (`budget.ts`, pure): Opus 4.8 pricing with prompt-cache and
+  Batch discounts; the tracker stops adding debate rounds and forces CEO
+  synthesis before the cap. Enforced in code, tested.
+- **Structured output** (`insights.ts`, pure): `AgentInsight` / `BoardReport`
+  JSON schemas for `output_config.format`, plus validate-on-read coercion
+  (bullets clamped to 2–4, safe empty shapes) so a bad model response can't crash
+  the UI.
+- **Client** (`client.ts`): one agent turn on `claude-opus-4-8` with adaptive
+  thinking; the shared monthly context is the cached system prefix (written once,
+  read at ~0.1× by every agent); structured JSON out; redacted usage in.
+- **Cadence**: monthly Render cron on the 1st (`/api/cron/ai-council`, Bearer
+  `CRON_SECRET`, added to `render.yaml`) runs the full meeting for the prior
+  month; cheap on-demand single-officer runs from the UI.
+- **Persistence**: `ai_agent_run`, `ai_agent_report`, `ai_board_report` +
+  migration.
+- **Permissions**: `run_ai_council` (owner only) / `view_ai_council` (owner +
+  reviewer) added to `roles.ts` and tested.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `src/lib/ai/personas.ts` | **Pure** persona configs + layer firewall metadata. |
+| `src/lib/ai/budget.ts` | **Pure** Opus-4.8 cost accounting + $15 circuit breaker. |
+| `src/lib/ai/insights.ts` | **Pure** structured-output schemas + validate-on-read. |
+| `src/lib/ai/orchestration.ts` | **Pure** prior-month, context render, `visiblePeers` firewall. |
+| `src/lib/ai/client.ts` | Anthropic turn (cached shared context, structured JSON, usage). |
+| `src/lib/ai/context.ts` | Build the shared monthly context from the Phase 1/2 caches. |
+| `src/lib/ai/orchestrator.ts` | The meeting flow + persistence (`runCouncil`, `runSingleAgent`). |
+| `src/app/projections/ai/*` | `AiCouncilPanel` (server, progressive disclosure) + gated actions. |
+| `src/app/api/cron/ai-council/route.ts` + `render.yaml` | Monthly cron on the 1st. |
+| `prisma/…/00000000000008_ai_council/` | Run / report / board tables. |
+| `tests/ai-council.test.ts` | 18 cases: cost, cap, validation, personas, firewall, context. |
+
+### Architecture notes
+
+- **Independence is enforced, not asserted.** The auditor and board never join
+  the officer debate; `visiblePeers` returns `[]` for the auditor in every phase,
+  and a test locks that in. Al works from the same raw context; the Board sees
+  only finished officer reports + Al's findings.
+- **Cost is bounded in code.** Prompt caching on the shared context keeps input
+  cheap; the budget tracker refuses to start a debate round that would risk the
+  $15 cap and forces synthesis. Expected spend is a few dollars/run.
+- **Read-only + safe.** No QBO writes; the council reads the Phase 1/2 caches.
+  Every stored insight is validated on read; the whole feature no-ops safely
+  without an API key.
+
+### Open questions for Phase 4 (Tekmetric + call transcripts)
+
+1. **Batch API.** The first-pass officer memos run concurrently with prompt
+   caching (well under budget at this scale). Moving them to the Batch API (50%
+   off) is the documented cost optimization but adds polling latency — worth it
+   once runs grow, and untested against the live API here.
+2. **CRO transcript feed.** The open item from the handoff stands: does the
+   call-transcript service emit structured insights or raw transcripts? That
+   decides whether Phase 4 is a thin read endpoint or a small aggregation layer.
+3. **Ops cuts unlock the deferred scenarios.** Tekmetric data lights up the
+   `needs_tekmetric` scenario templates (per-tech/bay/advisor/make, utilization,
+   warranty) and lets the COO/CRO agents move past "I'd need Tekmetric for that."
+4. **Live validation.** The orchestrator is correct by construction and unit-
+   tested, but has not been run against the live Anthropic API from here — the
+   first real monthly run (with the key set) should be watched for token spend
+   and structured-output conformance before trusting the cron unattended.

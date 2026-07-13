@@ -96,6 +96,27 @@ services:
       - key: CRON_SECRET
         sync: false
 
+  # ---- Cron Job: monthly AI council run on the 1st (06:00 UTC) for the prior
+  # month (Financial Projections, Phase 3). Calls the protected internal route;
+  # the orchestrator enforces the $15/run token budget and is read-only over QBO.
+  - type: cron
+    name: gcd-qbo-hub-monthly-ai-council
+    runtime: node
+    plan: starter
+    rootDir: .
+    schedule: "0 6 1 * *"
+    buildCommand: npm install
+    startCommand: >-
+      curl -fsS -X POST "$PUBLIC_APP_URL/api/cron/ai-council"
+      -H "Authorization: Bearer $CRON_SECRET"
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PUBLIC_APP_URL
+        value: https://gcd-qbo-hub.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
 databases:
   - name: gcd-qbo-hub-db
     plan: basic-256mb

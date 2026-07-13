@@ -27,14 +27,16 @@ import { ReportingPanel } from "./reporting/ReportingPanel";
 import type { FilterState } from "./reporting/FilterBar";
 import { ProjectionsPanel } from "./v2/ProjectionsPanel";
 import { ScenariosPanel } from "./ScenariosPanel";
+import { AiCouncilPanel } from "./ai/AiCouncilPanel";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "reporting" | "projections" | "scenarios";
+type Tab = "reporting" | "projections" | "scenarios" | "council";
 
 interface SP {
   tab?: string;
   scenario?: string;
+  run?: string;
   preset?: string;
   cmp?: string;
   method?: string;
@@ -69,12 +71,16 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
+  const canViewCouncil = can(user.role, "view_ai_council");
+  const requested = searchParams.tab;
   const tab: Tab =
-    searchParams.tab === "scenarios"
+    requested === "scenarios"
       ? "scenarios"
-      : searchParams.tab === "projections"
+      : requested === "projections"
         ? "projections"
-        : "reporting";
+        : requested === "council" && canViewCouncil
+          ? "council"
+          : "reporting";
   const { filters, state } = parseFilters(searchParams);
   const canRefresh = can(user.role, "view_projections");
 
@@ -92,6 +98,11 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
         <TabLink tab="scenarios" active={tab === "scenarios"}>
           Scenarios
         </TabLink>
+        {canViewCouncil && (
+          <TabLink tab="council" active={tab === "council"}>
+            AI Council
+          </TabLink>
+        )}
       </div>
 
       {tab === "reporting" && (
@@ -102,6 +113,9 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
       )}
       {tab === "scenarios" && (
         <ScenariosPanel user={user} selectedScenarioId={searchParams.scenario} />
+      )}
+      {tab === "council" && canViewCouncil && (
+        <AiCouncilPanel user={user} selectedRunId={searchParams.run} />
       )}
     </>
   );

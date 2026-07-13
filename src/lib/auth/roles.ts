@@ -38,7 +38,10 @@ export type Permission =
   // Coworker Portal module (prototype) — "Ask My Client"
   | "view_coworker_portal"
   | "ask_coworker_questions"
-  | "answer_coworker_questions";
+  | "answer_coworker_questions"
+  // AI C-suite (Financial Projections module, Phase 3)
+  | "view_ai_council"
+  | "run_ai_council";
 
 const PERMISSIONS: Record<Role, Permission[]> = {
   owner_admin: [
@@ -60,6 +63,8 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "view_coworker_portal",
     "ask_coworker_questions",
     "answer_coworker_questions",
+    "view_ai_council",
+    "run_ai_council",
   ],
   reviewer: [
     "view_dashboard",
@@ -72,6 +77,9 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "use_assistant",
     "view_coworker_portal",
     "ask_coworker_questions",
+    // Reviewers can read the AI council's output, but only an owner can spend
+    // tokens running it.
+    "view_ai_council",
   ],
   // The coworker role is now active for the "Ask My Client" portal (§1): a
   // coworker can view the portal and answer questions directed at them, but has
