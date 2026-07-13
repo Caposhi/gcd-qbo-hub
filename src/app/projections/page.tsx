@@ -25,11 +25,12 @@ import type { ReportFilters } from "@/lib/projections/report-service";
 import { can } from "@/lib/auth/roles";
 import { ReportingPanel } from "./reporting/ReportingPanel";
 import type { FilterState } from "./reporting/FilterBar";
+import { ProjectionsPanel } from "./v2/ProjectionsPanel";
 import { ScenariosPanel } from "./ScenariosPanel";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "reporting" | "scenarios";
+type Tab = "reporting" | "projections" | "scenarios";
 
 interface SP {
   tab?: string;
@@ -68,7 +69,12 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const tab: Tab = searchParams.tab === "scenarios" ? "scenarios" : "reporting";
+  const tab: Tab =
+    searchParams.tab === "scenarios"
+      ? "scenarios"
+      : searchParams.tab === "projections"
+        ? "projections"
+        : "reporting";
   const { filters, state } = parseFilters(searchParams);
   const canRefresh = can(user.role, "view_projections");
 
@@ -80,14 +86,21 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
         <TabLink tab="reporting" active={tab === "reporting"}>
           Reporting
         </TabLink>
+        <TabLink tab="projections" active={tab === "projections"}>
+          Projections
+        </TabLink>
         <TabLink tab="scenarios" active={tab === "scenarios"}>
           Scenarios
         </TabLink>
       </div>
 
-      {tab === "reporting" ? (
+      {tab === "reporting" && (
         <ReportingPanel filters={filters} filterState={state} canRefresh={canRefresh} />
-      ) : (
+      )}
+      {tab === "projections" && (
+        <ProjectionsPanel user={user} selectedScenarioId={searchParams.scenario} />
+      )}
+      {tab === "scenarios" && (
         <ScenariosPanel user={user} selectedScenarioId={searchParams.scenario} />
       )}
     </>

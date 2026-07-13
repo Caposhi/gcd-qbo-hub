@@ -82,7 +82,7 @@ Charts (interactive Recharts client islands, drill-down on click):
   rather than erroring; only a total miss (no cache) surfaces the not-connected
   notice.
 
-### Open questions for Phase 2
+### Open questions carried into Phase 2
 
 1. **Statement of Cash Flows & Top-10-Vendors-by-Spend** — two sections from the
    bookkeeper PDF that fall outside the six locked report endpoints. Add a
@@ -90,13 +90,85 @@ Charts (interactive Recharts client islands, drill-down on click):
    to the AI layer?
 2. **Snapshot retention/versioning** — the table keeps one row per
    (type,range,method). Phase 3's monthly AI baseline may want immutable,
-   dated snapshots (keep history) rather than upsert-in-place. Decide before the
-   cron lands.
-3. **Regression coefficients (Phase 2 core):** which driver→metric relationships
-   to derive first (e.g. revenue→COGS, revenue→labor) and the minimum sample
-   size / R² threshold below which we hide a derived default.
-4. **Sandbox vs live for the cron:** the monthly AI job will read live; confirm
-   the read-only reporting env stays `QBO_ENV=live` in production.
-5. **KPI polarity edge cases:** A/R is currently "lower is better." If the owner
-   reads a growing receivables balance as growth (not a collections problem),
-   we may want it neutral or configurable.
+   dated snapshots (keep history) rather than upsert-in-place.
+3. **KPI polarity edge cases:** A/R is currently "lower is better." If the owner
+   reads a growing receivables balance as growth, we may want it configurable.
+
+---
+
+## Phase 2 — Projections engine v2 (hybrid) + scenario library ✅
+
+**Status:** complete. `npm run typecheck` and `npm run test` pass (192 tests,
+17 new); `npm run build` compiles.
+
+### What shipped
+
+A new **Projections** tab on `/projections` (third tab, between Reporting and
+the preserved v1 Scenarios prototype) implementing the locked **hybrid** method:
+baseline coefficients are **derived from our own QBO history by auditable OLS
+regression**, shown as **editable defaults with a confidence signal (R² + sample
+size)**, and the user can **override any of them** — every scenario persists both
+the derived values and the overrides (no black boxes).
+
+- **Derived baseline** card: revenue growth/mo, COGS % of revenue, fixed OpEx/mo,
+  variable OpEx %, each with a strong/moderate/weak confidence badge, its R² and
+  n, and a plain-language basis. Plus gross/net margin and the parts-vs-labor
+  revenue split (from Item Sales).
+- **Scenario library**: QBO-derivable templates ship now — cash-flow **runway**,
+  revenue **growth**, **margin mix**, **expansion/capacity**, **hiring/firing**,
+  **succession buy-in**. Tekmetric-gated cuts (per-technician, per-bay,
+  per-advisor, per-make, utilization, warranty comeback) are declared and shown
+  as "coming in Phase 4" rather than silently missing.
+- **Forward projection**: revenue → COGS → gross profit → OpEx → net income →
+  cash, month by month, with levers for a capex one-off, a recurring OpEx change
+  (hiring/firing), and a recurring revenue uplift (expansion). Summary tiles for
+  ending cash, lowest cash, **cash-out month (runway)**, and total net income.
+- **Sensitivity / tornado**: ranks which single driver swings ending cash the
+  most (±10% each), so the owner sees what to watch.
+- Charts: projection (Net Income bars + Ending Cash line, zero reference) and the
+  tornado, as Recharts client islands on the same validated palette.
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `src/lib/projections/regression/ols.ts` | **Pure** OLS linear regression (slope/intercept/R²/n) + confidence band. |
+| `src/lib/projections/regression/baseline.ts` | **Pure** derivation of coefficients from monthly history, each with evidence + basis. |
+| `src/lib/projections/engine-v2.ts` | **Pure** hybrid engine: `{derived, override}` coefficients, `projectFinancials`, `summarizeV2` (runway), `tornado`. |
+| `src/lib/projections/scenario.ts` | **Pure** stored-scenario validation (`parseScenarioV2`, v1/v2 discriminator) + `inputsFromBaseline`. |
+| `src/lib/projections/scenarios.ts` | Scenario library registry (available vs. `needs_tekmetric`). |
+| `src/lib/projections/baseline-service.ts` | IO seam: trailing-N-month QBO history → pure derivation; parts/labor split. |
+| `src/app/projections/v2/*` | `ProjectionsPanel` (server) + `ProjectionCharts` (client islands). |
+| `src/app/projections/actions.ts` | `createScenarioV2Action` / `updateScenarioV2Action` (gated by `edit_projections`). |
+| `tests/projections-v2.test.ts` | 17 cases: regression, derivation, engine, runway, tornado, scenario validation, library. |
+
+### Architecture notes
+
+- **Auditable, not a black box.** Every derived default carries the fit behind it
+  (R², n, basis text). Regression degrades safely (n<2 or zero variance → flat
+  mean, never NaN), so a default is always finite and usable.
+- **Pure core.** All regression / derivation / projection / sensitivity math is
+  IO-free and unit-tested; QBO fetch lives only in `baseline-service.ts`, reusing
+  the Phase 1 read-only reports cache. Nothing writes to QBO.
+- **Backward compatible.** v2 scenarios are tagged `version: 2`; the v1 prototype
+  blobs and the v1 engine/tab are untouched. `parseScenarioV2` preserves a
+  literal `override: 0` (not treated as "unset").
+- **QBO-only for now.** Coefficients come from P&L history; the parts/labor split
+  uses an Item-Sales name heuristic (labor if name matches labor/service/repair…).
+  Per-tech/bay/advisor/make stay deferred to Tekmetric (Phase 4).
+
+### Open questions for Phase 3 (AI C-suite)
+
+1. **Baseline reuse.** The monthly AI job should read the same derived baseline +
+   report snapshots as its shared context — confirm the cache is the single
+   source (and settle the snapshot-versioning question above so the AI reads a
+   stable, dated baseline).
+2. **Parts/labor classification.** The name heuristic is a stopgap; a mapping
+   table (like Cash Sheet Sync's payee→category learning) would be more accurate
+   before the CFO/Controller agents lean on the margin-mix numbers.
+3. **Which scenarios the C-suite runs.** Should the monthly board report include
+   a standard runway + tornado on the derived baseline, or only scenarios the
+   owner has saved?
+4. **Cash-flow fidelity.** The engine approximates operating cash flow as net
+   income (no working-capital timing). If the AI is going to reason about the
+   build-out cash crunch, decide whether Phase 3 needs A/R & A/P timing folded in.
