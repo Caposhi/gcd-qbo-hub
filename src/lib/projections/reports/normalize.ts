@@ -108,7 +108,15 @@ function periodLabels(report: QboReport): string[] {
   return periodColumnIndices(report).map((i) => report.columns[i]?.title ?? `Period ${i + 1}`);
 }
 
-/** Find the first row matching a group code (case-insensitive) and kind preference. */
+/**
+ * Find the grand-total row for a group code (case-insensitive), honouring a kind
+ * preference. When a section nests sub-sections that inherit the same group code
+ * (e.g. an "Expenses" section with expense sub-groups), each sub-total carries
+ * the same group code, so we must return the OUTERMOST (shallowest `depth`) row
+ * — the group's grand total — not merely the first one encountered (which is an
+ * inner sub-total, and was the cause of Operating Expenses reading a tiny
+ * sub-section figure instead of Total Expenses).
+ */
 function findByGroup(
   report: QboReport,
   groupCode: string,
@@ -117,10 +125,12 @@ function findByGroup(
   const matches = report.rows.filter(
     (r) => (r.groupCode ?? "").toLowerCase() === groupCode.toLowerCase()
   );
-  if (prefer !== "any") {
-    return matches.find((r) => r.kind === prefer) ?? matches[0];
-  }
-  return matches[0];
+  const preferred = prefer !== "any" ? matches.filter((r) => r.kind === prefer) : matches;
+  const pool = preferred.length > 0 ? preferred : matches;
+  return pool.reduce<QboFlatRow | undefined>(
+    (best, r) => (best === undefined || r.depth < best.depth ? r : best),
+    undefined
+  );
 }
 
 /** Find a section summary whose label matches a regex (fallback when no group code). */
@@ -154,20 +164,42 @@ function detailLines(report: QboReport, groupCode: string): LineSeries[] {
     .map((r) => ({ label: r.label, id: r.id, values: periodValues(report, r) }));
 }
 
+/** True when the report actually carries a row for this group code. */
+function hasGroup(report: QboReport, groupCode: string): boolean {
+  return report.rows.some((r) => (r.groupCode ?? "").toLowerCase() === groupCode.toLowerCase());
+}
+
 export function normalizePnl(report: QboReport): PnlNormalized {
+  const income = seriesFor(report, "Income", /^total income$/i, "section_summary");
+  const cogs = seriesFor(report, "COGS", /cost of goods sold/i, "section_summary");
+  const expenses = seriesFor(report, "Expenses", /^total expenses$/i, "section_summary");
+
+  // The single-line totals (Gross Profit / Net Operating Income / Net Income)
+  // may arrive as a `data` row OR a summary-only row depending on the QBO
+  // company, so match on "any" kind. When a company has no COGS section QBO
+  // omits Gross Profit entirely — fall back to the accounting identity
+  // (income − cogs) so the tile shows the real figure instead of 0. Likewise
+  // derive Net Income from the operating figures if QBO didn't surface it.
+  const grossProfit = hasGroup(report, "GrossProfit")
+    ? seriesFor(report, "GrossProfit", /^gross profit$/i, "any")
+    : income.map((v, i) => v - (cogs[i] ?? 0));
+
+  const netOperatingIncome = hasGroup(report, "NetOperatingIncome")
+    ? seriesFor(report, "NetOperatingIncome", /^net operating income$/i, "any")
+    : grossProfit.map((v, i) => v - (expenses[i] ?? 0));
+
+  const netIncome = hasGroup(report, "NetIncome")
+    ? seriesFor(report, "NetIncome", /^net income$/i, "any")
+    : netOperatingIncome.slice();
+
   return {
     periods: periodLabels(report),
-    income: seriesFor(report, "Income", /^total income$/i, "section_summary"),
-    cogs: seriesFor(report, "COGS", /cost of goods sold/i, "section_summary"),
-    grossProfit: seriesFor(report, "GrossProfit", /^gross profit$/i, "data"),
-    expenses: seriesFor(report, "Expenses", /^total expenses$/i, "section_summary"),
-    netOperatingIncome: seriesFor(
-      report,
-      "NetOperatingIncome",
-      /^net operating income$/i,
-      "data"
-    ),
-    netIncome: seriesFor(report, "NetIncome", /^net income$/i, "data"),
+    income,
+    cogs,
+    grossProfit,
+    expenses,
+    netOperatingIncome,
+    netIncome,
     incomeLines: detailLines(report, "Income"),
     expenseLines: detailLines(report, "Expenses"),
   };
@@ -272,19 +304,35 @@ export function normalizeAging(report: QboReport): AgingNormalized {
  * a column titled Amount/Total, then the last value column) and one row per
  * entity, sorted by amount descending.
  */
+/**
+ * Choose the dollar column for a sales report. Prefer the grand-total column;
+ * otherwise pick the sales amount, never a quantity / avg-price / %-of-sales /
+ * margin / cost column. A Sales-by-Item report leads with a "Qty" (Numeric)
+ * column and also carries "Avg Price" (Money), so a naive "last money column"
+ * or "last column" pick lands on the wrong figure — this picker excludes those.
+ */
+function pickMoneyColumnIndex(report: QboReport): number {
+  if (report.totalColumnIndex >= 0) return report.totalColumnIndex;
+  const cols = report.columns;
+  const excluded = (t: string) => /qty|quantity|units|avg|average|price|%|percent|margin|\bcost\b/i.test(t);
+  const isMoney = (t: string) => /money/i.test(t);
+
+  // 1) a money-typed column explicitly titled amount/sales/total.
+  let idx = cols.findIndex((c) => isMoney(c.type) && /amount|sales|total/i.test(c.title) && !excluded(c.title));
+  if (idx >= 0) return idx;
+  // 2) any money-typed column that isn't a qty/price/%/margin/cost column.
+  idx = cols.findIndex((c) => isMoney(c.type) && !excluded(c.title));
+  if (idx >= 0) return idx;
+  // 3) title-based amount/total when column types are absent.
+  idx = cols.findIndex((c) => /amount|total/i.test(c.title) && !excluded(c.title));
+  if (idx >= 0) return idx;
+  // 4) last resort: the last money column, else the last value column.
+  const lastMoney = [...cols].map((c, i) => ({ c, i })).reverse().find(({ c }) => isMoney(c.type));
+  return lastMoney ? lastMoney.i : cols.length - 1;
+}
+
 export function normalizeSales(report: QboReport): SalesNormalized {
-  const moneyIdx =
-    report.totalColumnIndex >= 0
-      ? report.totalColumnIndex
-      : (() => {
-          const byTitle = report.columns.findIndex((c) => /amount|total/i.test(c.title));
-          if (byTitle >= 0) return byTitle;
-          const lastMoney = [...report.columns]
-            .map((c, i) => ({ c, i }))
-            .reverse()
-            .find(({ c }) => /money/i.test(c.type));
-          return lastMoney ? lastMoney.i : report.columns.length - 1;
-        })();
+  const moneyIdx = pickMoneyColumnIndex(report);
 
   const rows: SalesRow[] = report.rows
     .filter(

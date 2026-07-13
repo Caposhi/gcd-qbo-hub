@@ -171,6 +171,105 @@ export const CUSTOMER_SALES = {
   },
 };
 
+/**
+ * A "real world" P&L that reproduces the three production bugs seen on the live
+ * German Car Depot file:
+ *   1. NO COGS section (parts booked to income) → QBO omits the Gross Profit row.
+ *   2. The Expenses section NESTS a sub-section ("Job Expenses"), whose sub-total
+ *      shares the inherited "Expenses" group code and is flattened BEFORE the
+ *      outer "Total Expenses".
+ *   3. Net Income arrives as a SUMMARY-ONLY row (group + Summary, no Header/Rows
+ *      and no top-level ColData).
+ * Summarised by month → one period column ("Jul 2026") + a grand-total column.
+ */
+export const PNL_REALWORLD = {
+  Header: {
+    ReportName: "ProfitAndLoss",
+    StartPeriod: "2026-07-01",
+    EndPeriod: "2026-07-31",
+    Currency: "USD",
+    Option: [{ Name: "AccountingMethod", Value: "Accrual" }],
+  },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "Jul 2026", ColType: "Money" },
+      { ColTitle: "Total", ColType: "Money", MetaData: [{ Name: "ColKey", Value: "total" }] },
+    ],
+  },
+  Rows: {
+    Row: [
+      {
+        Header: { ColData: [{ value: "Income" }, { value: "" }, { value: "" }] },
+        Rows: {
+          Row: [
+            { ColData: [{ value: "TEK Sales-Parts Sales", id: "80" }, { value: "45000.00" }, { value: "45000.00" }], type: "Data" },
+            { ColData: [{ value: "TEK Sales-Labor Sales", id: "79" }, { value: "30000.00" }, { value: "30000.00" }], type: "Data" },
+          ],
+        },
+        Summary: { ColData: [{ value: "Total Income" }, { value: "75000.00" }, { value: "75000.00" }] },
+        type: "Section",
+        group: "Income",
+      },
+      // No COGS section, and hence no Gross Profit row.
+      {
+        Header: { ColData: [{ value: "Expenses" }, { value: "" }, { value: "" }] },
+        Rows: {
+          Row: [
+            // Nested sub-section — inherits the "Expenses" group code; its summary
+            // is emitted BEFORE the outer Total Expenses.
+            {
+              Header: { ColData: [{ value: "Job Expenses" }, { value: "" }, { value: "" }] },
+              Rows: {
+                Row: [
+                  { ColData: [{ value: "Contractors", id: "95" }, { value: "81.03" }, { value: "81.03" }], type: "Data" },
+                ],
+              },
+              Summary: { ColData: [{ value: "Total Job Expenses" }, { value: "81.03" }, { value: "81.03" }] },
+              type: "Section",
+            },
+            { ColData: [{ value: "Building Rent", id: "90" }, { value: "3000.00" }, { value: "3000.00" }], type: "Data" },
+            { ColData: [{ value: "STAFF wages", id: "91" }, { value: "6000.00" }, { value: "6000.00" }], type: "Data" },
+          ],
+        },
+        Summary: { ColData: [{ value: "Total Expenses" }, { value: "9081.03" }, { value: "9081.03" }] },
+        type: "Section",
+        group: "Expenses",
+      },
+      // Net Income as a SUMMARY-ONLY row (no Header/Rows, no top-level ColData).
+      {
+        Summary: { ColData: [{ value: "Net Income" }, { value: "65918.97" }, { value: "65918.97" }] },
+        type: "Section",
+        group: "NetIncome",
+      },
+    ],
+  },
+};
+
+/**
+ * Sales by Item where the only money columns are "Sales" and "Avg Price" (no
+ * "Amount"/"Total" title and no grand-total column). The pre-fix picker fell to
+ * the LAST money column ("Avg Price") and charted per-unit prices instead of
+ * sales dollars — the live "Revenue by Service/Product" bug.
+ */
+export const ITEM_SALES_AVG_PRICE_TRAP = {
+  Header: { ReportName: "ItemSales", StartPeriod: "2026-07-01", EndPeriod: "2026-07-31", Currency: "USD" },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "Qty", ColType: "Numeric" },
+      { ColTitle: "Sales", ColType: "Money" },
+      { ColTitle: "Avg Price", ColType: "Money" },
+    ],
+  },
+  Rows: {
+    Row: [
+      { ColData: [{ value: "TEK Sales-Parts Sales", id: "80" }, { value: "300" }, { value: "45000.00" }, { value: "150.00" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Labor Sales", id: "79" }, { value: "200" }, { value: "30000.00" }, { value: "150.00" }], type: "Data" },
+    ],
+  },
+};
+
 /** Sales by Item (no grand-total column; an "Amount" money column). */
 export const ITEM_SALES = {
   Header: { ReportName: "ItemSales", StartPeriod: "2026-05-01", EndPeriod: "2026-06-30", Currency: "USD" },

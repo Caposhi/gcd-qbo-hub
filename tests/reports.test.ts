@@ -18,10 +18,12 @@ import {
 } from "@/lib/projections/reports";
 import {
   PNL_MONTHLY,
+  PNL_REALWORLD,
   BALANCE_SHEET,
   AR_AGING,
   CUSTOMER_SALES,
   ITEM_SALES,
+  ITEM_SALES_AVG_PRICE_TRAP,
 } from "./report-fixtures";
 
 describe("parseAmount", () => {
@@ -104,6 +106,49 @@ describe("normalizePnl", () => {
   });
 });
 
+describe("normalizePnl — real-world QBO shapes (regression for the live bugs)", () => {
+  const pnl = normalizePnl(parseQboReport(PNL_REALWORLD));
+
+  it("reads Total Expenses from the OUTERMOST summary, not a nested sub-total", () => {
+    // Bug was $81.03 (the inner "Total Job Expenses"); correct is $9,081.03.
+    expect(pnl.expenses).toEqual([9081.03]);
+  });
+
+  it("derives Gross Profit as income − COGS when QBO omits the Gross Profit row", () => {
+    // No COGS section → GP falls back to income (COGS 0), not 0.
+    expect(pnl.cogs).toEqual([0]);
+    expect(pnl.grossProfit).toEqual([75000]);
+  });
+
+  it("captures Net Income from a summary-only row (previously dropped → 0)", () => {
+    expect(pnl.netIncome).toEqual([65918.97]);
+    expect(pnl.netOperatingIncome).toEqual([65918.97]); // derived: GP − expenses
+  });
+
+  it("still lists every expense detail line (breakdown reconciles to Total Expenses)", () => {
+    expect(pnl.expenseLines.map((l) => l.label)).toEqual(["Contractors", "Building Rent", "STAFF wages"]);
+    expect(sum(pnl.expenseLines.map((l) => l.values[0]))).toBe(9081.03);
+  });
+
+  it("KPIs now reflect the true figures", () => {
+    const bs = normalizeBalanceSheet(parseQboReport(BALANCE_SHEET));
+    const kpis = deriveKpis({
+      pnl,
+      pnlPrev: pnl,
+      balanceSheet: bs,
+      balanceSheetPrev: bs,
+      arTotal: 0,
+      arTotalPrev: 0,
+      apTotal: 0,
+      apTotalPrev: 0,
+    });
+    const byKey = Object.fromEntries(kpis.map((k) => [k.key, k]));
+    expect(byKey.gross_profit.value).toBe(75000);
+    expect(byKey.net_income.value).toBe(65918.97);
+    expect(byKey.operating_expenses.value).toBe(9081.03);
+  });
+});
+
 describe("normalizeBalanceSheet", () => {
   const bs = normalizeBalanceSheet(parseQboReport(BALANCE_SHEET));
 
@@ -149,6 +194,18 @@ describe("normalizeSales", () => {
     expect(item.rows.map((r) => r.name)).toEqual(["Labor", "Parts"]);
     expect(item.rows[0].amount).toBe(22000);
     expect(item.total).toBe(39000); // summed when no summary row present
+  });
+
+  it("picks Sales dollars, not Avg Price or Qty, when there is no Amount/Total column", () => {
+    // Regression for the live "Revenue by Service/Product" bug: the picker used
+    // to fall to the last money column (Avg Price) and chart per-unit prices.
+    const item = normalizeSales(parseQboReport(ITEM_SALES_AVG_PRICE_TRAP));
+    expect(item.rows.map((r) => r.name)).toEqual([
+      "TEK Sales-Parts Sales",
+      "TEK Sales-Labor Sales",
+    ]);
+    expect(item.rows[0].amount).toBe(45000); // Sales column, not 150 (Avg Price) or 300 (Qty)
+    expect(item.total).toBe(75000);
   });
 });
 
