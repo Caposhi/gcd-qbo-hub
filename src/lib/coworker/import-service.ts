@@ -1,0 +1,148 @@
+/**
+ * "Ask My Client" import service (read-only over QBO).
+ *
+ * Pulls the transactions parked in the configured QBO account and mirrors them
+ * into the Coworker Portal as questions so coworkers can explain each one. The
+ * hub NEVER writes to QBO — once an owner reclassifies a transaction in QBO and
+ * it leaves the account, the next import auto-closes its question.
+ *
+ * Idempotent: questions dedupe on the transaction's stable natural key, so
+ * re-running only adds genuinely new transactions and refreshes snapshots.
+ * Degrades (never throws to the caller) when QBO is unconfigured, disconnected,
+ * or its token was rejected — mirroring the reporting pages.
+ */
+import { prisma } from "@/lib/db";
+import { getContext, QboNotConnectedError, isQboConnectivityError } from "@/lib/qbo/client";
+import { currentEnvironment } from "@/lib/qbo/oauth";
+import { askMyClientAccountName, resolveAmcAccountId, fetchAmcTransactions } from "./qbo";
+import type { AmcTransaction } from "./transactions";
+
+export type ImportReason = "not_connected" | "reconnect_required" | "account_not_found" | "error";
+
+export interface ImportResult {
+  ok: boolean;
+  reason?: ImportReason;
+  accountName: string;
+  found: number;
+  created: number;
+  updated: number;
+  closed: number;
+}
+
+const money = (n: number): string =>
+  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function subjectFor(t: AmcTransaction): string {
+  return `${t.type} · ${money(t.amount)}${t.name ? ` · ${t.name}` : ""}`;
+}
+
+function bodyFor(t: AmcTransaction, accountName: string): string {
+  return [
+    `Parked in the "${accountName}" account in QuickBooks — needs categorizing.`,
+    "",
+    `Date:    ${t.date}`,
+    `Type:    ${t.type}`,
+    t.num ? `Doc #:   ${t.num}` : "",
+    t.name ? `Name:    ${t.name}` : "",
+    `Amount:  ${money(t.amount)}`,
+    t.memo ? `Memo:    ${t.memo}` : "",
+    "",
+    `Answer with the correct category/classification. An owner will re-code it in QuickBooks and remove it from "${accountName}"; once it leaves the account this question closes automatically on the next import.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Import parked transactions as questions. `importerEmail` is recorded as the
+ * asker. `now` bounds the lookback window (default 3 years back → today).
+ */
+export async function importAskMyClient(importerEmail: string, now: Date): Promise<ImportResult> {
+  const accountName = askMyClientAccountName();
+  const base: ImportResult = { ok: false, accountName, found: 0, created: 0, updated: 0, closed: 0 };
+
+  let ctx;
+  try {
+    ctx = await getContext(currentEnvironment());
+  } catch (err) {
+    if (err instanceof QboNotConnectedError) return { ...base, reason: "not_connected" };
+    if (isQboConnectivityError(err)) return { ...base, reason: "reconnect_required" };
+    throw err;
+  }
+
+  let accountId: string | null;
+  let txns: AmcTransaction[];
+  try {
+    accountId = await resolveAmcAccountId(ctx);
+    if (!accountId) return { ...base, reason: "account_not_found" };
+    const start = isoDate(new Date(Date.UTC(now.getUTCFullYear() - 3, now.getUTCMonth(), 1)));
+    txns = await fetchAmcTransactions(ctx, accountId, { start, end: isoDate(now) });
+  } catch (err) {
+    if (isQboConnectivityError(err)) return { ...base, reason: "reconnect_required" };
+    return { ...base, reason: "error" };
+  }
+
+  // Existing imported questions, to split create vs. update and to detect ones
+  // whose transaction has since left the account (→ close them).
+  const existing = await prisma.cwpQuestion.findMany({
+    where: { source: "ask_my_client" },
+    select: { id: true, qboTxnId: true, status: true },
+  });
+  const existingByKey = new Map(existing.map((q) => [q.qboTxnId ?? "", q]));
+  const seen = new Set<string>();
+
+  let created = 0;
+  let updated = 0;
+  for (const t of txns) {
+    seen.add(t.key);
+    const prior = existingByKey.get(t.key);
+    if (prior) {
+      await prisma.cwpQuestion.update({
+        where: { id: prior.id },
+        data: {
+          subject: subjectFor(t),
+          body: bodyFor(t, accountName),
+          qboTxnDate: t.date,
+          qboTxnAmount: t.amount,
+          qboTxnName: t.name || null,
+          qboReference: `${t.type} ${t.num}`.trim(),
+        },
+      });
+      updated++;
+    } else {
+      await prisma.cwpQuestion.create({
+        data: {
+          source: "ask_my_client",
+          qboTxnType: t.type,
+          qboTxnId: t.key,
+          qboTxnDate: t.date,
+          qboTxnAmount: t.amount,
+          qboTxnName: t.name || null,
+          qboReference: `${t.type} ${t.num}`.trim(),
+          subject: subjectFor(t),
+          body: bodyFor(t, accountName),
+          askedByEmail: importerEmail,
+          assignedEmail: null,
+          status: "open",
+        },
+      });
+      created++;
+    }
+  }
+
+  // Auto-close imported questions whose transaction is no longer in the account
+  // (it was reclassified in QBO). We never delete — the Q&A history is preserved.
+  const toClose = existing.filter((q) => q.status !== "closed" && !seen.has(q.qboTxnId ?? ""));
+  if (toClose.length) {
+    await prisma.cwpQuestion.updateMany({
+      where: { id: { in: toClose.map((q) => q.id) } },
+      data: { status: "closed" },
+    });
+  }
+
+  return { ok: true, accountName, found: txns.length, created, updated, closed: toClose.length };
+}

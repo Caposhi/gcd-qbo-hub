@@ -39,6 +39,7 @@ export type Permission =
   | "view_coworker_portal"
   | "ask_coworker_questions"
   | "answer_coworker_questions"
+  | "import_coworker_questions"
   // AI C-suite (Financial Projections module, Phase 3)
   | "view_ai_council"
   | "run_ai_council"
@@ -69,6 +70,7 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "view_coworker_portal",
     "ask_coworker_questions",
     "answer_coworker_questions",
+    "import_coworker_questions",
     "view_ai_council",
     "run_ai_council",
     // Tekmetric: owners can view the operations page and trigger a refresh.
@@ -89,6 +91,8 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "use_assistant",
     "view_coworker_portal",
     "ask_coworker_questions",
+    // Reviewers can pull the "Ask My Client" transactions in from QBO (read-only).
+    "import_coworker_questions",
     // Reviewers can read the AI council's output, but only an owner can spend
     // tokens running it.
     "view_ai_council",
