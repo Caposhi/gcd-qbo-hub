@@ -12,12 +12,29 @@
  * or its token was rejected — mirroring the reporting pages.
  */
 import { prisma } from "@/lib/db";
-import { getContext, QboNotConnectedError, isQboConnectivityError } from "@/lib/qbo/client";
-import { currentEnvironment } from "@/lib/qbo/oauth";
+import { getContext, QboNotConnectedError, QboApiError } from "@/lib/qbo/client";
+import { currentEnvironment, QboAuthError } from "@/lib/qbo/oauth";
 import { askMyClientAccountName, resolveAmcAccountId, fetchAmcTransactions } from "./qbo";
 import type { AmcTransaction } from "./transactions";
 
-export type ImportReason = "not_connected" | "reconnect_required" | "account_not_found" | "error";
+export type ImportReason =
+  | "not_connected" // no credential at all
+  | "reconnect_required" // the token was rejected (a real reconnect case)
+  | "qbo_error" // the connection is live but QBO rejected the request (see diagnostics)
+  | "account_not_found"
+  | "error";
+
+/**
+ * Classify a QBO failure precisely so we don't tell the user to "reconnect" when
+ * the token is fine and it's actually an API/request error. Re-throws genuine
+ * (non-QBO) errors so real bugs still surface.
+ */
+function classify(err: unknown): ImportReason {
+  if (err instanceof QboNotConnectedError) return "not_connected";
+  if (err instanceof QboAuthError) return "reconnect_required";
+  if (err instanceof QboApiError) return "qbo_error";
+  throw err;
+}
 
 export interface ImportResult {
   ok: boolean;
@@ -69,9 +86,7 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
   try {
     ctx = await getContext(currentEnvironment());
   } catch (err) {
-    if (err instanceof QboNotConnectedError) return { ...base, reason: "not_connected" };
-    if (isQboConnectivityError(err)) return { ...base, reason: "reconnect_required" };
-    throw err;
+    return { ...base, reason: classify(err) };
   }
 
   let accountId: string | null;
@@ -82,8 +97,7 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
     const start = isoDate(new Date(Date.UTC(now.getUTCFullYear() - 3, now.getUTCMonth(), 1)));
     txns = await fetchAmcTransactions(ctx, accountId, { start, end: isoDate(now) });
   } catch (err) {
-    if (isQboConnectivityError(err)) return { ...base, reason: "reconnect_required" };
-    return { ...base, reason: "error" };
+    return { ...base, reason: classify(err) };
   }
 
   // Existing imported questions, to split create vs. update and to detect ones

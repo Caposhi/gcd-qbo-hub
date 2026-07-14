@@ -35,13 +35,23 @@ function ImportNotice({ status, accountName }: { status?: string; accountName: s
     ),
     reconnect_required: (
       <>QuickBooks rejected the saved connection (its token expired/was revoked). Reconnect in{" "}
-      <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link> → <strong>Reconnect QBO</strong>, then import again.</>
+      <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link> → <strong>Reconnect QBO</strong>, then import again.
+      {" "}If reconnecting doesn&apos;t help, open{" "}
+      <Link href="/cash-sheet-sync/diagnostics">QBO diagnostics</Link>.</>
     ),
     account_not_found: (
-      <>No QuickBooks account named &ldquo;{accountName}&rdquo; was found. Check the name in QBO, or set{" "}
+      <>No QuickBooks account named &ldquo;{accountName}&rdquo; was found. Check the exact name with{" "}
+      <Link href="/cash-sheet-sync/diagnostics">QBO diagnostics</Link>, or set{" "}
       <code>COWORKER_QBO_ACCOUNT_NAME</code> to match it.</>
     ),
-    error: <>The import hit an unexpected error. Please try again; if it persists, check the server logs.</>,
+    qbo_error: (
+      <>QuickBooks is connected, but it rejected the request (an API error, not a token problem). Open{" "}
+      <Link href="/cash-sheet-sync/diagnostics">QBO diagnostics</Link> to see the exact error.</>
+    ),
+    error: (
+      <>The import hit an unexpected error. Open{" "}
+      <Link href="/cash-sheet-sync/diagnostics">QBO diagnostics</Link> for details, or check the server logs.</>
+    ),
   };
   return (
     <div className="notice warn" style={{ marginBottom: 16 }}>

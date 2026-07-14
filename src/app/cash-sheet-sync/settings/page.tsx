@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
@@ -78,6 +79,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
       <p className="muted" style={{ marginTop: "0.5rem" }}>
         The QBO redirect URI must be set to <code>{process.env.QBO_REDIRECT_URI ?? "(unset)"}</code> in the Intuit
         developer dashboard — deploy the hub to its stable HTTPS URL first, then register this URI (§16).
+      </p>
+      <p className="muted" style={{ marginTop: "0.5rem" }}>
+        Connection failing despite &ldquo;connected&rdquo;? Run{" "}
+        <Link href="/cash-sheet-sync/diagnostics">QBO diagnostics</Link> for a live read and the exact error.
       </p>
 
       <h2 style={{ fontSize: 18, margin: "24px 0 10px" }}>Rollout stage</h2>
