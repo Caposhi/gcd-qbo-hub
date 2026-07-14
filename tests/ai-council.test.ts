@@ -179,6 +179,29 @@ describe("orchestration — prior month + context", () => {
     expect(a).not.toContain("CUSTOMER CALLS");
   });
 
+  it("names the comparison period the deltas are measured against", () => {
+    const ctx: MonthlyContext = {
+      month: { start: "2026-06-01", end: "2026-06-30", label: "Jun 2026" },
+      method: "accrual",
+      comparisonLabel: "May 2026 (2026-05-01 → 2026-05-31)",
+      kpis: [{ label: "Net Income", value: "$17,346", deltaPct: -0.53, deltaAbs: "-$19,000", sentiment: "bad" }],
+      trend: [],
+      arTotal: 0,
+      apTotal: 0,
+      topCustomers: [],
+      topItems: [],
+      expenseBreakdown: [],
+      baseline: null,
+      ops: null,
+      transcripts: null,
+    };
+    const out = renderContext(ctx);
+    expect(out).toContain("May 2026 (2026-05-01 → 2026-05-31)");
+    expect(out).toContain("measured against: May 2026");
+    // No longer the vague "vs comparison period" with no period named.
+    expect(out).not.toContain("Δ vs comparison period)");
+  });
+
   it("renders the OPERATIONS (Tekmetric) section when ops data is present", () => {
     const ctx: MonthlyContext = {
       month: { start: "2026-06-01", end: "2026-06-30", label: "Jun 2026" },
