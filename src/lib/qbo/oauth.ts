@@ -155,6 +155,26 @@ export async function hasValidCredentials(
   }
 }
 
+/**
+ * A **network-free** credential check for chrome that renders on every route
+ * (e.g. the top-bar environment pill). Unlike {@link hasValidCredentials} this
+ * NEVER performs a token refresh — doing so on the shared layout would fire a
+ * refresh on every page load and can race the page's own refresh (Intuit
+ * rotates refresh tokens on use, so the loser gets a 400). Here we only read the
+ * stored row and its expiry: a credential exists and its refresh token has not
+ * lapsed. The authoritative "is the token actually good" answer stays with the
+ * data path, which refreshes exactly once and degrades gracefully on failure.
+ */
+export async function hasStoredCredential(
+  environment: QboEnvironment = currentEnvironment()
+): Promise<boolean> {
+  const cred = await prisma.qboCredential
+    .findFirst({ where: { environment }, select: { refreshTokenExpires: true } })
+    .catch(() => null);
+  if (!cred) return false;
+  return !cred.refreshTokenExpires || cred.refreshTokenExpires.getTime() > Date.now();
+}
+
 function requireEnv(key: string): string {
   const v = process.env[key];
   if (!v) throw new Error(`Missing required env var ${key} (§16).`);

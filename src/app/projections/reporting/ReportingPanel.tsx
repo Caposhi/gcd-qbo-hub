@@ -64,11 +64,22 @@ export async function ReportingPanel({
     return (
       <>
         <FilterBar state={filterState} />
-        <div className="notice danger" style={{ marginTop: "1rem" }}>
-          QuickBooks isn’t connected for this environment yet, and there’s no cached
-          snapshot for this range. An owner needs to connect QBO before live actuals
-          appear here.
-        </div>
+        {data.reason === "reconnect_required" ? (
+          <div className="notice danger" style={{ marginTop: "1rem" }}>
+            QuickBooks rejected the saved connection for this environment (the token
+            has expired or was revoked), and there’s no cached snapshot for this range.
+            An owner needs to reconnect QuickBooks — open{" "}
+            <a href="/cash-sheet-sync/settings">Settings &amp; rollout</a> and use{" "}
+            <strong>Reconnect QBO</strong>. Nothing was changed in QuickBooks.
+          </div>
+        ) : (
+          <div className="notice danger" style={{ marginTop: "1rem" }}>
+            QuickBooks isn’t connected for this environment yet, and there’s no cached
+            snapshot for this range. An owner needs to connect QBO before live actuals
+            appear here — open <a href="/cash-sheet-sync/settings">Settings &amp; rollout</a>{" "}
+            and use <strong>Connect QBO</strong>.
+          </div>
+        )}
       </>
     );
   }

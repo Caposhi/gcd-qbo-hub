@@ -202,7 +202,14 @@ export interface ReportingUnavailable {
   range: DateRange;
   comparison: DateRange;
   filters: ReportFilters;
-  reason: "not_connected";
+  /**
+   * `not_connected` — no QBO credential on file for this environment.
+   * `reconnect_required` — a credential exists but QBO rejected the token
+   *   (e.g. the refresh token expired or was revoked → a 400 on refresh); the
+   *   owner needs to re-run the Connect QBO flow. We surface this instead of
+   *   letting the token error crash the whole page.
+   */
+  reason: "not_connected" | "reconnect_required";
 }
 
 function toCategory(rows: { name: string; amount: number }[], topN: number): CategoryDatum[] {
@@ -238,15 +245,18 @@ export async function loadReporting(
   const granularity = filters.granularity ?? "month";
 
   let ctx: QboContext | undefined;
+  // Tracks a QBO connectivity problem so a failure to open the context (missing
+  // credential, or a token the server rejected) degrades to cache / a friendly
+  // notice instead of throwing a server-side exception that white-screens the
+  // whole route.
+  let connectionIssue: ReportingUnavailable["reason"] | null = null;
   try {
     ctx = await getContext(currentEnvironment());
   } catch (err) {
-    if (err instanceof QboNotConnectedError) {
-      // Still try to serve a fully-cached page below; fall through with no ctx.
-      ctx = undefined;
-    } else {
-      throw err;
-    }
+    ctx = undefined;
+    // No credential at all vs. a credential QBO rejected (e.g. token refresh
+    // returned 400 — the refresh token expired/was revoked → reconnect needed).
+    connectionIssue = err instanceof QboNotConnectedError ? "not_connected" : "reconnect_required";
   }
 
   const shared: GetSnapshotOptions = { method, ctx, forceRefresh: opts.forceRefresh };
@@ -323,8 +333,13 @@ export async function loadReporting(
       fetchedAt,
     };
   } catch (err) {
+    // If we already know QBO is unreachable (bad/absent credential) and there's
+    // no cache to fall back on, report it as unavailable rather than crashing.
     if (err instanceof QboNotConnectedError) {
-      return { connected: false, range, comparison, filters, reason: "not_connected" };
+      return { connected: false, range, comparison, filters, reason: connectionIssue ?? "not_connected" };
+    }
+    if (connectionIssue) {
+      return { connected: false, range, comparison, filters, reason: connectionIssue };
     }
     throw err;
   }
