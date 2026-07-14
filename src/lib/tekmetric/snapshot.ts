@@ -239,6 +239,59 @@ export async function readOperationsSnapshot(
   return { data: parseOperationsData(row.payloadJson, period), fetchedAt: row.fetchedAt };
 }
 
+/** The five headline KPI values for a period, without the heavy entity arrays. */
+export interface OpsKpiValues {
+  carCount: number;
+  roCount: number;
+  aro: number;
+  grossProfit: number;
+  grossMarginPct: number;
+}
+
+/**
+ * Read ONLY the KPI numbers from a cached snapshot — not the full dataset.
+ *
+ * The stored payload also holds every repair order, job, vehicle, and
+ * appointment for the month, which is large. The ops forecast reads 24 months,
+ * so fully parsing each (via `parseOperationsData`) blows memory. This pulls just
+ * the five headline KPIs and lets the big blob be GC'd, so callers can loop over
+ * many months cheaply. Returns null when the month isn't cached.
+ */
+export async function readOperationsKpis(period: TekPeriod, comparison: string): Promise<OpsKpiValues | null> {
+  const row = await prisma.tekSnapshot.findUnique({
+    where: {
+      entity_periodStart_periodEnd_comparison: {
+        entity: DERIVED_ENTITY,
+        periodStart: new Date(period.start),
+        periodEnd: new Date(period.end),
+        comparison,
+      },
+    },
+    select: { payloadJson: true },
+  });
+  if (!row) return null;
+  const payload = row.payloadJson as unknown;
+  const k =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? ((payload as Record<string, unknown>).kpis as Record<string, unknown> | undefined)
+      : undefined;
+  const val = (x: unknown): number => {
+    if (typeof x === "number") return Number.isFinite(x) ? x : 0;
+    if (x && typeof x === "object" && typeof (x as { value?: unknown }).value === "number") {
+      const v = (x as { value: number }).value;
+      return Number.isFinite(v) ? v : 0;
+    }
+    return 0;
+  };
+  return {
+    carCount: val(k?.carCount),
+    roCount: val(k?.roCount),
+    aro: val(k?.aro),
+    grossProfit: val(k?.grossProfit),
+    grossMarginPct: val(k?.grossMarginPct),
+  };
+}
+
 // ===========================================================================
 // Refresh path (network) — used by the gated refresh action
 // ===========================================================================
