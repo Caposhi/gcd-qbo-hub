@@ -462,3 +462,91 @@ posting/gating is untouched.
   Projections inner panels. GCD Pal live insight endpoint.
 
 Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds.
+
+---
+
+## UI/Theme redesign — phase 2: full module migration + shim removal
+
+Completed the redesign rollout begun in phase 1: every remaining module was
+migrated off the temporary compatibility shim onto the brand component classes,
+and the shim itself was deleted. Still **visual-only** — no posting logic,
+live-env gating, server actions, Prisma schema, or read-only guarantees changed.
+
+### Modules migrated this phase
+- **Cash Sheet Sync** (live module — presentation only, posting/gating untouched):
+  overview status strip + run/attention stat cards, queue (filter pills + month
+  pills + `table.gcd`), mappings, settings (rollout ladder as a card stepper with
+  the current rung ringed royal), cash deposits, and the row-detail audit view
+  (two-column snapshot/QBO cards + themed diff + events table).
+- **Deposit Reconciliation** — drop-zone card, batch-action button row, proposed-
+  deposits `table.gcd` with status badges.
+- **Check Reception** — drop-zone card, per-check review cards, and `Combobox`
+  restyled to a light popover (all dark inline styles removed).
+- **Coworker Portal** — KPI count cards, segmented status filter, question table,
+  two-column thread on the detail page.
+- **Financial Projections inner panels** — ReportingPanel KPI cards (delta by
+  good/bad), FilterBar as light filter pills, ProjectionsPanel baseline/scenario
+  tables + confidence badges, ScenariosPanel form/tiles, AiCouncilPanel verdict
+  cards. Lucide icons replaced the `↻ / ▶` glyphs.
+- **Auth + legal** — centered brand cards with the disc logo; signin input on the
+  `.input` class.
+- **Shared** — `RequireAuth` / `ComingSoon` panels rebranded.
+
+### Compat shim removed
+The temporary dark-token shim in `globals.css` §10 is gone. A repo-wide grep
+confirms **no code references the legacy `--panel`/`--panel-2`/`--accent`/
+`--text`/`--border`/`--ok`/`--warn`/`--radius` aliases, the `.tile`/`.tiles`
+classes, or any dark hex** any more. The genuinely-useful brand-agnostic helpers
+(`.sub`, `.muted`, `.grid`, `.row-actions`, `.center`, `.kv`) were kept and
+relabelled as a permanent "Shared utilities" section. Every table now uses
+`table.gcd`; `.badge.muted` folds into the (already gray) base `.badge`.
+
+Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds, grep clean.
+
+### Still open (unchanged from phase 1)
+- GCD Pal live insights endpoint (`GET /api/assistant/insights`) — the Pal still
+  ships generic, figure-free copy until that read-only endpoint is wired.
+- Projection scenarios built on the backfilled 24-month Tekmetric history.
+
+---
+
+## Reliability + live Pal insights + operations forecast
+
+### Projections tab crash — hardened (follow-up to the env-pill fix)
+Generalized the QBO connectivity handling so no Projections sub-tab can
+white-screen on a token failure:
+- Added a typed `QboAuthError` (thrown by the OAuth token request on a non-2xx)
+  and a shared `isQboConnectivityError()` classifier in `qbo/client.ts`.
+- `loadReporting` and `loadBaseline` now catch any QBO connectivity/token error,
+  serve cached snapshots when present, and otherwise return an "unavailable"
+  state with a `reason` of `not_connected` vs `reconnect_required`. Genuine
+  (non-QBO) errors still surface. ReportingPanel and ProjectionsPanel show an
+  actionable "reconnect QuickBooks" notice linking to Settings.
+- The AI Council tab only reads stored runs (no QBO context on render), so it was
+  already safe.
+
+### GCD Pal — live insights (read-only, no fabrication)
+- `GET /api/assistant/insights?module=<id>` (gated to `use_assistant`) returns
+  `[{tone,text,prompt}]` from `src/lib/assistant/insights.ts` — deterministic,
+  **DB/cache-only** (no network, no LLM). Real figures for Cash Sheet Sync (dupes,
+  changed-after-posting, errors, stage), Tekmetric (ARO delta, low-utilization
+  techs, top make — from the cached snapshot), Coworker Portal (open questions),
+  Deposit Reconciliation (matched/needs-review), and Check Reception (needs-review,
+  learned mappings). Empty result = the Pal keeps its static, figure-free copy.
+- `AiPal` fetches live insights lazily on open and falls back to the static map on
+  any error/empty, so it never shows an invented number.
+
+### Operations forecast — projection scenarios on 24-month Tekmetric history
+- Pure engine `src/lib/tekmetric/forecast.ts`: derives per-driver monthly trends
+  (RO count, ARO, gross margin) from backfilled history by regression (reusing the
+  OLS module, with confidence), then projects revenue (= ARO × RO count) and gross
+  profit forward under editable levers (horizon, ARO %/mo, RO %/mo, fixed margin).
+  Deterministic and unit-tested (`tests/tekmetric-forecast.test.ts`, 8 tests).
+- `src/lib/tekmetric/history-service.ts`: cache-only reader for the trailing
+  monthly snapshots (no network); needs ≥3 months or reports unavailable.
+- New **Ops forecast** tab on the Projections page (`projections/ops/`) — gated to
+  `view_tekmetric`: baseline trend cards with confidence badges, a URL-driven
+  scenario form, summary KPIs, a themed revenue/gross-profit chart, and a monthly
+  table. Read-only over Tekmetric.
+
+Verified: `tsc --noEmit` clean, 255 tests pass, `next build` succeeds.

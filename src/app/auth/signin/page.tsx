@@ -22,25 +22,27 @@ export default function SignInPage() {
 
   return (
     <div className="center">
-      <div className="card" style={{ width: 380 }}>
+      <div className="card" style={{ width: 440 }}>
+        <img src="/assets/gcd-logo-disc.png" width={44} height={44} alt="German Car Depot" />
         <h1>Sign in</h1>
-        <p className="sub">GCD QBO Hub is restricted to German Car Depot staff.</p>
+        <p className="card-subtitle">GCD QBO Hub is restricted to German Car Depot staff.</p>
         {sent ? (
-          <div className="notice ok">
+          <div className="notice info">
             Check your inbox — we emailed a magic sign-in link to <strong>{email}</strong>. It expires in 15
             minutes.
           </div>
         ) : (
           <form onSubmit={submit}>
             <input
+              className="input"
               type="email"
               placeholder="you@germancardepot.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              style={{ width: "100%", padding: "0.5rem", margin: "0.5rem 0", borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel-2)", color: "var(--text)" }}
+              style={{ margin: "12px 0" }}
             />
             {error && <div className="notice danger">{error}</div>}
-            <button className="btn" type="submit" style={{ width: "100%" }}>
+            <button className="btn primary" type="submit" style={{ width: "100%" }}>
               Email me a sign-in link
             </button>
           </form>

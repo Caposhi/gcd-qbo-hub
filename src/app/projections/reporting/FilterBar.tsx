@@ -18,12 +18,15 @@ import {
   type Granularity,
 } from "@/lib/projections/reports";
 
+// Light filter-pill control (white bg, subtle border, compact type) — matches
+// the .filter-pill treatment in the GCD design system.
 const selectStyle: React.CSSProperties = {
-  padding: "0.35rem 0.5rem",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
+  padding: "8px 12px",
+  borderRadius: "var(--radius-md)",
+  border: "1px solid var(--border-default)",
+  background: "#fff",
+  color: "var(--text-strong)",
+  fontSize: 13,
 };
 
 export interface FilterState {

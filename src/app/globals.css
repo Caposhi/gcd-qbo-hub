@@ -217,45 +217,17 @@ table.gcd tbody tr:hover { background:var(--powder-blue-100); }
 @keyframes gcd-blink { 0%,80%,100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-2px); } }
 
 /* =============================================================================
-   10. TEMPORARY backward-compat shim (redesign rollout)
+   10. Shared layout/text utilities
    -----------------------------------------------------------------------------
-   The new utility layer above drops the old dark-theme classes/vars that pages
-   not yet migrated still use (Cash Sheet Sync, Deposit Reconciliation, Check
-   Reception, Coworker Portal, and any inline `var(--panel-2)` etc.). This block
-   maps the legacy names onto the new LIGHT tokens so those pages stay legible
-   during the phased rollout. DELETE this whole section once every page uses the
-   new classes. Nothing new should reference these names.
+   Small, brand-agnostic helpers used across pages (page intros, key/value lists,
+   action rows, generic responsive grids). These are permanent — the redesign's
+   temporary dark-token compatibility shim has been removed now that every page
+   uses the brand tokens/classes above; nothing references the old `--panel`,
+   `--accent`, `--text`, etc. aliases any more.
    ========================================================================== */
-:root {
-  --bg: var(--gray-50);
-  --panel: var(--white);
-  --panel-2: var(--gray-100);
-  --border: var(--border-subtle);
-  --text: var(--text-body);
-  --muted: var(--text-muted);
-  --accent: var(--royal-blue);
-  --accent-2: var(--royal-blue-600);
-  --warn: var(--warning);
-  /* --danger already exists as a new token with the same name — no alias needed
-     (a `--danger: var(--danger)` self-reference would form an invalid CSS cycle). */
-  --ok: var(--success);
-  --radius: var(--radius-md);
-}
-
-/* legacy page-intro + muted text */
 .sub { color: var(--text-muted); margin-top: 0; }
 .muted { color: var(--text-muted); }
 
-/* legacy stat tiles → KPI look */
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin: 16px 0; }
-.tile { background: #fff; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm); padding: 19px 21px; }
-.tile .n { font-family: var(--font-heading); font-size: 30px; font-weight: 600; color: var(--navy-blue); letter-spacing: -.01em; }
-.tile .l { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; margin-top: 6px; }
-.tile.danger { border-color: var(--danger); }
-.tile.warn { border-color: var(--warning); }
-
-/* legacy layout helpers */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; align-items: center; }
 .center { display: flex; min-height: 60vh; align-items: center; justify-content: center; }
@@ -263,21 +235,5 @@ table.gcd tbody tr:hover { background:var(--powder-blue-100); }
 .kv dt, .kv span:first-child { color: var(--text-muted); }
 .kv dd { margin: 0; }
 
-/* bare .btn (no variant) used by old pages → primary fill */
-.btn:not(.primary):not(.accent):not(.secondary):not(.ghost):not(.danger) {
-  background: var(--royal-blue); color: #fff; border-color: var(--royal-blue);
-}
-/* legacy badge tone */
-.badge.muted { background: var(--gray-100); color: var(--gray-600); }
-
-/* un-migrated tables use a bare <table> inside .table-wrap → give it the gcd look */
-.table-wrap > table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.table-wrap > table th { text-align: left; padding: 12px 16px; color: var(--text-muted); font-weight: 600;
-  font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; background: var(--gray-50); border-bottom: 1px solid var(--border-subtle); }
-.table-wrap > table td { padding: 13px 16px; border-bottom: 1px solid var(--border-subtle); color: var(--text-body); }
-.table-wrap > table tbody tr:last-child td { border-bottom: none; }
-.table-wrap > table tbody tr:hover { background: var(--powder-blue-100); }
-
-/* legacy inputs styled inline with old vars now read light via the aliases above;
-   also give bare inputs/selects a sane light default */
+/* keep a sane light default for any bare (unclassed) form control */
 input:not(.input), select:not(.input), textarea:not(.input) { color: var(--text-strong); }

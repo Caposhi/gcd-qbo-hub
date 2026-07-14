@@ -21,6 +21,20 @@ const AUTH_BASE = "https://appcenter.intuit.com/connect/oauth2";
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const SCOPE = "com.intuit.quickbooks.accounting";
 
+/**
+ * QBO rejected the stored token when we tried to use/refresh it (e.g. a 400 on
+ * the refresh grant because the refresh token expired or was revoked). A typed
+ * error so callers can degrade to "reconnect required" instead of crashing, and
+ * can tell it apart from a genuine bug. Never carries the response body (which
+ * may echo secrets) — status only.
+ */
+export class QboAuthError extends Error {
+  constructor(public status: number, statusText: string) {
+    super(`QBO token request failed: ${status} ${statusText}`);
+    this.name = "QboAuthError";
+  }
+}
+
 // Refresh this many ms BEFORE the access token actually expires.
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
@@ -66,7 +80,7 @@ async function tokenRequest(body: URLSearchParams): Promise<TokenResponse> {
   });
   if (!res.ok) {
     // Never log the body verbatim (it may echo secrets) — status only.
-    throw new Error(`QBO token request failed: ${res.status} ${res.statusText}`);
+    throw new QboAuthError(res.status, res.statusText);
   }
   return (await res.json()) as TokenResponse;
 }
@@ -153,6 +167,26 @@ export async function hasValidCredentials(
   } catch {
     return false;
   }
+}
+
+/**
+ * A **network-free** credential check for chrome that renders on every route
+ * (e.g. the top-bar environment pill). Unlike {@link hasValidCredentials} this
+ * NEVER performs a token refresh — doing so on the shared layout would fire a
+ * refresh on every page load and can race the page's own refresh (Intuit
+ * rotates refresh tokens on use, so the loser gets a 400). Here we only read the
+ * stored row and its expiry: a credential exists and its refresh token has not
+ * lapsed. The authoritative "is the token actually good" answer stays with the
+ * data path, which refreshes exactly once and degrades gracefully on failure.
+ */
+export async function hasStoredCredential(
+  environment: QboEnvironment = currentEnvironment()
+): Promise<boolean> {
+  const cred = await prisma.qboCredential
+    .findFirst({ where: { environment }, select: { refreshTokenExpires: true } })
+    .catch(() => null);
+  if (!cred) return false;
+  return !cred.refreshTokenExpires || cred.refreshTokenExpires.getTime() > Date.now();
 }
 
 function requireEnv(key: string): string {

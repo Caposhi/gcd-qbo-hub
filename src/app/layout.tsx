@@ -7,18 +7,24 @@ import { TopBar, type EnvInfo } from "./components/TopBar";
 import { AiPal } from "./components/AiPal";
 import { getSessionUser } from "@/lib/auth/session";
 import { getQboEnvironment } from "@/lib/config-store";
-import { hasValidCredentials } from "@/lib/qbo/oauth";
+import { hasStoredCredential } from "@/lib/qbo/oauth";
 
 export const metadata: Metadata = {
   title: "GCD QBO Hub",
   description: "German Car Depot — QuickBooks Online automations, reporting & portals.",
 };
 
-/** Resolve the env pill facts for the TopBar without ever throwing on the layout. */
+/**
+ * Resolve the env-pill facts for the TopBar without ever throwing on the layout
+ * and WITHOUT touching the network. The pill is chrome on every route, so it must
+ * not trigger a QBO token refresh here — that would refresh on every page load
+ * and race the data page's own refresh (rotated refresh tokens → 400). We only
+ * read whether a usable credential is on file; the data path owns the live check.
+ */
 async function resolveEnv(): Promise<EnvInfo> {
   try {
     const environment = await getQboEnvironment();
-    const configured = await hasValidCredentials(environment);
+    const configured = await hasStoredCredential(environment);
     return { environment, configured };
   } catch {
     return { environment: "sandbox", configured: false };

@@ -9,6 +9,7 @@
  * cheap single-officer run on demand.
  */
 import Link from "next/link";
+import { Play } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { can } from "@/lib/auth/roles";
 import type { SessionUser } from "@/lib/auth/session";
@@ -34,10 +35,10 @@ function InsightCard({
   accent?: boolean;
 }) {
   return (
-    <div className="card" style={accent ? { borderColor: "var(--accent)" } : undefined}>
+    <div className="card" style={accent ? { borderColor: "var(--royal-blue)" } : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "0.5rem" }}>
-        <h3 style={{ margin: 0 }}>{name}</h3>
-        <span className="muted" style={{ fontSize: "0.75rem" }}>{title}</span>
+        <h3 className="card-title" style={{ margin: 0 }}>{name}</h3>
+        <span className="card-subtitle">{title}</span>
       </div>
       <p style={{ fontWeight: 600, margin: "0.5rem 0" }}>{insight.takeaway}</p>
       {insight.bullets.length > 0 && (
@@ -52,7 +53,7 @@ function InsightCard({
       </div>
       {insight.memo && (
         <details>
-          <summary style={{ cursor: "pointer", color: "var(--accent)", fontSize: "0.85rem" }}>
+          <summary style={{ cursor: "pointer", color: "var(--royal-blue)", fontSize: "0.85rem" }}>
             Full memo
           </summary>
           <p className="muted" style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}>{insight.memo}</p>
@@ -104,7 +105,7 @@ export async function AiCouncilPanel({
 
   return (
     <>
-      <p className="sub">
+      <p className="page-desc">
         A team of AI officers debate the month, an independent auditor and board review their work, and
         each brings its specialty in plain language beside the numbers. Read-only over QuickBooks; a full
         monthly run is capped at $15 of model spend and runs automatically on the 1st.
@@ -122,9 +123,11 @@ export async function AiCouncilPanel({
         <div className="card">
           <div className="row-actions" style={{ margin: 0, flexWrap: "wrap", alignItems: "center" }}>
             <form action={runMonthlyCouncilAction}>
-              <button className="btn" type="submit">▶ Run full monthly council</button>
+              <button className="btn primary" type="submit">
+                <Play size={15} aria-hidden /> Run full monthly council
+              </button>
             </form>
-            <span className="muted" style={{ fontSize: "0.8rem" }}>or ask one officer:</span>
+            <span className="card-subtitle">or ask one officer:</span>
             {debatingOfficers().map((p) => (
               <form key={p.id} action={runOnDemandAgentAction}>
                 <input type="hidden" name="personaId" value={p.id} />
@@ -154,7 +157,7 @@ export async function AiCouncilPanel({
       )}
 
       {!selected ? (
-        <div className="notice">No council runs yet. {canRun ? "Run one above." : ""}</div>
+        <div className="notice info">No council runs yet. {canRun ? "Run one above." : ""}</div>
       ) : (
         <>
           {selected.status !== "complete" && (
@@ -164,7 +167,7 @@ export async function AiCouncilPanel({
             </div>
           )}
 
-          <p className="muted" style={{ fontSize: "0.8rem" }}>
+          <p className="card-subtitle">
             {selected.monthLabel} · {selected.kind} · {selected.method} · model {selected.model} · spend $
             {selected.spentUsd.toFixed(2)} / $15
           </p>
@@ -216,7 +219,7 @@ export async function AiCouncilPanel({
                 const br = parseBoardReport(boardRow.reportJson);
                 return (
                   <div className="card">
-                    <h3 style={{ marginTop: 0 }}>Board of Directors</h3>
+                    <h3 className="card-title" style={{ marginTop: 0 }}>Board of Directors</h3>
                     <p style={{ fontWeight: 600 }}>{br.takeaway}</p>
                     {br.endorsements.length > 0 && (
                       <p className="muted" style={{ fontSize: "0.85rem" }}>
@@ -236,7 +239,7 @@ export async function AiCouncilPanel({
                     ))}
                     {br.longForm && (
                       <details style={{ marginTop: "0.5rem" }}>
-                        <summary style={{ cursor: "pointer", color: "var(--accent)", fontSize: "0.85rem" }}>
+                        <summary style={{ cursor: "pointer", color: "var(--royal-blue)", fontSize: "0.85rem" }}>
                           Full board report
                         </summary>
                         <p className="muted" style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}>{br.longForm}</p>

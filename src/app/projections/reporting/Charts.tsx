@@ -204,11 +204,11 @@ export function AgingChart({
             <p className="muted" style={{ fontSize: "0.85rem" }}>Nothing in this bucket.</p>
           ) : (
             <div className="table-wrap">
-              <table>
+              <table className="gcd">
                 <thead>
                   <tr>
                     <th>{entityLabel}</th>
-                    <th style={{ textAlign: "right" }}>Open</th>
+                    <th className="num">Open</th>
                   </tr>
                 </thead>
                 <tbody>

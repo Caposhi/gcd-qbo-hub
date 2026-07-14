@@ -134,18 +134,19 @@ export default async function QueuePage({
 
   return (
     <>
+      <div className="accent-bar" />
       <h1>Cash Sheet Queue</h1>
-      <p className="sub">
+      <p className="page-desc">
         Every scanned row and its status. Pick a month tab, or search any field. Click a row for its full audit detail.
       </p>
 
       {/* Month tabs */}
-      <div className="month-tabs" style={tabsWrap}>
-        <Link href={hrefWith({ tab: null })} className="btn secondary" style={tabStyle(activeTab === "")}>
+      <div style={tabsWrap}>
+        <Link href={hrefWith({ tab: null })} className="filter-pill" style={tabStyle(activeTab === "")}>
           All
         </Link>
         {monthTabs.map((t) => (
-          <Link key={t} href={hrefWith({ tab: t })} className="btn secondary" style={tabStyle(activeTab === t)}>
+          <Link key={t} href={hrefWith({ tab: t })} className="filter-pill" style={tabStyle(activeTab === t)}>
             {t}
           </Link>
         ))}
@@ -155,12 +156,13 @@ export default async function QueuePage({
       <form method="get" className="row-actions" style={{ marginTop: "0.75rem" }}>
         {activeTab && <input type="hidden" name="tab" value={activeTab} />}
         <input
+          className="input"
           name="q"
           placeholder="Search amount, name, INV#, QBO txn, date, row…"
           defaultValue={q}
-          style={{ ...selStyle, minWidth: 320 }}
+          style={{ minWidth: 320 }}
         />
-        <select name="status" defaultValue={activeStatus} style={selStyle}>
+        <select className="input" name="status" defaultValue={activeStatus} style={{ maxWidth: 220 }}>
           <option value="">All statuses</option>
           {statuses.map((s) => (
             <option key={s} value={s}>
@@ -168,11 +170,11 @@ export default async function QueuePage({
             </option>
           ))}
         </select>
-        <button className="btn secondary" type="submit">Search</button>
-        <Link className="btn secondary" href="/cash-sheet-sync/queue">Clear</Link>
+        <button className="btn primary" type="submit">Search</button>
+        <Link className="btn ghost" href="/cash-sheet-sync/queue">Clear</Link>
       </form>
 
-      <p className="muted" style={{ fontSize: "0.85rem" }}>
+      <p className="card-subtitle" style={{ margin: "10px 0 14px" }}>
         {filtered.length} row{filtered.length === 1 ? "" : "s"}
         {activeTab ? ` in ${activeTab}` : ""}
         {q ? ` matching “${q}”` : ""}
@@ -180,11 +182,11 @@ export default async function QueuePage({
       </p>
 
       <div className="table-wrap">
-        <table>
+        <table className="gcd">
           <thead>
             <tr>
               <th>Tab</th><th>Row</th><th>Date</th><th>Rcv/Paid</th><th>Name</th><th>Purpose</th>
-              <th>INV#</th><th>Collected</th><th>Paid Out</th><th>Deposit</th><th>Status</th><th>QBO Txn</th>
+              <th>INV#</th><th className="num">Collected</th><th className="num">Paid Out</th><th className="num">Deposit</th><th>Status</th><th>QBO Txn</th>
             </tr>
           </thead>
           <tbody>
@@ -199,9 +201,9 @@ export default async function QueuePage({
                 <td>{r.name}</td>
                 <td>{r.purpose}</td>
                 <td>{r.invNumber}</td>
-                <td>{money(r.amtCollected)}</td>
-                <td>{money(r.amountPaidOut)}</td>
-                <td>{money(r.bankDeposit)}</td>
+                <td className="num">{money(r.amtCollected)}</td>
+                <td className="num">{money(r.amountPaidOut)}</td>
+                <td className="num">{money(r.bankDeposit)}</td>
                 <td>
                   <span className={`badge ${STATUS_CLASS[r.status] ?? "muted"}`}>{r.status}</span>
                 </td>
@@ -210,7 +212,7 @@ export default async function QueuePage({
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={12} className="muted">
+                <td colSpan={12} className="card-subtitle">
                   No rows match. {fetched.length === 0 ? "Run a dry-run from the overview to populate the queue." : "Try a different search or month."}
                 </td>
               </tr>
@@ -219,19 +221,11 @@ export default async function QueuePage({
         </table>
       </div>
       {filtered.length > 500 && (
-        <p className="muted">Showing the first 500 of {filtered.length} — narrow with a month tab or search.</p>
+        <p className="card-subtitle" style={{ marginTop: 10 }}>Showing the first 500 of {filtered.length} — narrow with a month tab or search.</p>
       )}
     </>
   );
 }
-
-const selStyle: React.CSSProperties = {
-  padding: "0.4rem",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
-};
 
 const tabsWrap: React.CSSProperties = {
   display: "flex",
@@ -241,6 +235,6 @@ const tabsWrap: React.CSSProperties = {
 
 function tabStyle(active: boolean): React.CSSProperties {
   return active
-    ? { borderColor: "var(--accent)", color: "var(--accent)", fontWeight: 700 }
+    ? { borderColor: "var(--royal-blue)", color: "var(--royal-blue)", background: "var(--powder-blue-100)", fontWeight: 700 }
     : {};
 }

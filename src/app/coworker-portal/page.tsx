@@ -53,45 +53,58 @@ export default async function CoworkerPortalPage({
 
   return (
     <>
-      <h1>Coworker Portal</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Coworker portal</h1>
+      <p className="page-desc">
         &ldquo;Ask My Client&rdquo; — questions about specific transactions.
         Owners and reviewers raise questions; coworkers answer the ones directed
         at them.
       </p>
 
-      <div className="tiles">
-        <div className="tile">
-          <span className="badge warn">open</span>
-          <strong>{countBy("open")}</strong>
+      <div className="kpi-grid">
+        <div className="kpi-card">
+          <div className="kpi-label">Open</div>
+          <div className="kpi-value">{countBy("open")}</div>
+          <div className="kpi-foot">
+            <span className="badge warn">open</span>
+          </div>
         </div>
-        <div className="tile">
-          <span className="badge ok">answered</span>
-          <strong>{countBy("answered")}</strong>
+        <div className="kpi-card">
+          <div className="kpi-label">Answered</div>
+          <div className="kpi-value">{countBy("answered")}</div>
+          <div className="kpi-foot">
+            <span className="badge ok">answered</span>
+          </div>
         </div>
-        <div className="tile">
-          <span className="badge muted">closed</span>
-          <strong>{countBy("closed")}</strong>
+        <div className="kpi-card">
+          <div className="kpi-label">Closed</div>
+          <div className="kpi-value">{countBy("closed")}</div>
+          <div className="kpi-foot">
+            <span className="badge muted">closed</span>
+          </div>
         </div>
       </div>
 
-      <div className="row-actions">
+      <div className="segmented">
         {STATUSES.map((s) => (
           <Link
             key={s}
-            className="btn secondary"
+            className={status === s ? "active" : ""}
             href={`/coworker-portal?status=${s}`}
           >
             {s}
           </Link>
         ))}
-        <Link className="btn secondary" href="/coworker-portal?status=all">
+        <Link
+          className={status === "all" ? "active" : ""}
+          href="/coworker-portal?status=all"
+        >
           all
         </Link>
       </div>
 
-      <div className="table-wrap">
-        <table>
+      <div className="table-wrap" style={{ marginTop: "16px" }}>
+        <table className="gcd">
           <thead>
             <tr>
               <th>Subject</th>
@@ -129,41 +142,41 @@ export default async function CoworkerPortalPage({
       </div>
 
       {canAsk ? (
-        <div className="card" style={{ marginTop: "1.5rem" }}>
-          <h2>Ask a question</h2>
+        <div className="card" style={{ marginTop: "24px" }}>
+          <h3 className="card-title">Ask a question</h3>
           <form action={askQuestionAction}>
-            <div className="grid">
-              <label>
-                Subject
-                <input name="subject" required style={inputStyle} />
-              </label>
-              <label>
-                Assigned to (email)
-                <input name="assignedEmail" type="email" style={inputStyle} />
-                <span className="muted sub">leave blank for the general pool</span>
-              </label>
-              <label>
-                QBO reference (optional)
-                <input name="qboReference" style={inputStyle} />
-              </label>
-              <label>
-                Related row id (optional)
-                <input name="relatedRowId" style={inputStyle} />
-              </label>
+            <div className="grid" style={{ marginTop: "16px" }}>
+              <div className="field">
+                <label>Subject</label>
+                <input name="subject" required className="input" />
+              </div>
+              <div className="field">
+                <label>Assigned to (email)</label>
+                <input name="assignedEmail" type="email" className="input" />
+                <span className="card-subtitle">leave blank for the general pool</span>
+              </div>
+              <div className="field">
+                <label>QBO reference (optional)</label>
+                <input name="qboReference" className="input" />
+              </div>
+              <div className="field">
+                <label>Related row id (optional)</label>
+                <input name="relatedRowId" className="input" />
+              </div>
             </div>
-            <label>
-              Question
-              <textarea name="body" required rows={4} style={{ ...inputStyle, width: "100%" }} />
-            </label>
+            <div className="field" style={{ marginTop: "16px" }}>
+              <label>Question</label>
+              <textarea name="body" required rows={4} className="input" />
+            </div>
             <div className="row-actions">
-              <button className="btn" type="submit">
+              <button className="btn primary" type="submit">
                 Post question
               </button>
             </div>
           </form>
         </div>
       ) : (
-        <p className="muted" style={{ marginTop: "1.5rem" }}>
+        <p className="card-subtitle" style={{ marginTop: "24px" }}>
           You answer questions assigned to you — open one from the list above to
           respond.
         </p>
@@ -171,13 +184,3 @@ export default async function CoworkerPortalPage({
     </>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  padding: "0.4rem",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
-  display: "block",
-  width: "100%",
-};
