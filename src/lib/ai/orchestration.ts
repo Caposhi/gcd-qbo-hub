@@ -47,6 +47,8 @@ export interface MonthlyKpi {
 export interface MonthlyContext {
   month: MonthRange;
   method: string;
+  /** The period the KPI deltas are measured against, e.g. "May 2026 (…→…)". */
+  comparisonLabel?: string;
   kpis: MonthlyKpi[];
   trend: Array<{ period: string; revenue: number; netIncome: number }>;
   arTotal: number;
@@ -108,8 +110,11 @@ export function renderContext(ctx: MonthlyContext): string {
   const lines: string[] = [];
   lines.push(`GERMAN CAR DEPOT — shared monthly data context`);
   lines.push(`Month: ${ctx.month.label} (${ctx.month.start} → ${ctx.month.end}), accounting method: ${ctx.method}`);
+  if (ctx.comparisonLabel) lines.push(`Deltas (Δ) are measured against: ${ctx.comparisonLabel}`);
   lines.push("");
-  lines.push("KEY PERFORMANCE INDICATORS (figure — Δ vs comparison period):");
+  lines.push(
+    `KEY PERFORMANCE INDICATORS (figure — Δ vs ${ctx.comparisonLabel ?? "the prior comparison period"}):`
+  );
   for (const k of ctx.kpis) {
     const d = k.deltaPct === null ? "n/a" : pct(k.deltaPct);
     lines.push(`  - ${k.label}: ${k.value} (Δ ${d} / ${k.deltaAbs}, ${k.sentiment})`);

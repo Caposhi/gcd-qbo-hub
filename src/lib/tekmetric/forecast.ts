@@ -35,8 +35,16 @@ export interface OpsMonth {
 export interface OpsTrend {
   /** Fitted level at the most recent month (smoother than the raw last point). */
   current: number;
-  /** Relative month-over-month growth implied by the fit (slope / mean). */
+  /** Relative month-over-month growth implied by the raw fit (slope / mean). */
   monthlyGrowthPct: number;
+  /**
+   * The growth actually used to project, DAMPED by fit confidence: a weak fit
+   * (near-zero R²) is indistinguishable from no trend, so we hold it flat (0)
+   * rather than compounding noise into a fake decline/climb; moderate fits are
+   * halved; strong fits pass through. Prevents a low-R² slope from producing a
+   * confident-looking monotonic trend.
+   */
+  effectiveMonthlyGrowthPct: number;
   r2: number;
   n: number;
   confidence: Confidence;
@@ -97,18 +105,23 @@ export function monthAfter(startIso: string, add: number): { start: string; labe
   return { start: `${year}-${mm}-01`, label: `${MONTHS[monthIdx]} ${year}` };
 }
 
+/** How much of the fitted slope to trust when projecting, by confidence tier. */
+const DAMP: Record<Confidence, number> = { strong: 1, moderate: 0.5, weak: 0 };
+
 function deriveTrend(history: OpsMonth[], pick: (m: OpsMonth) => number): OpsTrend {
   const points = history.map((m, i) => ({ x: i, y: pick(m) }));
   const fit = linearRegression(points);
   const lastX = Math.max(0, history.length - 1);
   const current = Math.max(0, predict(fit, lastX));
   const monthlyGrowthPct = fit.meanY !== 0 ? fit.slope / fit.meanY : 0;
+  const confidence = confidenceOf(fit.r2, fit.n);
   return {
     current,
     monthlyGrowthPct,
+    effectiveMonthlyGrowthPct: monthlyGrowthPct * DAMP[confidence],
     r2: fit.r2,
     n: fit.n,
-    confidence: confidenceOf(fit.r2, fit.n),
+    confidence,
   };
 }
 
@@ -134,8 +147,10 @@ function clampGrowth(g: number): number {
 /** Project the operational drivers forward under a scenario. */
 export function projectOps(baseline: OpsBaseline, scenario: OpsScenario): OpsProjectionMonth[] {
   const horizon = Math.max(1, Math.min(24, Math.round(scenario.horizonMonths)));
-  const roGrowth = clampGrowth(scenario.roMonthlyGrowthPct ?? baseline.roCount.monthlyGrowthPct);
-  const aroGrowth = clampGrowth(scenario.aroMonthlyGrowthPct ?? baseline.aro.monthlyGrowthPct);
+  // Default to the confidence-damped growth (a weak fit projects flat); an
+  // explicit scenario override always wins.
+  const roGrowth = clampGrowth(scenario.roMonthlyGrowthPct ?? baseline.roCount.effectiveMonthlyGrowthPct);
+  const aroGrowth = clampGrowth(scenario.aroMonthlyGrowthPct ?? baseline.aro.effectiveMonthlyGrowthPct);
   const margin =
     scenario.grossMarginPct !== undefined
       ? Math.max(0, Math.min(100, scenario.grossMarginPct))
@@ -144,7 +159,9 @@ export function projectOps(baseline: OpsBaseline, scenario: OpsScenario): OpsPro
   const out: OpsProjectionMonth[] = [];
   for (let t = 1; t <= horizon; t++) {
     const { start, label } = monthAfter(baseline.lastStart, t);
-    const roCount = Math.max(0, baseline.roCount.current * Math.pow(1 + roGrowth, t));
+    // RO count is discrete — round it so revenue (= ARO × RO count) ties out in
+    // the table instead of using a fractional count behind a rounded display.
+    const roCount = Math.max(0, Math.round(baseline.roCount.current * Math.pow(1 + roGrowth, t)));
     const aro = Math.max(0, baseline.aro.current * Math.pow(1 + aroGrowth, t));
     const revenue = roCount * aro;
     const grossProfit = (revenue * margin) / 100;

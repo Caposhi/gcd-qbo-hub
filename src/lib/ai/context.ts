@@ -21,6 +21,14 @@ function pctStr(v: number): string {
   return `${(v * 100).toFixed(1)}%`;
 }
 
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "2026-05-01".."2026-05-31" → "May 2026 (2026-05-01 → 2026-05-31)" so deltas name their baseline. */
+function describeComparison(range: { start: string; end: string }): string {
+  const [y, m] = range.start.split("-").map((s) => parseInt(s, 10));
+  const label = Number.isFinite(y) && Number.isFinite(m) ? `${MONTH_ABBR[(m - 1 + 12) % 12]} ${y}` : "prior period";
+  return `${label} (${range.start} → ${range.end})`;
+}
+
 /**
  * Build the shared context for a month, or return null when QBO isn't connected
  * (and no cache exists) — callers surface a "not available" state.
@@ -139,6 +147,7 @@ export async function buildMonthlyContext(
   return {
     month,
     method,
+    comparisonLabel: describeComparison(reporting.comparison),
     kpis,
     trend: reporting.trend,
     arTotal: reporting.arAging.total,

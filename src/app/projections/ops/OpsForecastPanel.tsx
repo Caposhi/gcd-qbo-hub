@@ -83,10 +83,23 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
   const summary = summarizeOpsProjection(rows);
   const chartData = rows.map((r) => ({ label: r.label, revenue: r.revenue, grossProfit: r.grossProfit }));
 
-  const trends: Array<{ label: string; t: (typeof baseline)["roCount"]; fmt: (n: number) => string }> = [
-    { label: "RO count / mo", t: baseline.roCount, fmt: (n) => Math.round(n).toLocaleString("en-US") },
-    { label: "ARO", t: baseline.aro, fmt: (n) => money(n) },
-    { label: "Gross margin", t: baseline.grossMarginPct, fmt: (n) => `${n.toFixed(1)}%` },
+  // `held` = the forecast holds this driver flat: RO count / ARO whenever their
+  // fit is too weak to trust (effective growth 0); gross margin always (the
+  // projection uses the current level, it doesn't trend margin).
+  const trends: Array<{
+    label: string;
+    t: (typeof baseline)["roCount"];
+    fmt: (n: number) => string;
+    held: boolean;
+  }> = [
+    {
+      label: "RO count / mo",
+      t: baseline.roCount,
+      fmt: (n) => Math.round(n).toLocaleString("en-US"),
+      held: baseline.roCount.effectiveMonthlyGrowthPct === 0,
+    },
+    { label: "ARO", t: baseline.aro, fmt: (n) => money(n), held: baseline.aro.effectiveMonthlyGrowthPct === 0 },
+    { label: "Gross margin", t: baseline.grossMarginPct, fmt: (n) => `${n.toFixed(1)}%`, held: true },
   ];
 
   return (
@@ -111,8 +124,14 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
               <div className="kpi-foot">
                 <span className={`badge ${confBadge(row.t.confidence)}`}>{row.t.confidence}</span>
                 <span className="card-subtitle">
-                  {row.t.monthlyGrowthPct >= 0 ? "+" : ""}
-                  {pctMo(row.t.monthlyGrowthPct)} · R² {row.t.r2.toFixed(2)}
+                  {row.held ? (
+                    <>held flat · R² {row.t.r2.toFixed(2)}</>
+                  ) : (
+                    <>
+                      {row.t.effectiveMonthlyGrowthPct >= 0 ? "+" : ""}
+                      {pctMo(row.t.effectiveMonthlyGrowthPct)} · R² {row.t.r2.toFixed(2)}
+                    </>
+                  )}
                 </span>
               </div>
             </div>
@@ -124,7 +143,10 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
       <form method="GET" action="/projections" className="card" style={{ marginTop: 16 }}>
         <input type="hidden" name="tab" value="ops" />
         <h3 className="card-title" style={{ marginTop: 0 }}>Scenario</h3>
-        <p className="card-subtitle">Leave a field blank to use the derived trend.</p>
+        <p className="card-subtitle">
+          Leave a field blank to use the derived trend. Weak-fit trends (low R²) are held flat rather than
+          extrapolated — enter a rate to project a deliberate trend.
+        </p>
         <div className="grid" style={{ marginTop: 12 }}>
           <div className="field">
             <label>Horizon (months)</label>
@@ -142,7 +164,7 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
               type="number"
               step="0.1"
               defaultValue={sp.aro ?? ""}
-              placeholder={(baseline.aro.monthlyGrowthPct * 100).toFixed(1)}
+              placeholder={(baseline.aro.effectiveMonthlyGrowthPct * 100).toFixed(1)}
             />
           </div>
           <div className="field">
@@ -153,7 +175,7 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
               type="number"
               step="0.1"
               defaultValue={sp.ro ?? ""}
-              placeholder={(baseline.roCount.monthlyGrowthPct * 100).toFixed(1)}
+              placeholder={(baseline.roCount.effectiveMonthlyGrowthPct * 100).toFixed(1)}
             />
           </div>
           <div className="field">

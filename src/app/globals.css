@@ -203,6 +203,9 @@ table.gcd tbody tr:last-child td { border-bottom:none; }
 table.gcd tbody tr { transition:background var(--dur-fast) var(--ease-standard); }
 table.gcd tbody tr:hover { background:var(--powder-blue-100); }
 .num { font-family:var(--font-heading); font-weight:600; font-variant-numeric:tabular-nums; text-align:right; }
+/* .num must right-align the HEADER too — table.gcd th sets text-align:left and
+   would otherwise out-specify .num, leaving headers left while values go right. */
+table.gcd th.num, table.gcd td.num { text-align:right; }
 
 /* ---- 8. Forms ------------------------------------------------------------- */
 .field label { display:block; font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:6px; }

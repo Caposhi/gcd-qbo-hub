@@ -88,6 +88,44 @@ describe("projectOps", () => {
   });
 });
 
+describe("confidence damping (don't extrapolate noise)", () => {
+  it("holds a weak (near-zero R²) trend flat instead of projecting a decline/climb", () => {
+    // A zig-zag with no real trend → low R² → 'weak'. The raw slope is tiny but
+    // nonzero; the effective (damped) growth must be 0 so the forecast is flat.
+    const noisy: OpsMonth[] = [100, 120, 95, 125, 90, 130, 100, 118, 92, 128].map((ro, i) => ({
+      start: monthAfter("2025-01-01", i).start,
+      label: monthAfter("2025-01-01", i).label,
+      roCount: ro,
+      carCount: ro,
+      aro: 600,
+      revenue: ro * 600,
+      grossProfit: ro * 600 * 0.55,
+      grossMarginPct: 55,
+    }));
+    const base = deriveOpsBaseline(noisy);
+    expect(base.roCount.confidence).toBe("weak");
+    expect(base.roCount.effectiveMonthlyGrowthPct).toBe(0); // damped to flat
+    const rows = projectOps(base, { horizonMonths: 6 });
+    // Every projected month equals the first — no drift from noise.
+    for (const r of rows) expect(r.roCount).toBe(rows[0].roCount);
+  });
+
+  it("still lets an explicit override drive a trend even when the fit is weak", () => {
+    const noisy: OpsMonth[] = [100, 120, 95, 125, 90, 130].map((ro, i) => ({
+      start: monthAfter("2025-01-01", i).start,
+      label: monthAfter("2025-01-01", i).label,
+      roCount: ro,
+      carCount: ro,
+      aro: 600,
+      revenue: ro * 600,
+      grossProfit: ro * 600 * 0.55,
+      grossMarginPct: 55,
+    }));
+    const rows = projectOps(deriveOpsBaseline(noisy), { horizonMonths: 3, roMonthlyGrowthPct: 0.1 });
+    expect(rows[2].roCount).toBeGreaterThan(rows[0].roCount);
+  });
+});
+
 describe("summarizeOpsProjection", () => {
   it("totals revenue and gross profit and reports the ending month", () => {
     const base = deriveOpsBaseline(history());
