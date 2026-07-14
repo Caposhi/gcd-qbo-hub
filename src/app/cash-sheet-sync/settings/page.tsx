@@ -31,7 +31,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
   // whether the sandbox or the real company is connected (they have different
   // realm ids). A live stage with only a sandbox credential = not connected live.
   const activeCred = await prisma.qboCredential
-    .findFirst({ where: { environment }, select: { realmId: true, connectedByEmail: true, accessTokenExpires: true } })
+    .findFirst({
+      where: { environment },
+      orderBy: { updatedAt: "desc" }, // show the freshest credential (matches what the data path uses)
+      select: { realmId: true, connectedByEmail: true, accessTokenExpires: true },
+    })
     .catch(() => null);
   const idx = ROLLOUT_STAGES.indexOf(stage);
   const prev = idx > 0 ? ROLLOUT_STAGES[idx - 1] : null;
