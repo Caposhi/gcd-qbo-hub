@@ -4,6 +4,7 @@ import {
   projectOps,
   summarizeOpsProjection,
   monthAfter,
+  looksLikePartialMonth,
   type OpsMonth,
 } from "@/lib/tekmetric/forecast";
 
@@ -123,6 +124,69 @@ describe("confidence damping (don't extrapolate noise)", () => {
     }));
     const rows = projectOps(deriveOpsBaseline(noisy), { horizonMonths: 3, roMonthlyGrowthPct: 0.1 });
     expect(rows[2].roCount).toBeGreaterThan(rows[0].roCount);
+  });
+});
+
+describe("looksLikePartialMonth (bad-data guard)", () => {
+  it("flags a meaningful RO count paired with an impossible margin", () => {
+    // The real Apr-2026 corruption: 198 ROs but ~6.6% gross margin — impossible
+    // when labor carries no COGS.
+    expect(looksLikePartialMonth({ roCount: 198, grossMarginPct: 6.6, aro: 64 })).toBe(true);
+  });
+
+  it("flags a meaningful RO count with ~$0 ARO", () => {
+    expect(looksLikePartialMonth({ roCount: 120, grossMarginPct: 55, aro: 0 })).toBe(true);
+  });
+
+  it("flags non-finite figures", () => {
+    expect(looksLikePartialMonth({ roCount: NaN, grossMarginPct: 55, aro: 600 })).toBe(true);
+  });
+
+  it("passes a healthy month, and won't flag a genuinely tiny month", () => {
+    expect(looksLikePartialMonth({ roCount: 150, grossMarginPct: 55, aro: 640 })).toBe(false);
+    // A near-empty month (few ROs) is not treated as corrupt — the guard only
+    // fires on a meaningful RO count, so a real slow month passes.
+    expect(looksLikePartialMonth({ roCount: 3, grossMarginPct: 5, aro: 0 })).toBe(false);
+  });
+});
+
+describe("deriveOpsBaseline — excludes corrupt months from the fit", () => {
+  it("ignores a single partial month so it can't poison the baseline", () => {
+    const clean = history(); // 12 clean upward months, Jan–Dec 2025
+    // Corrupt the middle month into an impossible partial-pull shape.
+    const poisoned = clean.map((m, i) =>
+      i === 6 ? { ...m, grossProfit: m.revenue * 0.066, grossMarginPct: 6.6, aro: 60 } : m
+    );
+
+    const dirty = deriveOpsBaseline(poisoned);
+    const pure = deriveOpsBaseline(clean);
+
+    // The corrupt month is dropped from the fit (11 of 12 used) …
+    expect(dirty.months).toBe(11);
+    // … so the recovered trend and current level match the clean baseline, not a
+    // margin dragged toward the 6.6% outlier.
+    expect(dirty.grossMarginPct.current).toBeCloseTo(pure.grossMarginPct.current, 4);
+    expect(dirty.aro.confidence).toBe("strong");
+  });
+
+  it("keeps the full history when dropping bad months would leave too little", () => {
+    // Only two clean months; the rest are corrupt. We can't fit on 2 points, so
+    // the baseline falls back to the full set rather than returning nothing.
+    const months: OpsMonth[] = [0, 1, 2, 3].map((i) => {
+      const bad = i >= 2;
+      return {
+        start: monthAfter("2025-01-01", i).start,
+        label: monthAfter("2025-01-01", i).label,
+        roCount: 120,
+        carCount: 108,
+        aro: bad ? 0 : 600,
+        revenue: bad ? 0 : 72000,
+        grossProfit: bad ? 0 : 39600,
+        grossMarginPct: bad ? 0 : 55,
+      };
+    });
+    const base = deriveOpsBaseline(months);
+    expect(base.months).toBe(4); // fell back to full history
   });
 });
 

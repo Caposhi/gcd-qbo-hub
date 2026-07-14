@@ -108,33 +108,62 @@ export function monthAfter(startIso: string, add: number): { start: string; labe
 /** How much of the fitted slope to trust when projecting, by confidence tier. */
 const DAMP: Record<Confidence, number> = { strong: 1, moderate: 0.5, weak: 0 };
 
+/**
+ * Flags a month whose figures can only come from a bad/partial data pull, not a
+ * real month. At this shop labor carries no COGS, so a real gross margin can't
+ * fall near single digits; a meaningful RO count with ~$0 ARO or a sub-20% margin
+ * means the sales/cost detail didn't come through. Such months are refused at
+ * write time and excluded from the forecast fit so one corrupt pull can't poison
+ * the baseline. (Kept intentionally lax — only catches clearly-impossible data.)
+ */
+export function looksLikePartialMonth(x: { roCount: number; grossMarginPct: number; aro: number }): boolean {
+  if (![x.roCount, x.grossMarginPct, x.aro].every(Number.isFinite)) return true;
+  return x.roCount >= 10 && (x.grossMarginPct < 20 || x.aro <= 0);
+}
+
+/** Median of a numeric list (0 for empty). */
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** A robust "where we are now": the median of the last up-to-3 observed values. */
+function robustCurrent(values: number[]): number {
+  return Math.max(0, median(values.slice(-3)));
+}
+
 function deriveTrend(history: OpsMonth[], pick: (m: OpsMonth) => number): OpsTrend {
-  const points = history.map((m, i) => ({ x: i, y: pick(m) }));
+  const values = history.map(pick);
+  const points = values.map((y, i) => ({ x: i, y }));
   const fit = linearRegression(points);
-  const lastX = Math.max(0, history.length - 1);
-  const current = Math.max(0, predict(fit, lastX));
   const monthlyGrowthPct = fit.meanY !== 0 ? fit.slope / fit.meanY : 0;
   const confidence = confidenceOf(fit.r2, fit.n);
-  return {
-    current,
-    monthlyGrowthPct,
-    effectiveMonthlyGrowthPct: monthlyGrowthPct * DAMP[confidence],
-    r2: fit.r2,
-    n: fit.n,
-    confidence,
-  };
+  const effectiveMonthlyGrowthPct = monthlyGrowthPct * DAMP[confidence];
+  // Launch level: when we actually project a trend, start from the fitted line's
+  // latest point; when we hold flat (weak fit), anchor at the robust recent
+  // actual so the forecast reflects where the shop truly is — not a noisy fit's
+  // endpoint that an outlier could have dragged off.
+  const current =
+    effectiveMonthlyGrowthPct !== 0 ? Math.max(0, predict(fit, Math.max(0, values.length - 1))) : robustCurrent(values);
+  return { current, monthlyGrowthPct, effectiveMonthlyGrowthPct, r2: fit.r2, n: fit.n, confidence };
 }
 
 /** Derive the operational baseline from trailing monthly history (oldest → newest). */
 export function deriveOpsBaseline(history: OpsMonth[]): OpsBaseline {
-  const last = history[history.length - 1];
+  // Exclude months that can only be bad data so they can't skew the fit or the
+  // current level. Fall back to the full set if that would leave too little.
+  const cleaned = history.filter((m) => !looksLikePartialMonth(m));
+  const used = cleaned.length >= 3 ? cleaned : history;
+  const last = history[history.length - 1]; // labels project forward from the real latest month
   return {
-    months: history.length,
+    months: used.length,
     lastStart: last?.start ?? "1970-01-01",
     lastLabel: last?.label ?? "—",
-    roCount: deriveTrend(history, (m) => m.roCount),
-    aro: deriveTrend(history, (m) => m.aro),
-    grossMarginPct: deriveTrend(history, (m) => m.grossMarginPct),
+    roCount: deriveTrend(used, (m) => m.roCount),
+    aro: deriveTrend(used, (m) => m.aro),
+    grossMarginPct: deriveTrend(used, (m) => m.grossMarginPct),
   };
 }
 
