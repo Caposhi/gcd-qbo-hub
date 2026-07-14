@@ -3,7 +3,8 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
-import { askQuestionAction } from "./actions";
+import { askQuestionAction, importAskMyClientAction } from "./actions";
+import { askMyClientAccountName } from "@/lib/coworker/qbo";
 
 export const dynamic = "force-dynamic";
 
@@ -15,15 +16,50 @@ const STATUS_CLASS: Record<string, string> = {
 
 const STATUSES = ["open", "answered", "closed"] as const;
 
+/** Render the outcome of a just-run import (from the ?import= redirect). */
+function ImportNotice({ status, accountName }: { status?: string; accountName: string }) {
+  if (!status) return null;
+  if (status.startsWith("ok:")) {
+    const [, created, updated, closed, found] = status.split(":");
+    return (
+      <div className="notice info" style={{ marginBottom: 16 }}>
+        Imported from QuickBooks — <strong>{created}</strong> new, {updated} updated, {closed} auto-closed
+        (from {found} parked {found === "1" ? "transaction" : "transactions"} in &ldquo;{accountName}&rdquo;).
+      </div>
+    );
+  }
+  const messages: Record<string, React.ReactNode> = {
+    not_connected: (
+      <>QuickBooks isn&apos;t connected for this environment. Connect it in{" "}
+      <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link>, then import again.</>
+    ),
+    reconnect_required: (
+      <>QuickBooks rejected the saved connection (its token expired/was revoked). Reconnect in{" "}
+      <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link> → <strong>Reconnect QBO</strong>, then import again.</>
+    ),
+    account_not_found: (
+      <>No QuickBooks account named &ldquo;{accountName}&rdquo; was found. Check the name in QBO, or set{" "}
+      <code>COWORKER_QBO_ACCOUNT_NAME</code> to match it.</>
+    ),
+    error: <>The import hit an unexpected error. Please try again; if it persists, check the server logs.</>,
+  };
+  return (
+    <div className="notice warn" style={{ marginBottom: 16 }}>
+      {messages[status] ?? "Import failed."}
+    </div>
+  );
+}
+
 export default async function CoworkerPortalPage({
   searchParams,
 }: {
-  searchParams: { status?: string };
+  searchParams: { status?: string; import?: string };
 }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
   const canAsk = can(user.role, "ask_coworker_questions");
+  const canImport = can(user.role, "import_coworker_questions");
   const status = searchParams.status ?? "open";
 
   // Coworkers only see questions assigned to them or in the unassigned pool.
@@ -58,8 +94,20 @@ export default async function CoworkerPortalPage({
       <p className="page-desc">
         &ldquo;Ask My Client&rdquo; — questions about specific transactions.
         Owners and reviewers raise questions; coworkers answer the ones directed
-        at them.
+        at them. Import pulls the transactions parked in the &ldquo;{askMyClientAccountName()}&rdquo;
+        QuickBooks account (read-only) so each can be explained and re-coded in QBO.
       </p>
+
+      <ImportNotice status={searchParams.import} accountName={askMyClientAccountName()} />
+
+      {canImport && (
+        <form action={importAskMyClientAction} className="row-actions" style={{ margin: "0 0 4px" }}>
+          <button className="btn secondary" type="submit">↻ Import from QuickBooks</button>
+          <span className="card-subtitle">
+            Read-only — pulls parked transactions as questions; nothing is written to QuickBooks.
+          </span>
+        </form>
+      )}
 
       <div className="kpi-grid">
         <div className="kpi-card">
@@ -108,6 +156,7 @@ export default async function CoworkerPortalPage({
           <thead>
             <tr>
               <th>Subject</th>
+              <th>Source</th>
               <th>Asked by</th>
               <th>Assigned to</th>
               <th>Status</th>
@@ -119,6 +168,19 @@ export default async function CoworkerPortalPage({
               <tr key={q.id}>
                 <td>
                   <Link href={`/coworker-portal/${q.id}`}>{q.subject}</Link>
+                  {q.qboTxnDate && (
+                    <span className="card-subtitle" style={{ display: "block" }}>
+                      {q.qboTxnDate}
+                      {q.qboReference ? ` · ${q.qboReference}` : ""}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  {q.source === "ask_my_client" ? (
+                    <span className="badge info">QBO</span>
+                  ) : (
+                    <span className="badge muted">manual</span>
+                  )}
                 </td>
                 <td>{q.askedByEmail}</td>
                 <td>{q.assignedEmail ?? <span className="muted">general pool</span>}</td>
@@ -132,7 +194,7 @@ export default async function CoworkerPortalPage({
             ))}
             {questions.length === 0 && (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={6} className="muted">
                   No questions match this filter.
                 </td>
               </tr>

@@ -10,8 +10,10 @@
  * (owner_admin, coworker).
  */
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { requirePermission } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
+import { importAskMyClient } from "@/lib/coworker/import-service";
 
 export async function askQuestionAction(formData: FormData) {
   const user = await requirePermission("ask_coworker_questions");
@@ -68,4 +70,20 @@ export async function reopenQuestionAction(questionId: string) {
   });
   revalidatePath("/coworker-portal");
   revalidatePath(`/coworker-portal/${questionId}`);
+}
+
+/**
+ * Pull the "Ask My Client" transactions in from QBO (read-only) and mirror them
+ * as questions. Gated to owners/reviewers. Redirects back with a short status so
+ * the page can show the outcome. Never writes to QBO.
+ */
+export async function importAskMyClientAction() {
+  const user = await requirePermission("import_coworker_questions");
+  const result = await importAskMyClient(user.email, new Date());
+  revalidatePath("/coworker-portal");
+
+  const status = result.ok
+    ? `ok:${result.created}:${result.updated}:${result.closed}:${result.found}`
+    : (result.reason ?? "error");
+  redirect(`/coworker-portal?import=${encodeURIComponent(status)}`);
 }

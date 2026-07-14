@@ -550,3 +550,42 @@ white-screen on a token failure:
   table. Read-only over Tekmetric.
 
 Verified: `tsc --noEmit` clean, 255 tests pass, `next build` succeeds.
+
+---
+
+## Coworker Portal — "Ask My Client" import (read-only over QBO)
+
+The portal shipped as a manual Q&A board with no QBO connection, so it never
+surfaced the transactions parked in the QBO "Ask My Client" account. This wires
+that up — READ-ONLY: the hub imports the parked transactions as questions for
+coworkers to explain; an owner reclassifies them in QuickBooks by hand. The hub
+never writes to QBO.
+
+- **Schema** (`CwpQuestion`, migration `00000000000012`): `source`
+  (manual | ask_my_client), `qboTxnId`/`qboTxnType` (+ `@@unique` to dedupe
+  re-imports; NULLs stay distinct so manual questions are unconstrained), and a
+  `qboTxnDate`/`qboTxnAmount`/`qboTxnName` snapshot for display.
+- **Pure normalizer** `src/lib/coworker/transactions.ts`: turns the QBO
+  TransactionList report into a flat, typed list — maps columns by title (not
+  position), walks nested/section rows, skips totals, parses parenthesized
+  negatives, and derives a stable natural dedupe key. Unit-tested
+  (`tests/coworker-transactions.test.ts`, 4 tests).
+- **QBO read path** `src/lib/coworker/qbo.ts`: resolves the account by name
+  (`COWORKER_QBO_ACCOUNT_NAME`, default "Ask My Client") and fetches its
+  transactions via `GET /reports/TransactionList` — GETs only, no writes.
+- **Import service** `src/lib/coworker/import-service.ts`: idempotent upsert of a
+  question per parked transaction, and auto-closes questions whose transaction
+  has left the account (reclassified in QBO). Degrades to a friendly reason
+  (`not_connected` / `reconnect_required` / `account_not_found`) instead of
+  throwing, using the shared `isQboConnectivityError` classifier.
+- **Permission** `import_coworker_questions` (owner_admin + reviewer). The action
+  `importAskMyClientAction` is gated and redirects back with a status the page
+  renders as a notice.
+- **UI**: an "Import from QuickBooks" button (gated), a Source column (QBO vs
+  manual) with the txn date/reference, and the coworker's answer captures the
+  classification an owner then applies in QBO.
+
+Note: this depends on a live QBO connection; if the token is rejected the page
+shows a reconnect prompt (reconnect in Settings & rollout) rather than failing.
+
+Verified: `tsc --noEmit` clean, 259 tests pass, `next build` succeeds.

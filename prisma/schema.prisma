@@ -536,10 +536,25 @@ model CwpQuestion {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  // "Ask My Client" import (read-only): a question auto-created from a QBO
+  // transaction parked in the configured account. source distinguishes these
+  // from manually-typed questions; the (qboTxnType, qboTxnId) pair dedupes
+  // re-imports. The txn snapshot fields let the UI show the transaction without
+  // re-fetching. The hub NEVER writes to QBO — an owner reclassifies there by
+  // hand using the coworker's answer.
+  source       String   @default("manual") // manual | ask_my_client
+  qboTxnId     String?
+  qboTxnType   String?
+  qboTxnDate   String? // YYYY-MM-DD as reported by QBO
+  qboTxnAmount Decimal? @db.Decimal(12, 2)
+  qboTxnName   String? // payee / customer as reported by QBO
+
   answers CwpAnswer[]
 
+  @@unique([qboTxnType, qboTxnId]) // dedupe imports; NULLs stay distinct so manual rows are unconstrained
   @@index([status])
   @@index([assignedEmail])
+  @@index([source])
   @@map("cwp_questions")
 }
 

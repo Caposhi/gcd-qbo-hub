@@ -65,6 +65,9 @@ services:
         sync: false
       - key: TEKMETRIC_SHOP_ID
         sync: false
+      # --- Coworker Portal "Ask My Client" import (read-only over QBO) ---
+      - key: COWORKER_QBO_ACCOUNT_NAME
+        value: Ask My Client
       # --- Call-transcript service (read-only aggregated insights) ---
       - key: TRANSCRIPTS_BASE_URL
         value: https://gcd-webhook-server.onrender.com
