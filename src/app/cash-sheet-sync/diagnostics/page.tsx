@@ -59,7 +59,7 @@ interface ProbeResult {
 }
 
 async function probe(): Promise<ProbeResult> {
-  const env = currentEnvironment();
+  const env = await getQboEnvironment();
   let ctx;
   try {
     ctx = await getContext(env);
@@ -107,8 +107,8 @@ export default async function QboDiagnosticsPage() {
     );
   }
 
-  const dataEnv = currentEnvironment();
-  const stageEnv = await getQboEnvironment().catch(() => null);
+  const dataEnv = await getQboEnvironment().catch(() => "sandbox" as const);
+  const legacyQboEnv = currentEnvironment();
   const creds = await prisma.qboCredential
     .findMany({ orderBy: [{ environment: "asc" }, { updatedAt: "desc" }] })
     .catch(() => []);
@@ -127,16 +127,17 @@ export default async function QboDiagnosticsPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 className="card-title" style={{ marginTop: 0 }}>Environment</h3>
         <dl className="kv" style={{ marginTop: 10 }}>
-          <dt>Data path reads (QBO_ENV)</dt>
-          <dd><code>{dataEnv}</code></dd>
-          <dt>Rollout-derived (display)</dt>
-          <dd><code>{stageEnv ?? "—"}</code></dd>
+          <dt>QBO environment (rollout-derived)</dt>
+          <dd><code>{dataEnv}</code> — connect + all QBO reads use this now</dd>
+          <dt>QBO_ENV var (legacy)</dt>
+          <dd><code>{legacyQboEnv}</code> — no longer used for the data path</dd>
         </dl>
-        {stageEnv && stageEnv !== dataEnv && (
-          <div className="notice warn" style={{ marginTop: 12 }}>
-            Mismatch: the reconnect and all QBO reads use <strong>{dataEnv}</strong> (QBO_ENV), but the dashboard
-            shows <strong>{stageEnv}</strong> (from the rollout stage). Set <code>QBO_ENV</code> to{" "}
-            <strong>{stageEnv}</strong> in Render so they agree, then reconnect.
+        {legacyQboEnv !== dataEnv && (
+          <div className="notice info" style={{ marginTop: 12 }}>
+            Heads up: the legacy <code>QBO_ENV</code> var (<strong>{legacyQboEnv}</strong>) disagrees with the
+            rollout-derived environment (<strong>{dataEnv}</strong>). That&apos;s now harmless — the connect and
+            reads follow the rollout stage (§12) — but you can set <code>QBO_ENV={dataEnv}</code> in Render (or
+            remove it) to avoid confusion.
           </div>
         )}
       </div>

@@ -13,7 +13,8 @@
  */
 import { prisma } from "@/lib/db";
 import { getContext, QboNotConnectedError, QboApiError } from "@/lib/qbo/client";
-import { currentEnvironment, QboAuthError } from "@/lib/qbo/oauth";
+import { QboAuthError } from "@/lib/qbo/oauth";
+import { getQboEnvironment } from "@/lib/config-store";
 import { askMyClientAccountName, resolveAmcAccountId, fetchAmcTransactions } from "./qbo";
 import type { AmcTransaction } from "./transactions";
 
@@ -84,7 +85,7 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
 
   let ctx;
   try {
-    ctx = await getContext(currentEnvironment());
+    ctx = await getContext(await getQboEnvironment());
   } catch (err) {
     return { ...base, reason: classify(err) };
   }
@@ -106,46 +107,54 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
     where: { source: "ask_my_client" },
     select: { id: true, qboTxnId: true, status: true },
   });
-  const existingByKey = new Map(existing.map((q) => [q.qboTxnId ?? "", q]));
+  const existingKeys = new Set(existing.map((q) => q.qboTxnId ?? ""));
   const seen = new Set<string>();
+
+  // Two distinct transactions can share the same natural key (same day, payee,
+  // amount, and no doc number). Disambiguate identical keys within the batch with
+  // an occurrence ordinal so each physical transaction gets its own stable id and
+  // the (qboTxnType, qboTxnId) unique index never collides. QBO returns the rows
+  // in a stable order, so the ordinals are stable across re-imports (idempotent).
+  const occurrence = new Map<string, number>();
 
   let created = 0;
   let updated = 0;
   for (const t of txns) {
-    seen.add(t.key);
-    const prior = existingByKey.get(t.key);
-    if (prior) {
-      await prisma.cwpQuestion.update({
-        where: { id: prior.id },
-        data: {
-          subject: subjectFor(t),
-          body: bodyFor(t, accountName),
-          qboTxnDate: t.date,
-          qboTxnAmount: t.amount,
-          qboTxnName: t.name || null,
-          qboReference: `${t.type} ${t.num}`.trim(),
-        },
-      });
-      updated++;
-    } else {
-      await prisma.cwpQuestion.create({
-        data: {
-          source: "ask_my_client",
-          qboTxnType: t.type,
-          qboTxnId: t.key,
-          qboTxnDate: t.date,
-          qboTxnAmount: t.amount,
-          qboTxnName: t.name || null,
-          qboReference: `${t.type} ${t.num}`.trim(),
-          subject: subjectFor(t),
-          body: bodyFor(t, accountName),
-          askedByEmail: importerEmail,
-          assignedEmail: null,
-          status: "open",
-        },
-      });
-      created++;
-    }
+    const n = (occurrence.get(t.key) ?? 0) + 1;
+    occurrence.set(t.key, n);
+    const uniqueKey = n === 1 ? t.key : `${t.key}#${n}`;
+    seen.add(uniqueKey);
+    const isNew = !existingKeys.has(uniqueKey);
+
+    // upsert (not create/update) so a row that already exists in the DB is
+    // updated atomically rather than racing a duplicate create.
+    await prisma.cwpQuestion.upsert({
+      where: { qboTxnType_qboTxnId: { qboTxnType: t.type, qboTxnId: uniqueKey } },
+      create: {
+        source: "ask_my_client",
+        qboTxnType: t.type,
+        qboTxnId: uniqueKey,
+        qboTxnDate: t.date,
+        qboTxnAmount: t.amount,
+        qboTxnName: t.name || null,
+        qboReference: `${t.type} ${t.num}`.trim(),
+        subject: subjectFor(t),
+        body: bodyFor(t, accountName),
+        askedByEmail: importerEmail,
+        assignedEmail: null,
+        status: "open",
+      },
+      update: {
+        qboTxnDate: t.date,
+        qboTxnAmount: t.amount,
+        qboTxnName: t.name || null,
+        qboReference: `${t.type} ${t.num}`.trim(),
+        subject: subjectFor(t),
+        body: bodyFor(t, accountName),
+      },
+    });
+    if (isNew) created++;
+    else updated++;
   }
 
   // Auto-close imported questions whose transaction is no longer in the account

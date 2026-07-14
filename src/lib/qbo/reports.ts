@@ -15,7 +15,7 @@
  * the pure layer (src/lib/projections/reports/*), which this file never imports.
  */
 import { get, getContext, type QboContext } from "./client";
-import { currentEnvironment } from "./oauth";
+import { getQboEnvironment } from "@/lib/config-store";
 import type { AccountingMethod } from "@/lib/projections/reports/normalize";
 
 /** QBO report entity names, keyed by our internal report type. */
@@ -77,6 +77,6 @@ export async function fetchReport(
   params: ReportParams,
   ctx?: QboContext
 ): Promise<unknown> {
-  const context = ctx ?? (await getContext(currentEnvironment()));
+  const context = ctx ?? (await getContext(await getQboEnvironment()));
   return get<unknown>(context, buildPath(reportType, params));
 }

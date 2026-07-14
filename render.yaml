@@ -44,7 +44,11 @@ services:
         value: 1NGz6sOiJtKOOBZYpM5_0ODZxgHkSQRWYZQqufpotTWA
       - key: GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
         sync: false
-      # --- QBO (sandbox first) ---
+      # --- QBO ---
+      # NOTE: QBO_ENV is LEGACY and no longer authoritative. The QBO environment
+      # (sandbox vs live) is derived from the rollout stage (§12) — the single
+      # source of truth used by the connect flow, the posting engine, and every
+      # read-only page. This var is kept only for back-compat/diagnostics.
       - key: QBO_ENV
         value: sandbox
       - key: QBO_CLIENT_ID
