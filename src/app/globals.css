@@ -231,9 +231,11 @@ table.gcd tbody tr:hover { background:var(--powder-blue-100); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; align-items: center; }
 .center { display: flex; min-height: 60vh; align-items: center; justify-content: center; }
-.kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px; }
+.kv { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); gap: 6px 16px; }
 .kv dt, .kv span:first-child { color: var(--text-muted); }
-.kv dd { margin: 0; }
+/* Let long values (emails, ids, timestamps) wrap inside the cell instead of
+   overflowing/clipping — grid items default to min-width:auto. */
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 /* keep a sane light default for any bare (unclassed) form control */
 input:not(.input), select:not(.input), textarea:not(.input) { color: var(--text-strong); }
