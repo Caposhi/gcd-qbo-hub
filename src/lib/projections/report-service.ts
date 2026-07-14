@@ -12,7 +12,7 @@
  */
 import { prisma } from "@/lib/db";
 import { fetchReport, QBO_REPORT_ENTITY } from "@/lib/qbo/reports";
-import { QboNotConnectedError } from "@/lib/qbo/client";
+import { QboNotConnectedError, isQboConnectivityError } from "@/lib/qbo/client";
 import { currentEnvironment } from "@/lib/qbo/oauth";
 import type { QboContext } from "@/lib/qbo/client";
 import { getContext } from "@/lib/qbo/client";
@@ -253,10 +253,14 @@ export async function loadReporting(
   try {
     ctx = await getContext(currentEnvironment());
   } catch (err) {
-    ctx = undefined;
     // No credential at all vs. a credential QBO rejected (e.g. token refresh
     // returned 400 — the refresh token expired/was revoked → reconnect needed).
-    connectionIssue = err instanceof QboNotConnectedError ? "not_connected" : "reconnect_required";
+    // A genuine (non-QBO) error still throws rather than masquerading as a
+    // connection problem.
+    if (err instanceof QboNotConnectedError) connectionIssue = "not_connected";
+    else if (isQboConnectivityError(err)) connectionIssue = "reconnect_required";
+    else throw err;
+    ctx = undefined;
   }
 
   const shared: GetSnapshotOptions = { method, ctx, forceRefresh: opts.forceRefresh };
@@ -333,13 +337,13 @@ export async function loadReporting(
       fetchedAt,
     };
   } catch (err) {
-    // If we already know QBO is unreachable (bad/absent credential) and there's
-    // no cache to fall back on, report it as unavailable rather than crashing.
-    if (err instanceof QboNotConnectedError) {
-      return { connected: false, range, comparison, filters, reason: connectionIssue ?? "not_connected" };
-    }
-    if (connectionIssue) {
-      return { connected: false, range, comparison, filters, reason: connectionIssue };
+    // If QBO is unreachable (bad/absent credential, rejected token, API error)
+    // and there's no cache to fall back on, report it as unavailable rather than
+    // crashing the route. Genuine (non-QBO) errors still surface.
+    if (connectionIssue || err instanceof QboNotConnectedError || isQboConnectivityError(err)) {
+      const reason =
+        connectionIssue ?? (err instanceof QboNotConnectedError ? "not_connected" : "reconnect_required");
+      return { connected: false, range, comparison, filters, reason };
     }
     throw err;
   }

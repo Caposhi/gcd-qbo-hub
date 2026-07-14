@@ -122,11 +122,19 @@ export async function ProjectionsPanel({
             )}
           </p>
         </div>
+      ) : baselineRes.reason === "reconnect_required" ? (
+        <div className="notice danger">
+          QuickBooks rejected the saved connection (its token expired or was revoked) and there’s no
+          cached history, so a baseline can’t be derived yet. An owner needs to reconnect QuickBooks in{" "}
+          <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link>. You can still open the
+          Scenarios tab for the manual prototype. Nothing was changed in QuickBooks.
+        </div>
       ) : (
         <div className="notice danger">
           QuickBooks isn’t connected (and no cached history exists), so a baseline can’t be derived
-          yet. An owner needs to connect QBO. You can still open the Scenarios tab for the manual
-          prototype.
+          yet. An owner needs to connect QBO in{" "}
+          <Link href="/cash-sheet-sync/settings">Settings &amp; rollout</Link>. You can still open the
+          Scenarios tab for the manual prototype.
         </div>
       )}
 

@@ -507,3 +507,46 @@ Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds, grep clea
 - GCD Pal live insights endpoint (`GET /api/assistant/insights`) — the Pal still
   ships generic, figure-free copy until that read-only endpoint is wired.
 - Projection scenarios built on the backfilled 24-month Tekmetric history.
+
+---
+
+## Reliability + live Pal insights + operations forecast
+
+### Projections tab crash — hardened (follow-up to the env-pill fix)
+Generalized the QBO connectivity handling so no Projections sub-tab can
+white-screen on a token failure:
+- Added a typed `QboAuthError` (thrown by the OAuth token request on a non-2xx)
+  and a shared `isQboConnectivityError()` classifier in `qbo/client.ts`.
+- `loadReporting` and `loadBaseline` now catch any QBO connectivity/token error,
+  serve cached snapshots when present, and otherwise return an "unavailable"
+  state with a `reason` of `not_connected` vs `reconnect_required`. Genuine
+  (non-QBO) errors still surface. ReportingPanel and ProjectionsPanel show an
+  actionable "reconnect QuickBooks" notice linking to Settings.
+- The AI Council tab only reads stored runs (no QBO context on render), so it was
+  already safe.
+
+### GCD Pal — live insights (read-only, no fabrication)
+- `GET /api/assistant/insights?module=<id>` (gated to `use_assistant`) returns
+  `[{tone,text,prompt}]` from `src/lib/assistant/insights.ts` — deterministic,
+  **DB/cache-only** (no network, no LLM). Real figures for Cash Sheet Sync (dupes,
+  changed-after-posting, errors, stage), Tekmetric (ARO delta, low-utilization
+  techs, top make — from the cached snapshot), Coworker Portal (open questions),
+  Deposit Reconciliation (matched/needs-review), and Check Reception (needs-review,
+  learned mappings). Empty result = the Pal keeps its static, figure-free copy.
+- `AiPal` fetches live insights lazily on open and falls back to the static map on
+  any error/empty, so it never shows an invented number.
+
+### Operations forecast — projection scenarios on 24-month Tekmetric history
+- Pure engine `src/lib/tekmetric/forecast.ts`: derives per-driver monthly trends
+  (RO count, ARO, gross margin) from backfilled history by regression (reusing the
+  OLS module, with confidence), then projects revenue (= ARO × RO count) and gross
+  profit forward under editable levers (horizon, ARO %/mo, RO %/mo, fixed margin).
+  Deterministic and unit-tested (`tests/tekmetric-forecast.test.ts`, 8 tests).
+- `src/lib/tekmetric/history-service.ts`: cache-only reader for the trailing
+  monthly snapshots (no network); needs ≥3 months or reports unavailable.
+- New **Ops forecast** tab on the Projections page (`projections/ops/`) — gated to
+  `view_tekmetric`: baseline trend cards with confidence badges, a URL-driven
+  scenario form, summary KPIs, a themed revenue/gross-profit chart, and a monthly
+  table. Read-only over Tekmetric.
+
+Verified: `tsc --noEmit` clean, 255 tests pass, `next build` succeeds.

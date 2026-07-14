@@ -11,7 +11,7 @@
    (running the existing READ-ONLY assistant tools) and replace this static map
    with live, sourced bullets; until then the copy states no unverified facts.
    ========================================================================== */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 type Tone = "good" | "watch" | "bad" | "info";
@@ -89,6 +89,37 @@ export function AiPal() {
   const moduleId = moduleFromPath(pathname);
   const ctx = useMemo(() => INSIGHTS[moduleId], [moduleId]);
 
+  // Live, figure-accurate insights from the read-only endpoint. Fetched lazily
+  // when the panel is opened; falls back to the static (figure-free) copy on any
+  // error or empty result, so the Pal never shows a fabricated number.
+  const [live, setLive] = useState<Insight[] | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLive(null);
+    fetch("/api/assistant/insights?module=" + encodeURIComponent(moduleId))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d || !Array.isArray(d.insights) || d.insights.length === 0) return;
+        setLive(
+          d.insights
+            .filter((it: unknown): it is Insight => !!it && typeof (it as Insight).text === "string")
+            .map((it: Insight) => ({ tone: it.tone, text: it.text, prompt: it.prompt }))
+        );
+      })
+      .catch(() => {
+        /* keep static fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, moduleId]);
+
+  const items = live && live.length ? live : ctx.items;
+  const intro = live && live.length
+    ? "Here's what stands out on this page — tap one to ask:"
+    : "A few things worth checking on this page — tap one to ask:";
+
   // Don't show on the assistant page itself (that's where it takes you) or auth.
   if (pathname.startsWith("/assistant") || pathname.startsWith("/auth")) return null;
 
@@ -138,8 +169,8 @@ export function AiPal() {
       </div>
       {/* body */}
       <div style={{ padding: "13px 15px", display: "flex", flexDirection: "column", gap: 9, maxHeight: 390, overflowY: "auto" }}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "0 2px 2px" }}>A few things worth checking on this page — tap one to ask:</div>
-        {ctx.items.map((it, i) => (
+        <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "0 2px 2px" }}>{intro}</div>
+        {items.map((it, i) => (
           <button key={i} onClick={() => ask(it.prompt)} className="gcd-insight"
             style={{ textAlign: "left", width: "100%", display: "flex", gap: 11, background: "var(--powder-blue-100)",
               border: "1px solid transparent", borderRadius: 13, padding: "12px 13px", cursor: "pointer",

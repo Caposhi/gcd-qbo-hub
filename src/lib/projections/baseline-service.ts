@@ -9,7 +9,7 @@
  * Read-only over QBO. The regression/derivation math it calls is pure.
  */
 import { getReportSnapshot } from "./report-service";
-import { QboNotConnectedError } from "@/lib/qbo/client";
+import { QboNotConnectedError, isQboConnectivityError } from "@/lib/qbo/client";
 import { deriveBaseline, type MonthlyHistory, type DerivedBaseline } from "./regression/baseline";
 import type { PnlNormalized, SalesNormalized, AccountingMethod, DateRange } from "./reports";
 
@@ -60,7 +60,8 @@ export interface BaselineResult {
 }
 export interface BaselineUnavailable {
   connected: false;
-  reason: "not_connected";
+  /** `not_connected` = no credential; `reconnect_required` = QBO rejected the token. */
+  reason: "not_connected" | "reconnect_required";
   range: DateRange;
 }
 
@@ -105,6 +106,11 @@ export async function loadBaseline(
   } catch (err) {
     if (err instanceof QboNotConnectedError) {
       return { connected: false, reason: "not_connected", range };
+    }
+    // A stored credential QBO rejected (token 400) or another QBO connectivity
+    // failure → degrade to "reconnect required" rather than crashing the tab.
+    if (isQboConnectivityError(err)) {
+      return { connected: false, reason: "reconnect_required", range };
     }
     throw err;
   }
