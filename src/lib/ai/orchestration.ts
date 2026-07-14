@@ -63,6 +63,33 @@ export interface MonthlyContext {
     partsPctOfRevenue: number | null;
     laborPctOfRevenue: number | null;
   };
+  /** Operational data from Tekmetric for the same month, when available. */
+  ops: null | {
+    kpis: {
+      roCount: number;
+      aro: number;
+      grossProfit: number;
+      grossMarginPct: number;
+      carCount: number;
+    };
+    utilization: Array<{
+      tech: string;
+      utilizationPct: number;
+      billedHours: number;
+      effectiveLaborRate: number;
+      postedLaborRate: number;
+    }>;
+    revenueByMake: Array<{ make: string; revenue: number; grossMarginPct: number; roCount: number }>;
+    advisors: Array<{ advisor: string; roCount: number; totalSales: number; grossMarginPct: number }>;
+  };
+  /** Aggregated customer-call insights from the transcript service, when available. */
+  transcripts: null | {
+    totalInbound: number;
+    transcripts: number;
+    analyzedPct: number;
+    topKeywords: Array<{ keyword: string; mentions: number; calls: number }>;
+    negativeSamples: string[];
+  };
 }
 
 function money(v: number): string {
@@ -112,6 +139,51 @@ export function renderContext(ctx: MonthlyContext): string {
     lines.push(`  - gross margin: ${pct(b.grossMarginPct)} · net margin: ${pct(b.netMarginPct)}`);
     if (b.partsPctOfRevenue !== null && b.laborPctOfRevenue !== null) {
       lines.push(`  - parts/labor mix: ${pct(b.partsPctOfRevenue)} / ${pct(b.laborPctOfRevenue)}`);
+    }
+  }
+  if (ctx.ops) {
+    const o = ctx.ops;
+    lines.push("");
+    lines.push("OPERATIONS (Tekmetric — shop-management actuals for the month):");
+    lines.push(
+      `  KPIs: ${o.kpis.roCount} ROs · car count ${o.kpis.carCount} · ARO ${money(o.kpis.aro)} · gross profit ${money(o.kpis.grossProfit)} · gross margin ${pct(o.kpis.grossMarginPct / 100)}`
+    );
+    if (o.utilization.length) {
+      lines.push("  Technician utilization (billed÷available; effective vs posted labor rate):");
+      for (const u of o.utilization) {
+        lines.push(
+          `    - ${u.tech}: ${u.utilizationPct.toFixed(0)}% util, ${u.billedHours.toFixed(1)}h billed, eff $${u.effectiveLaborRate.toFixed(0)}/h vs posted $${u.postedLaborRate.toFixed(0)}/h`
+        );
+      }
+    }
+    if (o.revenueByMake.length) {
+      lines.push("  Revenue by make:");
+      for (const m of o.revenueByMake) {
+        lines.push(`    - ${m.make}: ${money(m.revenue)} (${m.roCount} ROs, ${m.grossMarginPct.toFixed(0)}% margin)`);
+      }
+    }
+    if (o.advisors.length) {
+      lines.push("  Service advisors:");
+      for (const a of o.advisors) {
+        lines.push(`    - ${a.advisor}: ${a.roCount} ROs, ${money(a.totalSales)} sales, ${a.grossMarginPct.toFixed(0)}% margin`);
+      }
+    }
+  }
+  if (ctx.transcripts) {
+    const t = ctx.transcripts;
+    lines.push("");
+    lines.push("CUSTOMER CALLS (transcript service — aggregated, not raw calls):");
+    lines.push(
+      `  ${t.totalInbound} inbound calls · ${t.transcripts} transcribed · ${t.analyzedPct}% AI-analyzed`
+    );
+    if (t.topKeywords.length) {
+      lines.push(
+        `  Top call topics: ${t.topKeywords.map((k) => `${k.keyword} (${k.calls} calls)`).join(", ")}`
+      );
+    }
+    if (t.negativeSamples.length) {
+      lines.push("  Sample of negative-sentiment calls (AI summaries; a sample, not a full count):");
+      for (const s of t.negativeSamples) lines.push(`    - ${s}`);
     }
   }
   return lines.join("\n");

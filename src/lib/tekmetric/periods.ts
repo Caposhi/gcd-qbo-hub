@@ -41,6 +41,11 @@ function utc(y: number, m: number, day: number): Date {
   return new Date(Date.UTC(y, m, day));
 }
 
+/** Days in month m (0-based) of year y. */
+function daysInMonth(y: number, m: number): number {
+  return new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+}
+
 /** Resolve a preset into an inclusive [start, end] range relative to `today`. */
 export function presetRange(preset: DatePreset, today: Date): TekPeriod {
   const y = today.getUTCFullYear();
@@ -85,9 +90,16 @@ export function comparisonRange(range: TekPeriod, mode: ComparisonMode): TekPeri
   if (mode === "prior_year") {
     const start = new Date(range.start);
     const end = new Date(range.end);
+    // Clamp the day-of-month so a Feb-29 boundary maps to Feb 28 in a non-leap
+    // prior year instead of overflowing to Mar 1 (which would shift and shrink
+    // the year-over-year window).
+    const sY = start.getUTCFullYear() - 1;
+    const eY = end.getUTCFullYear() - 1;
+    const sD = Math.min(start.getUTCDate(), daysInMonth(sY, start.getUTCMonth()));
+    const eD = Math.min(end.getUTCDate(), daysInMonth(eY, end.getUTCMonth()));
     return {
-      start: iso(utc(start.getUTCFullYear() - 1, start.getUTCMonth(), start.getUTCDate())),
-      end: iso(utc(end.getUTCFullYear() - 1, end.getUTCMonth(), end.getUTCDate())),
+      start: iso(utc(sY, start.getUTCMonth(), sD)),
+      end: iso(utc(eY, end.getUTCMonth(), eD)),
     };
   }
   // prior_period
@@ -100,3 +112,58 @@ export function comparisonRange(range: TekPeriod, mode: ComparisonMode): TekPeri
 
 export const DEFAULT_PRESET: DatePreset = "last_month";
 export const DEFAULT_COMPARISON: ComparisonMode = "prior_period";
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The `count` full calendar months ending with the month BEFORE `today`
+ * (oldest first). Used by the backfill to snapshot per-month history so trend
+ * charts and the projections engine have a series to work with. Pure.
+ */
+export function monthRangesBack(
+  today: Date,
+  count: number
+): Array<{ start: string; end: string; label: string }> {
+  const y = today.getUTCFullYear();
+  const m = today.getUTCMonth();
+  const out: Array<{ start: string; end: string; label: string }> = [];
+  // i = 1 is the prior full month; i = count is the oldest.
+  for (let i = count; i >= 1; i--) {
+    const monthOffset = m - i;
+    const yy = y + Math.floor(monthOffset / 12);
+    const mm = ((monthOffset % 12) + 12) % 12;
+    out.push({
+      start: iso(utc(yy, mm, 1)),
+      end: iso(utc(yy, mm, daysInMonth(yy, mm))),
+      label: `${MONTH_ABBR[mm]} ${yy}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * The one clock-reading helper: "today" as a UTC date whose Y/M/D equal the
+ * calendar date in the shop's timezone (SYNC_TZ, default America/New_York).
+ * `presetRange` stays pure — callers pass this in — but both the page and the
+ * refresh action must call this (not a raw `new Date()`), or a US-evening
+ * request (already the next UTC day) computes period boundaries a day off, and
+ * a refresh can write a row the page then can't find. Deterministic within a
+ * shop-local day.
+ */
+export function shopToday(tz: string = process.env.SYNC_TZ || "America/New_York"): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const y = get("year");
+  const m = get("month");
+  const d = get("day");
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    // Fall back to raw UTC if the timezone is somehow unresolvable.
+    return new Date();
+  }
+  return utc(y, m - 1, d);
+}

@@ -25,7 +25,8 @@ import {
 } from "recharts";
 import type { TrendPoint, CategoryDatum } from "@/lib/projections/report-service";
 import type { AgingNormalized } from "@/lib/projections/reports";
-import { CHART_COLORS, money, percent } from "./format";
+import { money, percent } from "./format";
+import { CHART, axisProps, gridProps, barCursor, GcdTooltip } from "@/app/components/chart-theme";
 
 function ChartCard({
   title,
@@ -49,19 +50,6 @@ function ChartCard({
   );
 }
 
-const tooltipStyle: React.CSSProperties = {
-  background: "var(--panel)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text)",
-  fontSize: "0.8rem",
-};
-
-const axisProps = {
-  stroke: CHART_COLORS.axis,
-  tick: { fill: CHART_COLORS.axis, fontSize: 11 },
-} as const;
-
 function EmptyNote({ label }: { label: string }) {
   return (
     <p className="muted" style={{ fontSize: "0.85rem", padding: "1.5rem 0", textAlign: "center" }}>
@@ -77,23 +65,19 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
     <ChartCard title="Revenue & Net Income" subtitle="Per period across the selected range">
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="3 3" vertical={false} />
+          <CartesianGrid {...gridProps} />
           <XAxis dataKey="period" {...axisProps} />
           <YAxis {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} width={64} />
-          <Tooltip
-            contentStyle={tooltipStyle}
-            formatter={(v: number, name) => [money(Number(v)), name]}
-            cursor={{ fill: "rgba(255,255,255,0.04)" }}
-          />
-          <Legend wrapperStyle={{ fontSize: "0.8rem", color: "var(--muted)" }} />
-          <Bar dataKey="revenue" name="Revenue" fill={CHART_COLORS.revenue} radius={[4, 4, 0, 0]} maxBarSize={44} />
+          <Tooltip content={<GcdTooltip fmt={(n) => money(n)} />} cursor={barCursor} />
+          <Legend wrapperStyle={{ fontSize: "0.8rem", color: "var(--text-muted)" }} />
+          <Bar dataKey="revenue" name="Revenue" fill={CHART.revenue} radius={[6, 6, 0, 0]} maxBarSize={44} />
           <Line
             dataKey="netIncome"
             name="Net Income"
             type="monotone"
-            stroke={CHART_COLORS.netIncome}
+            stroke={CHART.netIncome}
             strokeWidth={2}
-            dot={{ r: 3, fill: CHART_COLORS.netIncome }}
+            dot={{ r: 3, fill: CHART.netIncome }}
           />
         </ComposedChart>
       </ResponsiveContainer>
@@ -123,17 +107,13 @@ export function CategoryChart({
     <ChartCard title={title} subtitle={subtitle ?? "Click a bar to see its share"}>
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 8 }}>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="3 3" horizontal={false} />
+          <CartesianGrid stroke={CHART.grid} strokeDasharray="3 3" horizontal={false} />
           <XAxis type="number" {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} />
           <YAxis type="category" dataKey="name" {...axisProps} width={130} tickLine={false} />
-          <Tooltip
-            contentStyle={tooltipStyle}
-            cursor={{ fill: "rgba(255,255,255,0.04)" }}
-            formatter={(v: number) => [money(Number(v)), title]}
-          />
+          <Tooltip content={<GcdTooltip fmt={(n) => money(n)} />} cursor={barCursor} />
           <Bar
             dataKey="value"
-            radius={[0, 4, 4, 0]}
+            radius={[0, 6, 6, 0]}
             maxBarSize={26}
             onClick={(_, index) => setSelected((cur) => (cur === index ? null : index))}
             cursor="pointer"
@@ -141,7 +121,7 @@ export function CategoryChart({
             {data.map((_, i) => (
               <Cell
                 key={i}
-                fill={CHART_COLORS.bar}
+                fill={CHART.bar}
                 fillOpacity={selected === null || selected === i ? 1 : 0.45}
               />
             ))}
@@ -194,17 +174,13 @@ export function AgingChart({
     <ChartCard title={title} subtitle={`Total ${money(aging.total)} · click a bucket to drill in`}>
       <ResponsiveContainer width="100%" height={240}>
         <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="3 3" vertical={false} />
+          <CartesianGrid {...gridProps} />
           <XAxis dataKey="bucket" {...axisProps} />
           <YAxis {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} width={64} />
-          <Tooltip
-            contentStyle={tooltipStyle}
-            cursor={{ fill: "rgba(255,255,255,0.04)" }}
-            formatter={(v: number) => [money(Number(v)), "Open"]}
-          />
+          <Tooltip content={<GcdTooltip fmt={(n) => money(n)} />} cursor={barCursor} />
           <Bar
             dataKey="amount"
-            radius={[4, 4, 0, 0]}
+            radius={[6, 6, 0, 0]}
             maxBarSize={56}
             onClick={(_, index) => setSelected((cur) => (cur === index ? null : index))}
             cursor="pointer"
@@ -212,7 +188,7 @@ export function AgingChart({
             {chartData.map((_, i) => (
               <Cell
                 key={i}
-                fill={CHART_COLORS.aging[Math.min(i, CHART_COLORS.aging.length - 1)]}
+                fill={CHART.aging[Math.min(i, CHART.aging.length - 1)]}
                 fillOpacity={selected === null || selected === i ? 1 : 0.45}
               />
             ))}

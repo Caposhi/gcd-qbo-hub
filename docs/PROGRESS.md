@@ -264,3 +264,201 @@ long-form board report).
    tested, but has not been run against the live Anthropic API from here — the
    first real monthly run (with the key set) should be watched for token spend
    and structured-output conformance before trusting the cron unattended.
+
+---
+
+## Post-merge review + Phase 4 integration (Session continuation)
+
+A full review of the merged Phases 1–3 + the parallel Tekmetric T1 work, the
+confirmed fixes, and the first real Tekmetric→AI integration. Health:
+typecheck clean, **242 tests pass**, `next build` compiles.
+
+### Review outcome
+
+- **Reporting fix (PR #39):** correct — repaired three real Phase-1 normalizer
+  bugs (dropped summary-only P&L totals, inner sub-total shadowing Total
+  Expenses, sales chart picking Avg Price) with regression fixtures.
+- **Tekmetric T1 (PRs #36–38):** all safety requirements verified (read-only,
+  gated refresh, validate-on-read, secret discipline, cache-only page); the
+  metrics math (cents→dollars, effective/posted labor rate + discount
+  allocation, deleted/void exclusion, delta signs) is correct. Fixes below.
+
+### Confirmed issues fixed
+
+1. **HIGH — Tekmetric snapshot key omitted the comparison mode.** KPI deltas are
+   computed against the comparison, but the row was keyed by
+   `(entity, periodStart, periodEnd)` only, so refreshing a period under
+   `prior_period` then `prior_year` overwrote, and the page could show one
+   baseline while labeling another. Added `comparison` to the `TekSnapshot`
+   unique key (migration `00000000000010_tek_snapshot_comparison`) and threaded
+   the mode through `readOperationsSnapshot` / `refreshOperations` / page.
+2. **MEDIUM — prior-year leap-day overflow** in `tekmetric/periods.ts`: a Feb-29
+   boundary rolled to Mar 1. Now clamps day-of-month to the prior year's month
+   length (regression test added).
+3. **LOW/MED — UTC "today"** at the page and refresh action could disagree near
+   UTC midnight (a US-evening refresh wrote a row the page didn't read). Added
+   `shopToday()` (resolves the calendar date in `SYNC_TZ`, default
+   America/New_York); both call sites use it.
+4. **Deploy/doc hygiene:** added `TEKMETRIC_*` to `render.yaml` (were only in
+   `.env.example`); corrected the token-model contradiction in
+   `docs/PROGRESS_tekmetric.md`.
+
+### New: Tekmetric ops data → AI C-suite
+
+The council now reads real operational actuals:
+- `buildMonthlyContext` reads the month's Tekmetric snapshot (cache only) and
+  adds an `ops` block (KPIs, technician utilization, revenue-by-make, advisor
+  performance) to the shared context; `renderContext` emits an
+  `OPERATIONS (Tekmetric)` section. Absent/misconfigured → `ops: null`, and the
+  officers note ops data wasn't refreshed rather than guessing.
+- The monthly council run best-effort refreshes the prior month's Tekmetric
+  snapshot first (only when configured; a failure never blocks the run).
+- COO / CRO / Chief Data Analyst persona prompts now direct those officers to
+  ground analysis in the ops section (utilization + labor rates, advisor
+  performance, cross-linking make/utilization to margin).
+
+### Still open (need a decision or a backfill — deliberately not faked)
+
+1. **Projections v2 ← Tekmetric scenarios.** The six `needs_tekmetric` templates
+   (per-tech/advisor/make, utilization, …) stay deferred: the regression engine
+   needs *history*, but Tekmetric currently has only per-period on-demand
+   snapshots. Unblocking them needs a **Tekmetric monthly backfill job** (window
+   TBD — 24/36/84 months) to build a historical series, then engine work to
+   model operational drivers. per-bay and warranty-comeback additionally have no
+   Tekmetric data source in the current contract.
+2. **Call-transcript service (CRO agent, handoff §9).** Not started — blocked on
+   the owner's decision: does the transcript service emit *structured* insights
+   (sentiment/upsell/booking) or *raw transcripts*? That decides thin-read vs.
+   aggregation-layer.
+3. **Live validation.** The AI council has still never run against the live
+   Anthropic API; the first monthly run (key set) should be watched for spend
+   vs. the $15 cap, and the Tekmetric refresh against the live shop.
+
+---
+
+## Phase 4 completion — Tekmetric backfill + call-transcript integration
+
+Closes the two items left open above. Health: typecheck clean, **247 tests
+pass**, `next build` compiles.
+
+### Tekmetric 24-month backfill
+
+- Pure `monthRangesBack(now, 24)` (tested) enumerates the trailing 24 full
+  months, matching the QBO backfill window.
+- `scripts/tekmetric-backfill.ts` (`npm run tekmetric:backfill [-- <months>]`)
+  snapshots one `tek_snapshot` row per month via the same gated refresh path.
+  Read-only over Tekmetric; requires `TEKMETRIC_*` + `DATABASE_URL`. This gives
+  the operational history the trend charts and (future) projection scenarios
+  need.
+
+### Call-transcript service integration (CRO agent)
+
+Integrated the sibling **gcd-webhook-server** transcript service
+(`/api/admin/transcripts/*`, guarded by `ADMIN_SECRET`). The hub reads
+**aggregated insights only** — never raw utterances (handoff §9).
+- `src/lib/transcripts/client.ts` — read-only client (`/stats`, `/keywords`,
+  `/insights-status`, `/search?sentiment=NEGATIVE`); GETs only, secret sent via
+  `x-admin-secret` header; degrades to "not configured".
+- `src/lib/transcripts/aggregate.ts` — **pure** `buildTranscriptInsights`
+  (call volume, transcript coverage, AI-analysis %, top keyword topics, and a
+  sample of negative-sentiment AI summaries) + `parseTranscriptInsights`
+  validate-on-read. Unit-tested.
+- `src/lib/transcripts/snapshot.ts` + `transcript_snapshot` table (migration
+  `00000000000011`) — fetch-through cache; refresh is the only network path.
+- **AI wiring:** `buildMonthlyContext` adds a `transcripts` block; `renderContext`
+  emits a `CUSTOMER CALLS (transcript service)` section; the **CRO** persona now
+  grounds its analysis in call topics + the negative sample. The monthly council
+  run best-effort refreshes the month's transcript insights first (only when
+  configured; a failure never blocks the run).
+- Permissions `view_transcripts` (owner + reviewer) / `refresh_transcripts`
+  (owner) in `roles.ts`; `TRANSCRIPTS_BASE_URL` / `TRANSCRIPTS_SECRET` added to
+  `.env.example` and `render.yaml`. Env decisions: **24-month** backfill window;
+  transcript service exposes structured aggregates (used) + a chatbot + monthly
+  full analysis (its own UI stays in the webhook server).
+
+### Notes / still open
+
+- The hub feeds the **CRO agent** aggregated call insights; it deliberately does
+  NOT duplicate the webhook server's transcript-search UI (that already exists).
+  A thin hub `/transcripts` panel could be added later if wanted.
+- **Projection scenarios** (per-make/advisor/utilization) can now be built on the
+  backfilled Tekmetric history — still a separate engine-modeling step; the
+  data groundwork (24-month snapshots) is in place.
+- The transcript `/search` endpoint returns a page (not a true total) per
+  sentiment, so the negative-call figure is an explicit **sample**, labeled as
+  such to the CRO. A true monthly count would want an aggregate endpoint on the
+  transcript service.
+- First live run still wants watching (Anthropic $15 cap, Tekmetric + transcript
+  refresh against the live services).
+
+---
+
+## UI/Theme redesign — GCD brand shell (visual pass)
+
+A **visual-only** overhaul from the Claude Design handoff: the dark navy/teal
+theme is replaced by the German Car Depot brand (royal blue `#18479F` + lemondrop
+yellow `#F8E000`) on an Apple-clean, light, spacious surface. **No domain logic,
+API routes, Prisma schema, rollout ladder, or read-only guarantees changed** —
+posting/gating is untouched.
+
+### Foundations
+- `src/app/globals.css` replaced with the brand token system + utility layer
+  (`.app-shell`, `.sidebar`, `.topbar`, `.env-pill`, `.card`, `.kpi-card`,
+  `.segmented`, `.filter-pill`, `.btn.{primary,accent,secondary,ghost,danger}`,
+  `.badge`, `.notice`, `table.gcd`, `.num`, `.delta.up/.down`). Eurostile
+  `@font-face` (6 OTFs in `public/fonts/`), disc logo + wordmark in
+  `public/assets/`, `lucide-react` for stroke icons.
+- **Temporary back-compat shim** (`globals.css` §10): re-aliases the legacy dark
+  vars (`--panel`, `--panel-2`, `--border`, `--text`, `--muted`, `--accent`, …)
+  onto the new light tokens and restyles dropped legacy classes, so un-migrated
+  modules (Cash Sheet Sync, Deposit Reconciliation, Check Reception, Coworker
+  Portal, auth/legal) stay legible during the phased rollout. Delete once every
+  page uses the new classes. **Fixed a self-referential `--danger: var(--danger)`
+  in the handoff shim** that would have formed an invalid CSS cycle and broken
+  every danger color app-wide (the new token already carries that name).
+
+### App shell (`src/app/layout.tsx`)
+- Two-part shell: fixed left **Sidebar** + sticky frosted **TopBar** + routed
+  content, with **GCD Pal** mounted once.
+- `Sidebar.tsx` (client): brand row, nav grouped **Workspace / Finance /
+  Operations** driven off `MODULES` (new `group` + `lucide` fields on `ModuleDef`;
+  icon *names* stay strings so the registry is server-serializable), active state
+  via `usePathname()` + the signature lemondrop bar, user chip.
+- `TopBar.tsx` (client): breadcrumb + Eurostile title + a search affordance +
+  the **env pill** (Sandbox/Live/Setup-required), fed by the server-derived QBO
+  environment so it can never disagree with the rollout stage.
+
+### Charts (`src/app/components/chart-theme.tsx`)
+- Shared Recharts theme (`CHART` brand palette, `axisProps`, `gridProps`,
+  `barCursor`, `money`, `percent`, `GcdTooltip`, `Legend`). Rethemed
+  `projections/reporting/Charts.tsx`, `projections/v2/ProjectionCharts.tsx`, and
+  `tekmetric/charts.tsx`: the old dark `tooltipStyle` bubbles are replaced by the
+  white `GcdTooltip` (navy text, soft navy shadow) — the fix for the low-contrast
+  hover popups. Dead dark `CHART_COLORS` removed from `reporting/format.ts`.
+
+### GCD Pal (`src/app/components/AiPal.tsx`)
+- Bottom-right companion, collapsed by default; per-module suggestion bullets
+  that route to `/assistant?q=<seeded prompt>`; hidden on `/assistant` and
+  `/auth/*`. **Copy is intentionally generic — it names what to look at and seeds
+  a question but never states figures** (this is an accounting tool; the Pal must
+  not invent numbers). A later pass can wire a live read-only
+  `GET /api/assistant/insights` endpoint and keep this static map as fallback.
+
+### Rethemed modules (this pass)
+- **Home** — hero + accent bar; module grid as hoverable brand cards with Lucide
+  icons and status badges.
+- **Financial Projections** — page header + `.segmented` sub-tab switcher; charts
+  rethemed. Inner panels (Reporting/Projections/Scenarios/Council) ride the shim
+  for now.
+- **Tekmetric Operations** — KPI cards with the good/bad delta rule, light filter
+  selects, `table.gcd` advisor table, rethemed charts.
+- **AI Report Assistant** — Apple-style chat (royal user bubbles, light assistant
+  bubbles, animated typing dots), conversation rail, and **`?q=` auto-send** so
+  GCD Pal suggestions open a seeded first message.
+
+### Deferred (ride the compat shim; a later phase migrates them)
+- Cash Sheet Sync (live module — deliberately not touched this pass), Deposit
+  Reconciliation, Check Reception, Coworker Portal, auth/legal pages, and the
+  Projections inner panels. GCD Pal live insight endpoint.
+
+Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds.

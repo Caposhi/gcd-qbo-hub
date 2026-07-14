@@ -4,16 +4,9 @@
  */
 import type { Delta, KpiFormat, Sentiment } from "@/lib/projections/reports";
 
-/** Chart palette — validated against the dark chart surface (dataviz skill). */
-export const CHART_COLORS = {
-  revenue: "#23a99d", // teal (accent family)
-  netIncome: "#5f82e0", // periwinkle blue
-  bar: "#23a99d",
-  /** Ordinal severity ramp for A/R & A/P aging buckets (current → 91+). */
-  aging: ["#06d6a0", "#23a99d", "#ffb703", "#f4823f", "#ef476f"],
-  grid: "#26456b",
-  axis: "#93b4cc",
-} as const;
+/* The chart palette now lives in the shared GCD theme (src/app/components/
+   chart-theme.tsx) so every chart draws from the same brand tokens. This file
+   keeps only the value/label formatters used across server and client. */
 
 export function money(v: number, opts: { compact?: boolean } = {}): string {
   return v.toLocaleString("en-US", {

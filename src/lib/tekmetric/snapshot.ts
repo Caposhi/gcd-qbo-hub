@@ -215,14 +215,23 @@ export interface SnapshotResult {
   fetchedAt: Date | null;
 }
 
-/** Read the cached derived-metrics snapshot for a period (no network call). */
-export async function readOperationsSnapshot(period: TekPeriod): Promise<SnapshotResult> {
+/**
+ * Read the cached derived-metrics snapshot for a period + comparison mode (no
+ * network call). The comparison is part of the key because the KPI deltas in the
+ * payload are computed against it — reading a period under a different comparison
+ * than it was refreshed with would show deltas whose baseline the page mislabels.
+ */
+export async function readOperationsSnapshot(
+  period: TekPeriod,
+  comparison: string
+): Promise<SnapshotResult> {
   const row = await prisma.tekSnapshot.findUnique({
     where: {
-      entity_periodStart_periodEnd: {
+      entity_periodStart_periodEnd_comparison: {
         entity: DERIVED_ENTITY,
         periodStart: new Date(period.start),
         periodEnd: new Date(period.end),
+        comparison,
       },
     },
   });
@@ -250,6 +259,7 @@ async function fetchRosForRange(shopIds: string[], range: TekDateRange) {
  */
 export async function refreshOperations(
   period: TekPeriod,
+  comparisonMode: string,
   comparison: TekPeriod | null
 ): Promise<TekOperationsData> {
   const shopIds = await resolveShopIds();
@@ -280,16 +290,18 @@ export async function refreshOperations(
 
   await prisma.tekSnapshot.upsert({
     where: {
-      entity_periodStart_periodEnd: {
+      entity_periodStart_periodEnd_comparison: {
         entity: DERIVED_ENTITY,
         periodStart: new Date(period.start),
         periodEnd: new Date(period.end),
+        comparison: comparisonMode,
       },
     },
     create: {
       entity: DERIVED_ENTITY,
       periodStart: new Date(period.start),
       periodEnd: new Date(period.end),
+      comparison: comparisonMode,
       payloadJson: data as unknown as Prisma.InputJsonValue,
     },
     update: {

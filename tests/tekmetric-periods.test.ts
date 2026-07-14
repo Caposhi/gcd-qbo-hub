@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { presetRange, comparisonRange } from "@/lib/tekmetric/periods";
+import { presetRange, comparisonRange, monthRangesBack } from "@/lib/tekmetric/periods";
 import { toStartOfDay, toEndOfDay } from "@/lib/tekmetric/client";
 
 // Fixed "today" = Mon 2026-07-13 (UTC) so ranges are deterministic.
@@ -41,6 +41,29 @@ describe("comparisonRange", () => {
 
   it("none yields no comparison", () => {
     expect(comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "none")).toBeNull();
+  });
+
+  it("prior_year clamps a Feb-29 boundary to Feb 28 in a non-leap prior year", () => {
+    // 2024 is a leap year, 2023 is not: Feb 29 must map to Feb 28, not roll to Mar 1.
+    const leapFeb = { start: "2024-02-01", end: "2024-02-29" };
+    expect(comparisonRange(leapFeb, "prior_year")).toEqual({ start: "2023-02-01", end: "2023-02-28" });
+  });
+});
+
+describe("monthRangesBack (history backfill)", () => {
+  it("enumerates the N full months ending with the prior month, oldest first", () => {
+    const r = monthRangesBack(TODAY, 24); // TODAY = 2026-07-13
+    expect(r).toHaveLength(24);
+    expect(r[r.length - 1]).toEqual({ start: "2026-06-01", end: "2026-06-30", label: "Jun 2026" });
+    expect(r[0]).toEqual({ start: "2024-07-01", end: "2024-07-31", label: "Jul 2024" });
+  });
+
+  it("crosses year boundaries and handles February length", () => {
+    const r = monthRangesBack(new Date("2024-03-10T12:00:00Z"), 2);
+    expect(r).toEqual([
+      { start: "2024-01-01", end: "2024-01-31", label: "Jan 2024" },
+      { start: "2024-02-01", end: "2024-02-29", label: "Feb 2024" }, // leap
+    ]);
   });
 });
 

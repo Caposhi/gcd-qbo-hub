@@ -61,7 +61,7 @@ function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
 
 function TabLink({ tab, active, children }: { tab: Tab; active: boolean; children: React.ReactNode }) {
   return (
-    <Link className={`btn ${active ? "" : "secondary"}`} href={`/projections?tab=${tab}`}>
+    <Link className={active ? "active" : ""} href={`/projections?tab=${tab}`}>
       {children}
     </Link>
   );
@@ -86,9 +86,14 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
 
   return (
     <>
-      <h1>📈 Financial Projections</h1>
+      <div className="accent-bar" />
+      <h1>Financial Projections</h1>
+      <p className="page-desc">
+        Interactive QBO reporting with period-over-period deltas, a derived-baseline projection engine, and the
+        AI C-suite council. All read-only.
+      </p>
 
-      <div className="row-actions">
+      <div className="segmented" style={{ marginBottom: 18 }}>
         <TabLink tab="reporting" active={tab === "reporting"}>
           Reporting
         </TabLink>

@@ -11,10 +11,18 @@
  */
 import type { Permission } from "@/lib/auth/roles";
 
+/** Sidebar grouping (§2 of the redesign handoff). */
+export type ModuleGroup = "Workspace" | "Finance" | "Operations";
+
 export interface ModuleDef {
   id: string;
   name: string;
+  /** Legacy emoji — retained for back-compat; the UI now renders `lucide`. */
   icon: string;
+  /** Lucide icon name; mapped to a component in the client Sidebar (§1/§3). */
+  lucide: string;
+  /** Sidebar section this module lives under. */
+  group: ModuleGroup;
   basePath: string;
   tablePrefix: string;
   /** live = production; prototype = early build behind auth; planned = stub only. */
@@ -29,6 +37,8 @@ export const MODULES: ModuleDef[] = [
     id: "cash-sheet-sync",
     name: "Cash Sheet Sync",
     icon: "💵",
+    lucide: "Wallet",
+    group: "Workspace",
     basePath: "/cash-sheet-sync",
     tablePrefix: "css_",
     status: "live",
@@ -39,6 +49,8 @@ export const MODULES: ModuleDef[] = [
     id: "projections",
     name: "Financial Projections",
     icon: "📈",
+    lucide: "TrendingUp",
+    group: "Finance",
     basePath: "/projections",
     tablePrefix: "proj_",
     status: "prototype",
@@ -49,6 +61,8 @@ export const MODULES: ModuleDef[] = [
     id: "assistant",
     name: "AI Report Assistant",
     icon: "🤖",
+    lucide: "Bot",
+    group: "Finance",
     basePath: "/assistant",
     tablePrefix: "ai_",
     status: "prototype",
@@ -59,6 +73,8 @@ export const MODULES: ModuleDef[] = [
     id: "coworker-portal",
     name: "Coworker Portal",
     icon: "🧑‍🔧",
+    lucide: "Users",
+    group: "Operations",
     basePath: "/coworker-portal",
     tablePrefix: "cwp_",
     status: "prototype",
@@ -69,6 +85,8 @@ export const MODULES: ModuleDef[] = [
     id: "deposit-reconciliation",
     name: "Deposit Reconciliation",
     icon: "🏦",
+    lucide: "Landmark",
+    group: "Operations",
     basePath: "/deposit-reconciliation",
     tablePrefix: "dep_",
     status: "prototype",
@@ -79,6 +97,8 @@ export const MODULES: ModuleDef[] = [
     id: "check-reception",
     name: "Check Reception",
     icon: "🧾",
+    lucide: "ReceiptText",
+    group: "Operations",
     basePath: "/check-reception",
     tablePrefix: "chk_",
     status: "prototype",
@@ -89,6 +109,8 @@ export const MODULES: ModuleDef[] = [
     id: "tekmetric",
     name: "Tekmetric Operations",
     icon: "🔧",
+    lucide: "Wrench",
+    group: "Operations",
     basePath: "/tekmetric",
     tablePrefix: "tek_",
     status: "prototype",

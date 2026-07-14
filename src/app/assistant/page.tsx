@@ -8,7 +8,7 @@ import { AssistantChat } from "./AssistantChat";
 
 export const dynamic = "force-dynamic";
 
-export default async function AssistantPage({ searchParams }: { searchParams: { c?: string } }) {
+export default async function AssistantPage({ searchParams }: { searchParams: { c?: string; q?: string } }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
@@ -16,8 +16,8 @@ export default async function AssistantPage({ searchParams }: { searchParams: { 
     return (
       <div className="center">
         <div className="card" style={{ width: 420 }}>
-          <h1>🤖 AI Report Assistant</h1>
-          <p className="sub">Your role ({user.role}) doesn&apos;t have access to the assistant.</p>
+          <h1>AI Report Assistant</h1>
+          <p className="card-subtitle">Your role ({user.role}) doesn&apos;t have access to the assistant.</p>
         </div>
       </div>
     );
@@ -46,41 +46,57 @@ export default async function AssistantPage({ searchParams }: { searchParams: { 
 
   return (
     <>
-      <h1>🤖 AI Report Assistant</h1>
-      <p className="sub">
-        Ask Claude (claude-opus-4-8) about German Car Depot&apos;s books. The assistant reads the Cash Sheet
-        Sync data through read-only tools — it can never post, edit, or delete anything.
+      <div className="accent-bar" />
+      <h1>AI Report Assistant</h1>
+      <p className="page-desc">
+        Ask Claude about German Car Depot&apos;s books. The assistant reads the data through read-only
+        tools — it can never post, edit, or delete anything.
       </p>
 
       {!configured && (
-        <div className="notice danger">
+        <div className="notice warn" style={{ marginBottom: 18 }}>
           The assistant isn&apos;t configured yet — set <code>ANTHROPIC_API_KEY</code> in the environment. You can
           still open the page, but sending a message will return a &ldquo;not configured&rdquo; error.
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: "1rem", alignItems: "start" }}>
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Conversations</h3>
-          <div className="row-actions" style={{ flexDirection: "column", alignItems: "stretch" }}>
-            <Link className="btn secondary" href="/assistant">
-              + New
+      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: "1rem", alignItems: "start" }}>
+        <div className="card" style={{ padding: "18px 18px" }}>
+          <h3 className="card-title" style={{ marginBottom: 12 }}>Conversations</h3>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+            <Link className="btn ghost" href="/assistant" style={{ justifyContent: "flex-start" }}>
+              + New chat
             </Link>
-            {conversations.map((c) => (
-              <Link
-                key={c.id}
-                href={`/assistant?c=${c.id}`}
-                className={active && c.id === active.id ? "badge ok" : "badge muted"}
-                style={{ textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              >
-                {c.title}
-              </Link>
-            ))}
-            {conversations.length === 0 && <span className="muted">No conversations yet.</span>}
+            {conversations.map((c) => {
+              const isActive = active && c.id === active.id;
+              return (
+                <Link
+                  key={c.id}
+                  href={`/assistant?c=${c.id}`}
+                  className="nav-item"
+                  style={{
+                    fontSize: 13,
+                    background: isActive ? "var(--powder-blue-100)" : "transparent",
+                    color: isActive ? "var(--royal-blue)" : "var(--text-body)",
+                    fontWeight: isActive ? 700 : 500,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {c.title}
+                </Link>
+              );
+            })}
+            {conversations.length === 0 && <span className="card-subtitle">No conversations yet.</span>}
           </div>
         </div>
 
-        <AssistantChat initialConversationId={active?.id ?? null} initialMessages={initialMessages} />
+        <AssistantChat
+          initialConversationId={active?.id ?? null}
+          initialMessages={initialMessages}
+          initialPrompt={searchParams.q ?? null}
+        />
       </div>
     </>
   );

@@ -10,6 +10,7 @@ import {
   DEFAULT_PRESET,
   comparisonRange,
   presetRange,
+  shopToday,
   type ComparisonMode,
   type DatePreset,
 } from "@/lib/tekmetric/periods";
@@ -20,11 +21,13 @@ import { refreshTekmetricAction } from "./actions";
 export const dynamic = "force-dynamic";
 
 const selectStyle: React.CSSProperties = {
-  padding: "0.35rem 0.5rem",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
+  padding: "8px 12px",
+  borderRadius: "var(--radius-md)",
+  border: "1px solid var(--border-default)",
+  background: "#fff",
+  color: "var(--text-strong)",
+  fontSize: 13,
+  fontFamily: "var(--font-body)",
 };
 
 type KpiFormat = "money" | "count" | "percent";
@@ -39,26 +42,33 @@ function fmt(v: number, format: KpiFormat): string {
   return Math.round(v).toLocaleString("en-US");
 }
 
-/** House-format KPI tile: figure + up/down % and $/unit delta vs. comparison. */
+/**
+ * House-format KPI tile: figure + up/down % and $/unit delta vs. comparison.
+ * For every metric here (car/RO count, ARO, gross profit, margin) higher is
+ * better, so a rise is favorable → `.delta.up` (green), a fall → `.delta.down`.
+ */
 function KpiTile({ label, kpi, format }: { label: string; kpi: TekKpi; format: KpiFormat }) {
   const hasDelta = kpi.deltaAbs !== null;
   const up = (kpi.deltaAbs ?? 0) >= 0;
-  const arrow = up ? "▲" : "▼";
-  const color = up ? "var(--ok)" : "var(--danger)";
   const deltaAbsStr = kpi.deltaAbs === null ? "" : fmt(Math.abs(kpi.deltaAbs), format);
   const deltaPctStr = kpi.deltaPct === null ? null : `${Math.abs(kpi.deltaPct).toFixed(1)}%`;
 
   return (
-    <div className="tile">
-      <div className="n">{fmt(kpi.value, format)}</div>
-      <div className="l">{label}</div>
-      {hasDelta ? (
-        <div style={{ marginTop: 6, fontSize: "0.8rem", color }}>
-          {arrow} {deltaPctStr ?? "—"} {deltaAbsStr && <span style={{ color: "var(--muted)" }}>({deltaAbsStr})</span>}
-        </div>
-      ) : (
-        <div style={{ marginTop: 6, fontSize: "0.8rem", color: "var(--muted)" }}>no comparison</div>
-      )}
+    <div className="kpi-card">
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{fmt(kpi.value, format)}</div>
+      <div className="kpi-foot">
+        {hasDelta ? (
+          <>
+            <span className={"delta " + (up ? "up" : "down")}>
+              {up ? "▲" : "▼"} {deltaPctStr ?? "—"}
+            </span>
+            {deltaAbsStr && <span className="card-subtitle">{deltaAbsStr}</span>}
+          </>
+        ) : (
+          <span className="card-subtitle">no comparison</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -75,8 +85,8 @@ export default async function TekmetricPage({
     return (
       <div className="center">
         <div className="card" style={{ width: 420 }}>
-          <h1>🔧 Tekmetric Operations</h1>
-          <p className="sub">Your role ({user.role}) doesn&apos;t have access to this module.</p>
+          <h1>Tekmetric Operations</h1>
+          <p className="card-subtitle">Your role ({user.role}) doesn&apos;t have access to this module.</p>
         </div>
       </div>
     );
@@ -94,21 +104,24 @@ export default async function TekmetricPage({
     ? (searchParams.comparison as ComparisonMode)
     : DEFAULT_COMPARISON;
 
-  const period = presetRange(preset, new Date());
+  const period = presetRange(preset, shopToday());
   const priorPeriod = comparisonRange(period, comparison);
 
-  const { data, fetchedAt } = configured ? await readOperationsSnapshot(period) : { data: null, fetchedAt: null };
+  const { data, fetchedAt } = configured
+    ? await readOperationsSnapshot(period, comparison)
+    : { data: null, fetchedAt: null };
 
   return (
     <>
-      <h1>🔧 Tekmetric Operations</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Tekmetric Operations</h1>
+      <p className="page-desc">
         Read-only shop-management KPIs from Tekmetric — ARO, gross profit, technician utilization, revenue by
         make, and service-advisor performance. Data is cached; use Refresh to pull the latest.
       </p>
 
       {!configured && (
-        <div className="notice">
+        <div className="notice info">
           Tekmetric is not configured. Set <code>TEKMETRIC_TOKEN</code> and{" "}
           <code>TEKMETRIC_SHOP_ID</code> (and <code>TEKMETRIC_BASE_URL</code>) to enable it.
         </div>
@@ -154,7 +167,7 @@ export default async function TekmetricPage({
       </p>
 
       {configured && !data && (
-        <div className="notice">
+        <div className="notice info">
           No cached data for this period yet.{" "}
           {canRefresh ? "Click Refresh to pull it from Tekmetric." : "An owner needs to refresh it first."}
         </div>
@@ -164,7 +177,7 @@ export default async function TekmetricPage({
         <form action={refreshTekmetricAction} className="row-actions">
           <input type="hidden" name="preset" value={preset} />
           <input type="hidden" name="comparison" value={comparison} />
-          <button className="btn" type="submit">
+          <button className="btn secondary" type="submit">
             ↻ Refresh from Tekmetric
           </button>
         </form>
@@ -172,7 +185,7 @@ export default async function TekmetricPage({
 
       {data && (
         <>
-          <div className="tiles">
+          <div className="kpi-grid">
             <KpiTile label="Car count" kpi={data.kpis.carCount} format="count" />
             <KpiTile label="RO count" kpi={data.kpis.roCount} format="count" />
             <KpiTile label="ARO (avg RO)" kpi={data.kpis.aro} format="money" />
@@ -186,35 +199,35 @@ export default async function TekmetricPage({
             advisorPerformance={data.advisorPerformance}
           />
 
-          <h2 style={{ marginTop: "1.5rem" }}>Advisor performance</h2>
-          <div className="table-wrap">
-            <table>
+          <h2 style={{ marginTop: "1.5rem", fontSize: 18 }}>Advisor performance</h2>
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="gcd">
               <thead>
                 <tr>
                   <th>Advisor</th>
-                  <th>ROs</th>
-                  <th>Cars</th>
-                  <th>Total sales</th>
-                  <th>ARO</th>
-                  <th>Gross profit</th>
-                  <th>Margin</th>
+                  <th className="num">ROs</th>
+                  <th className="num">Cars</th>
+                  <th className="num">Total sales</th>
+                  <th className="num">ARO</th>
+                  <th className="num">Gross profit</th>
+                  <th className="num">Margin</th>
                 </tr>
               </thead>
               <tbody>
                 {data.advisorPerformance.map((a) => (
                   <tr key={a.advisorId}>
                     <td>{a.advisorName}</td>
-                    <td>{a.roCount}</td>
-                    <td>{a.carCount}</td>
-                    <td>{money(a.totalSales)}</td>
-                    <td>{money(a.aro)}</td>
-                    <td>{money(a.grossProfit)}</td>
-                    <td>{a.grossMarginPct.toFixed(1)}%</td>
+                    <td className="num">{a.roCount}</td>
+                    <td className="num">{a.carCount}</td>
+                    <td className="num">{money(a.totalSales)}</td>
+                    <td className="num">{money(a.aro)}</td>
+                    <td className="num">{money(a.grossProfit)}</td>
+                    <td className="num">{a.grossMarginPct.toFixed(1)}%</td>
                   </tr>
                 ))}
                 {data.advisorPerformance.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="muted">
+                    <td colSpan={7} className="card-subtitle">
                       No advisor activity in this period.
                     </td>
                   </tr>
