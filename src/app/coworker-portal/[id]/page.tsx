@@ -18,6 +18,11 @@ const STATUS_CLASS: Record<string, string> = {
   closed: "muted",
 };
 
+/** Readable, unambiguous timestamp: "2026-07-14 17:51 UTC" (no raw ISO in the UI). */
+function fmtDateTime(d: Date): string {
+  return d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
 export default async function QuestionDetailPage({
   params,
 }: {
@@ -112,7 +117,7 @@ export default async function QuestionDetailPage({
               </>
             )}
             <dt>Created</dt>
-            <dd>{question.createdAt.toISOString()}</dd>
+            <dd>{fmtDateTime(question.createdAt)}</dd>
           </dl>
         </div>
 
@@ -120,8 +125,8 @@ export default async function QuestionDetailPage({
           <h3 className="card-title">Answers</h3>
           {question.answers.map((a) => (
             <div key={a.id} className="card pad-sm" style={{ marginTop: "12px" }}>
-              <div className="card-subtitle">
-                {a.answeredByEmail} · {a.createdAt.toISOString()}
+              <div className="card-subtitle" style={{ overflowWrap: "anywhere" }}>
+                {a.answeredByEmail} · {fmtDateTime(a.createdAt)}
               </div>
               <p style={{ marginTop: "8px", color: "var(--text-body)" }}>
                 {a.body}
