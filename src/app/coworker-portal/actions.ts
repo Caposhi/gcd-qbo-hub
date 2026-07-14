@@ -83,7 +83,7 @@ export async function importAskMyClientAction() {
   revalidatePath("/coworker-portal");
 
   const status = result.ok
-    ? `ok:${result.created}:${result.updated}:${result.closed}:${result.found}`
+    ? `ok:${result.created}:${result.updated}:${result.closed}:${result.removed}:${result.found}`
     : (result.reason ?? "error");
   redirect(`/coworker-portal?import=${encodeURIComponent(status)}`);
 }

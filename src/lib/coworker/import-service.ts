@@ -45,6 +45,7 @@ export interface ImportResult {
   created: number;
   updated: number;
   closed: number;
+  removed: number;
 }
 
 const money = (n: number): string =>
@@ -81,7 +82,7 @@ function bodyFor(t: AmcTransaction, accountName: string): string {
  */
 export async function importAskMyClient(importerEmail: string, now: Date): Promise<ImportResult> {
   const accountName = askMyClientAccountName();
-  const base: ImportResult = { ok: false, accountName, found: 0, created: 0, updated: 0, closed: 0 };
+  const base: ImportResult = { ok: false, accountName, found: 0, created: 0, updated: 0, closed: 0, removed: 0 };
 
   let ctx;
   try {
@@ -96,16 +97,15 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
     accountId = await resolveAmcAccountId(ctx);
     if (!accountId) return { ...base, reason: "account_not_found" };
     const start = isoDate(new Date(Date.UTC(now.getUTCFullYear() - 3, now.getUTCMonth(), 1)));
-    txns = await fetchAmcTransactions(ctx, accountId, { start, end: isoDate(now) });
+    txns = await fetchAmcTransactions(ctx, accountId, accountName, { start, end: isoDate(now) });
   } catch (err) {
     return { ...base, reason: classify(err) };
   }
 
-  // Existing imported questions, to split create vs. update and to detect ones
-  // whose transaction has since left the account (→ close them).
+  // Existing imported keys, to split create vs. update.
   const existing = await prisma.cwpQuestion.findMany({
     where: { source: "ask_my_client" },
-    select: { id: true, qboTxnId: true, status: true },
+    select: { qboTxnId: true },
   });
   const existingKeys = new Set(existing.map((q) => q.qboTxnId ?? ""));
   const seen = new Set<string>();
@@ -157,15 +157,28 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
     else updated++;
   }
 
-  // Auto-close imported questions whose transaction is no longer in the account
-  // (it was reclassified in QBO). We never delete — the Q&A history is preserved.
-  const toClose = existing.filter((q) => q.status !== "closed" && !seen.has(q.qboTxnId ?? ""));
-  if (toClose.length) {
+  // Reconcile imported questions whose transaction is no longer in the account
+  // (reclassified in QBO — or a leftover from a previous over-broad import):
+  //   • answered ones → CLOSE (preserve the coworker's explanation);
+  //   • unanswered ones → DELETE (nothing worth keeping; keeps the list clean).
+  // filter-based (not id-in) so this scales to tens of thousands of stale rows.
+  const seenArr = [...seen];
+  const removed = (
+    await prisma.cwpQuestion.deleteMany({
+      where: { source: "ask_my_client", qboTxnId: { notIn: seenArr }, answers: { none: {} } },
+    })
+  ).count;
+  const closed = (
     await prisma.cwpQuestion.updateMany({
-      where: { id: { in: toClose.map((q) => q.id) } },
+      where: {
+        source: "ask_my_client",
+        qboTxnId: { notIn: seenArr },
+        answers: { some: {} },
+        status: { not: "closed" },
+      },
       data: { status: "closed" },
-    });
-  }
+    })
+  ).count;
 
-  return { ok: true, accountName, found: txns.length, created, updated, closed: toClose.length };
+  return { ok: true, accountName, found: txns.length, created, updated, closed, removed };
 }
