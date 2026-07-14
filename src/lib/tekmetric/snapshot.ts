@@ -24,6 +24,7 @@ import {
   type TekDateRange,
 } from "./client";
 import { buildOperationsData } from "./normalize";
+import { looksLikePartialMonth } from "./forecast";
 import type { TekPeriod } from "./types";
 import type { TekOperationsData } from "./types";
 
@@ -340,6 +341,26 @@ export async function refreshOperations(
     appointments,
     employees,
   });
+
+  // Integrity guard: refuse to cache a month whose figures can only come from a
+  // bad/partial pull (a meaningful RO count with an impossibly-low margin or ~$0
+  // ARO — labor carries no COGS here, so a real month can't look like that).
+  // Rate-limited or truncated Tekmetric responses produce exactly this shape;
+  // caching one poisons every downstream forecast that reads the month. Throwing
+  // makes the backfill log a ✗ for the month and move on rather than store junk.
+  if (
+    looksLikePartialMonth({
+      roCount: data.kpis.roCount.value,
+      grossMarginPct: data.kpis.grossMarginPct.value,
+      aro: data.kpis.aro.value,
+    })
+  ) {
+    throw new Error(
+      `Refusing to cache ${period.start}..${period.end}: figures look like a partial/rate-limited pull ` +
+        `(${data.kpis.roCount.value} ROs, ${data.kpis.grossMarginPct.value.toFixed(1)}% margin, ` +
+        `$${data.kpis.aro.value.toFixed(0)} ARO). Re-run the refresh for this month.`
+    );
+  }
 
   await prisma.tekSnapshot.upsert({
     where: {
