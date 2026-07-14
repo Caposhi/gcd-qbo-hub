@@ -13,7 +13,8 @@
  */
 import { prisma } from "@/lib/db";
 import { getContext, QboNotConnectedError, QboApiError } from "@/lib/qbo/client";
-import { currentEnvironment, QboAuthError } from "@/lib/qbo/oauth";
+import { QboAuthError } from "@/lib/qbo/oauth";
+import { getQboEnvironment } from "@/lib/config-store";
 import { askMyClientAccountName, resolveAmcAccountId, fetchAmcTransactions } from "./qbo";
 import type { AmcTransaction } from "./transactions";
 
@@ -84,7 +85,7 @@ export async function importAskMyClient(importerEmail: string, now: Date): Promi
 
   let ctx;
   try {
-    ctx = await getContext(currentEnvironment());
+    ctx = await getContext(await getQboEnvironment());
   } catch (err) {
     return { ...base, reason: classify(err) };
   }

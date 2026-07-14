@@ -13,7 +13,7 @@
 import { prisma } from "@/lib/db";
 import { fetchReport, QBO_REPORT_ENTITY } from "@/lib/qbo/reports";
 import { QboNotConnectedError, isQboConnectivityError } from "@/lib/qbo/client";
-import { currentEnvironment } from "@/lib/qbo/oauth";
+import { getQboEnvironment } from "@/lib/config-store";
 import type { QboContext } from "@/lib/qbo/client";
 import { getContext } from "@/lib/qbo/client";
 import {
@@ -251,7 +251,7 @@ export async function loadReporting(
   // whole route.
   let connectionIssue: ReportingUnavailable["reason"] | null = null;
   try {
-    ctx = await getContext(currentEnvironment());
+    ctx = await getContext(await getQboEnvironment());
   } catch (err) {
     // No credential at all vs. a credential QBO rejected (e.g. token refresh
     // returned 400 — the refresh token expired/was revoked → reconnect needed).
