@@ -40,18 +40,19 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
 
   return (
     <>
-      <h1>Settings & Rollout</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Settings &amp; rollout</h1>
+      <p className="page-desc">
         The rollout ladder must be advanced one deliberate step at a time (§12). Live auto-posting is never a
         default — it is the last rung and owner-only.
       </p>
 
-      {searchParams.qbo === "connected" && <div className="notice ok">QBO connected successfully.</div>}
+      {searchParams.qbo === "connected" && <div className="notice info">QBO connected successfully.</div>}
       {searchParams.qbo && searchParams.qbo !== "connected" && (
         <div className="notice danger">QBO connect issue: {searchParams.qbo}.</div>
       )}
 
-      <h2>QuickBooks Online connection</h2>
+      <h2 style={{ fontSize: 18, margin: "18px 0 10px" }}>QuickBooks Online connection</h2>
       <p>
         Environment: <span className={`badge ${environment === "live" ? "danger" : "ok"}`}>{environment}</span>{" "}
         · Status:{" "}
@@ -64,7 +65,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         {environment === "live" && !activeCred ? " — no live credential yet; connect against your real company." : ""}
       </p>
       {can(user.role, "connect_qbo") ? (
-        <a className="btn" href="/api/qbo/connect">
+        <a className="btn primary" href="/api/qbo/connect">
           {credsValid ? "Reconnect QBO" : "Connect QBO"}
         </a>
       ) : (
@@ -75,18 +76,36 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         developer dashboard — deploy the hub to its stable HTTPS URL first, then register this URI (§16).
       </p>
 
-      <h2>Rollout stage</h2>
-      <div className="tiles">
-        {ROLLOUT_STAGES.map((s) => (
-          <div key={s} className={`tile ${s === stage ? "warn" : ""}`}>
-            <div className="l">{s === stage ? "current" : ""}</div>
-            <div style={{ fontWeight: 700 }}>{s}</div>
-            <div className="muted" style={{ fontSize: "0.78rem" }}>{STAGE_HELP[s]}</div>
-          </div>
-        ))}
+      <h2 style={{ fontSize: 18, margin: "24px 0 10px" }}>Rollout stage</h2>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        {ROLLOUT_STAGES.map((s, i) => {
+          const current = s === stage;
+          const done = i < idx;
+          return (
+            <div
+              key={s}
+              className="card pad-sm"
+              style={{
+                flex: "1 1 180px",
+                minWidth: 180,
+                borderColor: current ? "var(--royal-blue)" : "var(--border-subtle)",
+                boxShadow: current ? "0 0 0 3px var(--powder-blue-200)" : "var(--shadow-sm)",
+                opacity: done ? 0.65 : 1,
+              }}
+            >
+              <div className="kpi-label" style={current ? { color: "var(--royal-blue)" } : undefined}>
+                {current ? "Current" : done ? "Done" : `Stage ${i + 1}`}
+              </div>
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, color: "var(--navy-blue)", margin: "5px 0" }}>
+                {s}
+              </div>
+              <div className="card-subtitle">{STAGE_HELP[s]}</div>
+            </div>
+          );
+        })}
       </div>
 
-      <div className="row-actions">
+      <div className="row-actions" style={{ marginTop: 16 }}>
         {prev && (
           <form action={advanceStageAction.bind(null, prev)}>
             <button className="btn secondary" disabled={!canChange}>← Step back to {prev}</button>
@@ -94,25 +113,31 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         )}
         {next && (
           <form action={advanceStageAction.bind(null, next)}>
-            <button className={`btn ${next.startsWith("live") ? "danger" : ""}`} disabled={!canChange}>
+            <button className={`btn ${next.startsWith("live") ? "danger" : "primary"}`} disabled={!canChange}>
               Advance to {next} →
             </button>
           </form>
         )}
       </div>
+      {next && next.startsWith("live") && (
+        <div className="notice danger" style={{ marginTop: 12 }}>
+          Advancing to <strong>{next}</strong> posts against the LIVE QuickBooks company. Owner-only, and only after
+          a clean sandbox run.
+        </div>
+      )}
       {!canChange && <p className="muted">Changing the rollout stage requires owner_admin (§14).</p>}
       <p className="muted">
         Every stage change is recorded with who/when/old→new in the config change history — flips are auditable,
         not silent env edits (§12).
       </p>
 
-      <h2>Sheet write-back</h2>
+      <h2 style={{ fontSize: 18, margin: "24px 0 10px" }}>Sheet write-back</h2>
       <p>
         Status:{" "}
         {writebackEnabled ? (
           <span className="badge ok">on</span>
         ) : (
-          <span className="badge">off</span>
+          <span className="badge muted">off</span>
         )}
       </p>
       <p className="muted">
@@ -125,7 +150,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
       </p>
       <div className="row-actions">
         <form action={setSheetWritebackAction.bind(null, !writebackEnabled)}>
-          <button className={`btn ${writebackEnabled ? "secondary" : ""}`} disabled={!canChange}>
+          <button className={`btn ${writebackEnabled ? "secondary" : "primary"}`} disabled={!canChange}>
             {writebackEnabled ? "Turn write-back off" : "Turn write-back on"}
           </button>
         </form>

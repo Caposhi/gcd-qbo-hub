@@ -462,3 +462,48 @@ posting/gating is untouched.
   Projections inner panels. GCD Pal live insight endpoint.
 
 Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds.
+
+---
+
+## UI/Theme redesign — phase 2: full module migration + shim removal
+
+Completed the redesign rollout begun in phase 1: every remaining module was
+migrated off the temporary compatibility shim onto the brand component classes,
+and the shim itself was deleted. Still **visual-only** — no posting logic,
+live-env gating, server actions, Prisma schema, or read-only guarantees changed.
+
+### Modules migrated this phase
+- **Cash Sheet Sync** (live module — presentation only, posting/gating untouched):
+  overview status strip + run/attention stat cards, queue (filter pills + month
+  pills + `table.gcd`), mappings, settings (rollout ladder as a card stepper with
+  the current rung ringed royal), cash deposits, and the row-detail audit view
+  (two-column snapshot/QBO cards + themed diff + events table).
+- **Deposit Reconciliation** — drop-zone card, batch-action button row, proposed-
+  deposits `table.gcd` with status badges.
+- **Check Reception** — drop-zone card, per-check review cards, and `Combobox`
+  restyled to a light popover (all dark inline styles removed).
+- **Coworker Portal** — KPI count cards, segmented status filter, question table,
+  two-column thread on the detail page.
+- **Financial Projections inner panels** — ReportingPanel KPI cards (delta by
+  good/bad), FilterBar as light filter pills, ProjectionsPanel baseline/scenario
+  tables + confidence badges, ScenariosPanel form/tiles, AiCouncilPanel verdict
+  cards. Lucide icons replaced the `↻ / ▶` glyphs.
+- **Auth + legal** — centered brand cards with the disc logo; signin input on the
+  `.input` class.
+- **Shared** — `RequireAuth` / `ComingSoon` panels rebranded.
+
+### Compat shim removed
+The temporary dark-token shim in `globals.css` §10 is gone. A repo-wide grep
+confirms **no code references the legacy `--panel`/`--panel-2`/`--accent`/
+`--text`/`--border`/`--ok`/`--warn`/`--radius` aliases, the `.tile`/`.tiles`
+classes, or any dark hex** any more. The genuinely-useful brand-agnostic helpers
+(`.sub`, `.muted`, `.grid`, `.row-actions`, `.center`, `.kv`) were kept and
+relabelled as a permanent "Shared utilities" section. Every table now uses
+`table.gcd`; `.badge.muted` folds into the (already gray) base `.badge`.
+
+Verified: `tsc --noEmit` clean, 247 tests pass, `next build` succeeds, grep clean.
+
+### Still open (unchanged from phase 1)
+- GCD Pal live insights endpoint (`GET /api/assistant/insights`) — the Pal still
+  ships generic, figure-free copy until that read-only endpoint is wired.
+- Projection scenarios built on the backfilled 24-month Tekmetric history.

@@ -60,6 +60,7 @@ export function Combobox({
       <input type="hidden" name={`${name}Id`} value={id} />
       <input
         type="text"
+        className="input"
         autoComplete="off"
         value={text}
         placeholder={placeholder}
@@ -108,10 +109,10 @@ export function Combobox({
             listStyle: "none",
             maxHeight: 240,
             overflowY: "auto",
-            background: "#0f1e33",
-            border: "1px solid #2b3f5c",
-            borderRadius: 6,
-            boxShadow: "0 6px 20px rgba(0,0,0,0.4)",
+            background: "var(--surface-card)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            boxShadow: "var(--shadow-lg)",
           }}
         >
           {filtered.map((o, i) => (
@@ -124,23 +125,24 @@ export function Combobox({
               }}
               onMouseEnter={() => setActive(i)}
               style={{
-                padding: "5px 8px",
+                padding: "6px 10px",
                 cursor: "pointer",
                 fontSize: "0.8rem",
-                background: i === active ? "#1c3050" : "transparent",
+                background: i === active ? "var(--powder-blue-100)" : "transparent",
+                color: i === active ? "var(--royal-blue)" : "var(--text-body)",
                 display: "flex",
                 justifyContent: "space-between",
                 gap: "0.5rem",
               }}
             >
               <span>{o.name}</span>
-              {o.hint && <span style={{ opacity: 0.55, fontSize: "0.7rem" }}>{o.hint}</span>}
+              {o.hint && <span style={{ color: "var(--text-muted)", fontSize: "0.7rem" }}>{o.hint}</span>}
             </li>
           ))}
         </ul>
       )}
       {allowCreate && text.trim() && !id && (
-        <div style={{ fontSize: "0.68rem", opacity: 0.6, marginTop: 2 }}>
+        <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 4 }}>
           New vendor — will be created in QBO on confirm.
         </div>
       )}

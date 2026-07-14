@@ -97,15 +97,16 @@ export default async function CashDepositsPage() {
 
   return (
     <>
-      <h1>Cash Deposit Matching</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Cash deposit matching</h1>
+      <p className="page-desc">
         Customer invoice cash (INV rows with an RO# and a Collected amount) whose Customer Payment already sits in
         Undeposited Funds. The hub finds that payment by RO# and builds the exact QBO Bank Deposit <strong>into Cash on
         hand</strong> that clears it out of Undeposited Funds — the payment plus a small <em>Cash over/short</em> plug
         when the collected amount differs from the payment by rounding (e.g. sheet $241.00 vs payment $240.74 → +$0.26).
         Nothing posts until you click <strong>Create deposit</strong> on a row, and only when it ties out.
       </p>
-      <div style={noticeWarn}>
+      <div className="notice warn">
         <strong>Safety:</strong> rows whose payment is <em>already</em> on a QBO deposit are marked “already deposited”
         and offer no Create button, so a payment can never be deposited twice. Still, create deposits deliberately —
         start with the current pending rows rather than mass-creating the historical backlog, in case older months were
@@ -113,7 +114,7 @@ export default async function CashDepositsPage() {
       </div>
 
       {!accountsReady && (
-        <div style={noticeDanger}>
+        <div className="notice danger" style={{ marginTop: 12 }}>
           Account mapping incomplete — need both “Cash on hand” ({accounts.depositToId ?? "unresolved"}) and “Cash
           over/short” ({accounts.overShortId ?? "unresolved"}). Resolve them on the Mappings page first.
         </div>
@@ -121,7 +122,7 @@ export default async function CashDepositsPage() {
 
       {editable && (
         <form action={locateCashDepositsAction} className="row-actions" style={{ margin: "0.75rem 0" }}>
-          <button className="btn secondary" type="submit">
+          <button className="btn ghost" type="submit">
             Locate payments in QBO (read-only)
           </button>
           <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
@@ -132,7 +133,7 @@ export default async function CashDepositsPage() {
 
       {editable && accountsReady && readyCount > 0 && (
         <form action={createAllReadyCashDepositsAction} className="row-actions" style={{ margin: "0.25rem 0 0.5rem" }}>
-          <button className="btn" type="submit">Create all {readyCount} ready deposit{readyCount === 1 ? "" : "s"}</button>
+          <button className="btn primary" type="submit">Create all {readyCount} ready deposit{readyCount === 1 ? "" : "s"}</button>
           <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
             Posts every row marked <em>ready</em> above, each re-verified and duplicate-guarded before it writes.
           </span>
@@ -157,11 +158,11 @@ export default async function CashDepositsPage() {
         </p>
       ) : (
         <div className="table-wrap">
-          <table>
+          <table className="gcd">
             <thead>
               <tr>
-                <th>Tab</th><th>Row</th><th>Date</th><th>Name</th><th>INV#/RO</th><th>Collected</th>
-                <th>Located payment</th><th>Over/short</th><th>Status</th><th></th>
+                <th>Tab</th><th>Row</th><th>Date</th><th>Name</th><th>INV#/RO</th><th className="num">Collected</th>
+                <th>Located payment</th><th className="num">Over/short</th><th>Status</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -212,7 +213,7 @@ export default async function CashDepositsPage() {
                       {editable && ready && accountsReady && (
                         <form action={createCashDepositAction}>
                           <input type="hidden" name="rowId" value={r.id} />
-                          <button className="btn" type="submit">Create deposit</button>
+                          <button className="btn primary" type="submit">Create deposit</button>
                         </form>
                       )}
                       {!created && createOutcome.get(r.id) && (
@@ -241,21 +242,3 @@ export default async function CashDepositsPage() {
     </>
   );
 }
-
-const noticeWarn: React.CSSProperties = {
-  display: "block",
-  whiteSpace: "normal",
-  padding: "0.6rem 0.85rem",
-  margin: "0.75rem 0",
-  borderRadius: 8,
-  border: "1px solid #b7791f",
-  background: "rgba(183,121,31,0.12)",
-  fontSize: "0.85rem",
-  lineHeight: 1.45,
-};
-
-const noticeDanger: React.CSSProperties = {
-  ...noticeWarn,
-  border: "1px solid #c53030",
-  background: "rgba(197,48,48,0.12)",
-};

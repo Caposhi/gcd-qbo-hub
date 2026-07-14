@@ -24,15 +24,6 @@ import { money, percent } from "../reporting/format";
 import { createScenarioV2Action, updateScenarioV2Action } from "../actions";
 import { ProjectionChart, TornadoChart } from "./ProjectionCharts";
 
-const inputStyle: React.CSSProperties = {
-  padding: "0.3rem",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
-  width: "100%",
-};
-
 function confBadge(conf: Confidence): { cls: string; label: string } {
   if (conf === "strong") return { cls: "ok", label: "strong" };
   if (conf === "moderate") return { cls: "warn", label: "moderate" };
@@ -67,7 +58,7 @@ export async function ProjectionsPanel({
 
   return (
     <>
-      <p className="sub">
+      <p className="page-desc">
         Forward scenario modeling. Baseline coefficients are derived from your own QuickBooks
         history by auditable regression, shown as editable defaults with a confidence signal — override
         any of them. Read-only over QBO; nothing is written back.
@@ -76,19 +67,17 @@ export async function ProjectionsPanel({
       {/* Derived baseline */}
       {baselineRes.connected ? (
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>
-            Derived baseline{" "}
-            <span className="muted" style={{ fontSize: "0.8rem", fontWeight: 400 }}>
-              · {baselineRes.baseline.months} months ({baselineRes.range.start} → {baselineRes.range.end},{" "}
-              {baselineRes.method})
-            </span>
-          </h3>
-          <div className="table-wrap">
-            <table>
+          <h3 className="card-title" style={{ marginTop: 0 }}>Derived baseline</h3>
+          <p className="card-subtitle">
+            {baselineRes.baseline.months} months ({baselineRes.range.start} → {baselineRes.range.end},{" "}
+            {baselineRes.method})
+          </p>
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="gcd">
               <thead>
                 <tr>
                   <th>Coefficient</th>
-                  <th style={{ textAlign: "right" }}>Derived value</th>
+                  <th className="num">Derived value</th>
                   <th>Confidence</th>
                   <th>Basis</th>
                 </tr>
@@ -106,21 +95,21 @@ export async function ProjectionsPanel({
                   return (
                     <tr key={label}>
                       <td>{label}</td>
-                      <td style={{ textAlign: "right" }}>{valueStr}</td>
+                      <td className="num">{valueStr}</td>
                       <td>
                         <span className={`badge ${b.cls}`}>{b.label}</span>{" "}
-                        <span className="muted" style={{ fontSize: "0.75rem" }}>
+                        <span className="card-subtitle" style={{ display: "inline" }}>
                           R² {coef.r2.toFixed(2)} · n={coef.n}
                         </span>
                       </td>
-                      <td className="muted" style={{ fontSize: "0.78rem" }}>{coef.basis}</td>
+                      <td className="card-subtitle">{coef.basis}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <p className="muted" style={{ fontSize: "0.78rem", marginBottom: 0 }}>
+          <p className="card-subtitle" style={{ marginTop: 12, marginBottom: 0 }}>
             Latest monthly revenue {money(baselineRes.baseline.latestMonthlyRevenue, { compact: true })} · gross
             margin {percent(baselineRes.baseline.grossMarginPct)} · net margin{" "}
             {percent(baselineRes.baseline.netMarginPct)}
@@ -212,15 +201,15 @@ function ScenarioDetail({
     const conf = confBadge(confidenceFromCoef(coef));
     const derivedStr = kind === "pct" ? percent(coef.derived) : money(coef.derived);
     return (
-      <label className="kv" key={name} style={{ display: "grid", gap: "0.25rem" }}>
-        <span>
+      <div className="field" key={name}>
+        <label>
           {label}{" "}
-          <span className="muted" style={{ fontSize: "0.72rem" }}>
+          <span className="card-subtitle" style={{ display: "inline" }}>
             derived {derivedStr} · <span className={`badge ${conf.cls}`}>{conf.label}</span>
           </span>
-        </span>
+        </label>
         <input
-          style={inputStyle}
+          className="input"
           name={name}
           type="number"
           step={step}
@@ -228,7 +217,7 @@ function ScenarioDetail({
           placeholder={`derived ${coef.derived}`}
           disabled={!editable}
         />
-      </label>
+      </div>
     );
   };
 
@@ -236,32 +225,44 @@ function ScenarioDetail({
     <>
       <h2 style={{ marginTop: "1.5rem" }}>{scenario.name}</h2>
 
-      <div className="tiles">
-        <div className={`tile ${summary.endingCash < 0 ? "danger" : ""}`}>
-          <div className="n">{money(summary.endingCash, { compact: true })}</div>
-          <div className="l">Ending cash</div>
+      <div className="kpi-grid">
+        <div className="kpi-card">
+          <div className="kpi-label">Ending cash</div>
+          <div className="kpi-value">{money(summary.endingCash, { compact: true })}</div>
+          {summary.endingCash < 0 && (
+            <div className="kpi-foot"><span className="delta down">Negative</span></div>
+          )}
         </div>
-        <div className={`tile ${summary.lowestCash < 0 ? "danger" : ""}`}>
-          <div className="n">{money(summary.lowestCash, { compact: true })}</div>
-          <div className="l">Lowest ({summary.lowestMonthLabel})</div>
+        <div className="kpi-card">
+          <div className="kpi-label">Lowest ({summary.lowestMonthLabel})</div>
+          <div className="kpi-value">{money(summary.lowestCash, { compact: true })}</div>
+          {summary.lowestCash < 0 && (
+            <div className="kpi-foot"><span className="delta down">Below zero</span></div>
+          )}
         </div>
-        <div className={`tile ${summary.runwayMonths !== null ? "danger" : ""}`}>
-          <div className="n">{summary.runwayMonths !== null ? `${summary.runwayMonths} mo` : "—"}</div>
-          <div className="l">Cash-out month</div>
+        <div className="kpi-card">
+          <div className="kpi-label">Cash-out month</div>
+          <div className="kpi-value">{summary.runwayMonths !== null ? `${summary.runwayMonths} mo` : "—"}</div>
+          {summary.runwayMonths !== null && (
+            <div className="kpi-foot"><span className="delta down">Runs out</span></div>
+          )}
         </div>
-        <div className="tile">
-          <div className="n">{money(summary.totalNetIncome, { compact: true })}</div>
-          <div className="l">Total net income</div>
+        <div className="kpi-card">
+          <div className="kpi-label">Total net income</div>
+          <div className="kpi-value">{money(summary.totalNetIncome, { compact: true })}</div>
+          {summary.totalNetIncome < 0 && (
+            <div className="kpi-foot"><span className="delta down">Negative</span></div>
+          )}
         </div>
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
         <div className="card" style={{ minWidth: 0 }}>
-          <h3 style={{ marginTop: 0 }}>Projection</h3>
+          <h3 className="card-title" style={{ marginTop: 0 }}>Projection</h3>
           <ProjectionChart data={chartRows} />
         </div>
         <div className="card" style={{ minWidth: 0 }}>
-          <h3 style={{ marginTop: 0 }}>Sensitivity — what moves ending cash most</h3>
+          <h3 className="card-title" style={{ marginTop: 0 }}>Sensitivity — what moves ending cash most</h3>
           <TornadoChart data={tornadoData} metricLabel="Ending cash" />
         </div>
       </div>
@@ -269,86 +270,86 @@ function ScenarioDetail({
       {/* Overrides + levers */}
       <form action={updateScenarioV2Action} className="card">
         <input type="hidden" name="id" value={scenario.id} />
-        <h3 style={{ marginTop: 0 }}>Assumptions {editable ? "(override the derived defaults)" : "(read-only)"}</h3>
-        <div className="grid">
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Name</span>
-            <input style={inputStyle} name="name" defaultValue={scenario.name} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Opening cash</span>
-            <input style={inputStyle} name="openingCash" type="number" step="0.01" defaultValue={inputs.openingCash} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Start monthly revenue</span>
-            <input style={inputStyle} name="startMonthlyRevenue" type="number" step="0.01" defaultValue={inputs.startMonthlyRevenue} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Horizon (months, 1–120)</span>
-            <input style={inputStyle} name="horizonMonths" type="number" min={1} max={120} defaultValue={inputs.horizonMonths} disabled={!editable} />
-          </label>
+        <h3 className="card-title" style={{ marginTop: 0 }}>Assumptions {editable ? "(override the derived defaults)" : "(read-only)"}</h3>
+        <div className="grid" style={{ marginTop: 12 }}>
+          <div className="field">
+            <label>Name</label>
+            <input className="input" name="name" defaultValue={scenario.name} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>Opening cash</label>
+            <input className="input" name="openingCash" type="number" step="0.01" defaultValue={inputs.openingCash} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>Start monthly revenue</label>
+            <input className="input" name="startMonthlyRevenue" type="number" step="0.01" defaultValue={inputs.startMonthlyRevenue} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>Horizon (months, 1–120)</label>
+            <input className="input" name="horizonMonths" type="number" min={1} max={120} defaultValue={inputs.horizonMonths} disabled={!editable} />
+          </div>
           {overrideRow("Revenue growth / mo (e.g. 0.02)", c.revenueGrowthMonthlyPct, "override_growth", "pct", "0.001")}
           {overrideRow("COGS % of revenue (e.g. 0.4)", c.cogsPctOfRevenue, "override_cogs", "pct", "0.001")}
           {overrideRow("Fixed OpEx / mo", c.opexFixedMonthly, "override_opexFixed", "money", "0.01")}
           {overrideRow("Variable OpEx % (e.g. 0.1)", c.opexVarPctOfRevenue, "override_opexVar", "pct", "0.001")}
         </div>
 
-        <h3>Levers</h3>
-        <div className="grid">
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Capex / one-off ($, +in / −out)</span>
-            <input style={inputStyle} name="capex_amount" type="number" step="0.01" defaultValue={inputs.oneOffs?.[0]?.amount ?? ""} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>…in month #</span>
-            <input style={inputStyle} name="capex_month" type="number" min={0} defaultValue={inputs.oneOffs?.[0]?.monthIndex ?? 0} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Monthly OpEx change ($, hiring +/ firing −)</span>
-            <input style={inputStyle} name="opexadj_amount" type="number" step="0.01" defaultValue={inputs.opexAdjustments?.[0]?.amount ?? ""} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>…from month #</span>
-            <input style={inputStyle} name="opexadj_month" type="number" min={0} defaultValue={inputs.opexAdjustments?.[0]?.monthIndex ?? 0} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>Revenue uplift (fraction, e.g. 0.2)</span>
-            <input style={inputStyle} name="uplift_pct" type="number" step="0.01" defaultValue={inputs.revenueUpliftPct?.[0]?.amount ?? ""} disabled={!editable} />
-          </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
-            <span>…from month #</span>
-            <input style={inputStyle} name="uplift_month" type="number" min={0} defaultValue={inputs.revenueUpliftPct?.[0]?.monthIndex ?? 0} disabled={!editable} />
-          </label>
+        <h3 className="card-title" style={{ marginTop: 20 }}>Levers</h3>
+        <div className="grid" style={{ marginTop: 12 }}>
+          <div className="field">
+            <label>Capex / one-off ($, +in / −out)</label>
+            <input className="input" name="capex_amount" type="number" step="0.01" defaultValue={inputs.oneOffs?.[0]?.amount ?? ""} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>…in month #</label>
+            <input className="input" name="capex_month" type="number" min={0} defaultValue={inputs.oneOffs?.[0]?.monthIndex ?? 0} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>Monthly OpEx change ($, hiring +/ firing −)</label>
+            <input className="input" name="opexadj_amount" type="number" step="0.01" defaultValue={inputs.opexAdjustments?.[0]?.amount ?? ""} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>…from month #</label>
+            <input className="input" name="opexadj_month" type="number" min={0} defaultValue={inputs.opexAdjustments?.[0]?.monthIndex ?? 0} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>Revenue uplift (fraction, e.g. 0.2)</label>
+            <input className="input" name="uplift_pct" type="number" step="0.01" defaultValue={inputs.revenueUpliftPct?.[0]?.amount ?? ""} disabled={!editable} />
+          </div>
+          <div className="field">
+            <label>…from month #</label>
+            <input className="input" name="uplift_month" type="number" min={0} defaultValue={inputs.revenueUpliftPct?.[0]?.monthIndex ?? 0} disabled={!editable} />
+          </div>
         </div>
 
         {editable && (
           <div className="row-actions" style={{ marginTop: "1rem" }}>
-            <button className="btn" type="submit">Save &amp; recompute</button>
+            <button className="btn primary" type="submit">Save &amp; recompute</button>
           </div>
         )}
       </form>
 
       <div className="table-wrap">
-        <table>
+        <table className="gcd">
           <thead>
             <tr>
               <th>Month</th>
-              <th style={{ textAlign: "right" }}>Revenue</th>
-              <th style={{ textAlign: "right" }}>Gross profit</th>
-              <th style={{ textAlign: "right" }}>OpEx</th>
-              <th style={{ textAlign: "right" }}>Net income</th>
-              <th style={{ textAlign: "right" }}>Ending cash</th>
+              <th className="num">Revenue</th>
+              <th className="num">Gross profit</th>
+              <th className="num">OpEx</th>
+              <th className="num">Net income</th>
+              <th className="num">Ending cash</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.monthIndex}>
                 <td>{r.label}</td>
-                <td style={{ textAlign: "right" }}>{money(r.revenue)}</td>
-                <td style={{ textAlign: "right" }}>{money(r.grossProfit)}</td>
-                <td style={{ textAlign: "right" }}>{money(r.opex)}</td>
-                <td style={{ textAlign: "right" }}>{money(r.netIncome)}</td>
-                <td style={{ textAlign: "right" }}>
+                <td className="num">{money(r.revenue)}</td>
+                <td className="num">{money(r.grossProfit)}</td>
+                <td className="num">{money(r.opex)}</td>
+                <td className="num">{money(r.netIncome)}</td>
+                <td className="num">
                   {r.endingCash < 0 ? <span className="badge danger">{money(r.endingCash)}</span> : money(r.endingCash)}
                 </td>
               </tr>
