@@ -20,11 +20,12 @@ const STATUSES = ["open", "answered", "closed"] as const;
 function ImportNotice({ status, accountName }: { status?: string; accountName: string }) {
   if (!status) return null;
   if (status.startsWith("ok:")) {
-    const [, created, updated, closed, found] = status.split(":");
+    const [, created, updated, closed, removed, found] = status.split(":");
     return (
       <div className="notice info" style={{ marginBottom: 16 }}>
-        Imported from QuickBooks — <strong>{created}</strong> new, {updated} updated, {closed} auto-closed
-        (from {found} parked {found === "1" ? "transaction" : "transactions"} in &ldquo;{accountName}&rdquo;).
+        Imported from QuickBooks — <strong>{created}</strong> new, {updated} updated, {closed} auto-closed,
+        {" "}{removed} removed (from {found} parked {found === "1" ? "transaction" : "transactions"} in
+        {" "}&ldquo;{accountName}&rdquo;).
       </div>
     );
   }

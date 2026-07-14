@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { normalizeTransactionList } from "@/lib/coworker/transactions";
+import { normalizeAccountTransactions } from "@/lib/coworker/transactions";
 
-// A representative QBO TransactionList report: a header/section wrapper, real
-// rows, and a total row that must be skipped. Column order is deliberately
-// non-obvious to prove the normalizer maps by title, not position.
-const REPORT = {
+// A representative QBO GeneralLedger report: rows grouped into account SECTIONS
+// (each Section has a Header naming the account + nested data rows + a Summary).
+// The target account "Ask My Client" holds two lines; a second account section
+// ("Automobile") must be excluded when we filter by account name. Column order
+// is deliberately non-obvious to prove the normalizer maps by title.
+const GL = {
   Columns: {
     Column: [
       { ColTitle: "Date" },
@@ -12,87 +14,107 @@ const REPORT = {
       { ColTitle: "Num" },
       { ColTitle: "Name" },
       { ColTitle: "Memo/Description" },
-      { ColTitle: "Account" },
+      { ColTitle: "Split" },
       { ColTitle: "Amount" },
+      { ColTitle: "Balance" },
     ],
   },
   Rows: {
     Row: [
       {
-        // A section wrapper with nested data rows (QBO groups like this).
+        type: "Section",
+        Header: { ColData: [{ value: "Ask My Client" }] },
         Rows: {
           Row: [
             {
               type: "Data",
               ColData: [
-                { value: "2026-07-02" },
-                { value: "Expense", id: "145" },
-                { value: "1021" },
-                { value: "Napa Auto Parts", id: "57" },
-                { value: "uncoded card charge" },
-                { value: "Ask My Client", id: "91" },
-                { value: "$123.45" },
+                { value: "2026-06-08" },
+                { value: "Expense" },
+                { value: "" },
+                { value: "ForgeMedia LLC" },
+                { value: "FORGEMEDIA" },
+                { value: "Checking" },
+                { value: "59.95" },
+                { value: "59.95" },
               ],
             },
             {
               type: "Data",
               ColData: [
-                { value: "2026-07-05" },
-                { value: "Deposit" },
+                { value: "2026-07-10" },
+                { value: "Journal Entry" },
                 { value: "" },
                 { value: "" },
                 { value: "" },
-                { value: "Ask My Client", id: "91" },
-                { value: "($40.00)" }, // parenthesized negative
+                { value: "-Split-" },
+                { value: "2,565.00" },
+                { value: "2,624.95" },
+              ],
+            },
+          ],
+        },
+        Summary: { ColData: [{ value: "Total for Ask My Client" }, {}, {}, {}, {}, {}, { value: "2,624.95" }] },
+      },
+      {
+        // A DIFFERENT account section — must NOT be imported when filtering.
+        type: "Section",
+        Header: { ColData: [{ value: "Automobile" }] },
+        Rows: {
+          Row: [
+            {
+              type: "Data",
+              ColData: [
+                { value: "2026-06-01" },
+                { value: "Expense" },
+                { value: "9001" },
+                { value: "Napa" },
+                { value: "parts" },
+                { value: "Checking" },
+                { value: "500.00" },
+                { value: "500.00" },
               ],
             },
           ],
         },
       },
-      {
-        // A total/summary row — no date/type — must be skipped.
-        type: "Section",
-        ColData: [
-          { value: "" },
-          { value: "" },
-          { value: "" },
-          { value: "" },
-          { value: "" },
-          { value: "Total" },
-          { value: "$83.45" },
-        ],
-      },
     ],
   },
 };
 
-describe("normalizeTransactionList", () => {
-  const txns = normalizeTransactionList(REPORT);
-
-  it("extracts real transactions and skips totals", () => {
-    expect(txns).toHaveLength(2);
-    expect(txns.map((t) => t.type)).toEqual(["Expense", "Deposit"]);
+describe("normalizeAccountTransactions (GeneralLedger)", () => {
+  it("returns ONLY the rows under the matching account section", () => {
+    const txns = normalizeAccountTransactions(GL, "Ask My Client");
+    expect(txns).toHaveLength(2); // the Automobile row is excluded
+    expect(txns.map((t) => t.type)).toEqual(["Expense", "Journal Entry"]);
+    expect(txns.map((t) => t.name)).not.toContain("Napa");
   });
 
-  it("maps columns by title and parses amounts (incl. parenthesized negatives)", () => {
-    const [exp, dep] = txns;
-    expect(exp.date).toBe("2026-07-02");
-    expect(exp.num).toBe("1021");
-    expect(exp.name).toBe("Napa Auto Parts");
-    expect(exp.memo).toBe("uncoded card charge");
-    expect(exp.amount).toBeCloseTo(123.45, 2);
-    expect(dep.amount).toBeCloseTo(-40, 2);
+  it("maps columns by title and parses amounts", () => {
+    const [exp, je] = normalizeAccountTransactions(GL, "Ask My Client");
+    expect(exp.date).toBe("2026-06-08");
+    expect(exp.name).toBe("ForgeMedia LLC");
+    expect(exp.amount).toBeCloseTo(59.95, 2);
+    expect(je.amount).toBeCloseTo(2565, 2);
   });
 
-  it("derives a stable dedupe key that changes with the transaction's fields", () => {
-    expect(txns[0].key).toBe("2026-07-02|Expense|1021|123.45|Napa Auto Parts");
-    // Re-normalizing the same report yields identical keys (idempotent import).
-    expect(normalizeTransactionList(REPORT)[0].key).toBe(txns[0].key);
+  it("matches a fully-qualified section header (Parent:Child)", () => {
+    const nested = {
+      ...GL,
+      Rows: { Row: [{ ...GL.Rows.Row[0], Header: { ColData: [{ value: "Other Expenses:Ask My Client" }] } }] },
+    };
+    expect(normalizeAccountTransactions(nested, "Ask My Client")).toHaveLength(2);
   });
 
-  it("never throws on garbage / empty input", () => {
-    expect(normalizeTransactionList(null)).toEqual([]);
-    expect(normalizeTransactionList("nonsense")).toEqual([]);
-    expect(normalizeTransactionList({ Rows: { Row: [] } })).toEqual([]);
+  it("derives a stable dedupe key and never throws on garbage", () => {
+    expect(normalizeAccountTransactions(GL, "Ask My Client")[0].key).toBe(
+      "2026-06-08|Expense||59.95|ForgeMedia LLC"
+    );
+    expect(normalizeAccountTransactions(null, "Ask My Client")).toEqual([]);
+    expect(normalizeAccountTransactions("nonsense")).toEqual([]);
+  });
+
+  it("without an account name, emits every data row (back-compat)", () => {
+    expect(normalizeAccountTransactions(GL)).toHaveLength(3); // both sections
   });
 });
