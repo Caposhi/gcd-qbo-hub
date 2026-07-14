@@ -213,11 +213,16 @@ export function normalizeRepairOrder(ro: TekRawRepairOrder): TekRepairOrder {
 export function normalizeEmployees(employees: TekRawEmployee[]): {
   technicians: TekTechnician[];
   serviceAdvisors: TekServiceAdvisor[];
+  /** id → display name for EVERY employee (any role, incl. deleted), so an RO's
+   *  writer/tech resolves to a real name even if their role isn't advisor/tech. */
+  nameById: Map<string, string>;
 } {
   const technicians: TekTechnician[] = [];
   const serviceAdvisors: TekServiceAdvisor[] = [];
+  const nameById = new Map<string, string>();
   for (const e of employees) {
     const name = `${str(e.firstName)} ${str(e.lastName)}`.trim();
+    if (name) nameById.set(String(e.id), name);
     const roleName = str(e.employeeRole?.name).toLowerCase();
     const active = !e.deletedDate;
     if (roleName.includes("advisor") || roleName.includes("writer")) {
@@ -228,7 +233,7 @@ export function normalizeEmployees(employees: TekRawEmployee[]): {
       technicians.push({ id: String(e.id), name, active });
     }
   }
-  return { technicians, serviceAdvisors };
+  return { technicians, serviceAdvisors, nameById };
 }
 
 export function normalizeVehicle(v: TekRawVehicle): TekVehicle {
@@ -292,7 +297,9 @@ export function computeTechUtilization(
   ros: TekRawRepairOrder[],
   technicians: TekTechnician[],
   period: TekPeriod,
-  options: TechUtilizationOptions = {}
+  options: TechUtilizationOptions = {},
+  /** Full employee roster (id → name) so any tech id resolves to a real name. */
+  rosterNameById?: Map<string, string>
 ): TekTechUtilization[] {
   const dailyCapacity = options.dailyCapacityHours ?? 8;
   const availableHours = round2(businessDaysInclusive(period.start, period.end) * dailyCapacity);
@@ -347,7 +354,7 @@ export function computeTechUtilization(
     const laborRevenue = centsToDollars(a.realizedLaborCents);
     out.push({
       technicianId,
-      technicianName: nameById.get(technicianId) ?? `Tech ${technicianId}`,
+      technicianName: rosterNameById?.get(technicianId) || nameById.get(technicianId) || `Tech ${technicianId}`,
       billedHours,
       availableHours,
       utilizationPct: pct(billedHours, availableHours),
@@ -401,7 +408,10 @@ export function computeRevenueByMake(
 
 export function computeAdvisorPerformance(
   ros: TekRawRepairOrder[],
-  advisors: TekServiceAdvisor[]
+  advisors: TekServiceAdvisor[],
+  /** Full employee roster (id → name) so a writer with a non-advisor role — or a
+   *  former advisor no longer on the current roster — still resolves to a name. */
+  rosterNameById?: Map<string, string>
 ): TekAdvisorPerformance[] {
   const nameById = new Map(advisors.map((a) => [a.id, a.name]));
   interface Acc {
@@ -431,7 +441,7 @@ export function computeAdvisorPerformance(
     const grossProfit = centsToDollars(a.grossProfitCents);
     out.push({
       advisorId,
-      advisorName: nameById.get(advisorId) ?? `Advisor ${advisorId}`,
+      advisorName: rosterNameById?.get(advisorId) || nameById.get(advisorId) || `Advisor ${advisorId}`,
       roCount: a.roCount,
       carCount: a.vehicles.size,
       totalSales,
@@ -523,7 +533,7 @@ export interface BuildOperationsInput {
  * detail the normalized shapes intentionally drop).
  */
 export function buildOperationsData(input: BuildOperationsInput): TekOperationsData {
-  const { technicians, serviceAdvisors } = normalizeEmployees(input.employees);
+  const { technicians, serviceAdvisors, nameById } = normalizeEmployees(input.employees);
   const vehicles = input.vehicles.map(normalizeVehicle);
   const liveRos = input.repairOrders.filter((ro) => !isDeleted(ro));
 
@@ -535,8 +545,8 @@ export function buildOperationsData(input: BuildOperationsInput): TekOperationsD
     vehicles,
     appointments: input.appointments.map(normalizeAppointment),
     kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null),
-    techUtilization: computeTechUtilization(input.repairOrders, technicians, input.period, input.utilization),
+    techUtilization: computeTechUtilization(input.repairOrders, technicians, input.period, input.utilization, nameById),
     revenueByMake: computeRevenueByMake(input.repairOrders, vehicles),
-    advisorPerformance: computeAdvisorPerformance(input.repairOrders, serviceAdvisors),
+    advisorPerformance: computeAdvisorPerformance(input.repairOrders, serviceAdvisors, nameById),
   };
 }
