@@ -141,7 +141,15 @@ export interface ActiveCredential {
 export async function getValidAccessToken(
   environment: QboEnvironment = currentEnvironment()
 ): Promise<ActiveCredential | null> {
-  const cred = await prisma.qboCredential.findFirst({ where: { environment } });
+  // A given environment can have more than one credential row (the unique key is
+  // [environment, realmId]), e.g. a stale row from an earlier connect to another
+  // company. Always use the MOST RECENTLY UPDATED one so a fresh reconnect wins —
+  // otherwise an unordered findFirst can return the stale row and its dead refresh
+  // token 400s even right after a successful reconnect.
+  const cred = await prisma.qboCredential.findFirst({
+    where: { environment },
+    orderBy: { updatedAt: "desc" },
+  });
   if (!cred) return null;
 
   const expiresAt = cred.accessTokenExpires.getTime();
@@ -183,7 +191,11 @@ export async function hasStoredCredential(
   environment: QboEnvironment = currentEnvironment()
 ): Promise<boolean> {
   const cred = await prisma.qboCredential
-    .findFirst({ where: { environment }, select: { refreshTokenExpires: true } })
+    .findFirst({
+      where: { environment },
+      orderBy: { updatedAt: "desc" }, // the freshest credential (matches getValidAccessToken)
+      select: { refreshTokenExpires: true },
+    })
     .catch(() => null);
   if (!cred) return false;
   return !cred.refreshTokenExpires || cred.refreshTokenExpires.getTime() > Date.now();
