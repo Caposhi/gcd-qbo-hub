@@ -17,6 +17,7 @@ import {
   ReceiptText,
   Wrench,
   Users,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { MODULES, type ModuleGroup } from "@/lib/modules/registry";
@@ -66,6 +67,15 @@ export function Sidebar({ user }: { user: { email?: string | null; role?: string
               <Link href="/" className={"nav-item" + (isActive("/") ? " active" : "")}>
                 <Home />
                 Home
+              </Link>
+            )}
+            {group === "Workspace" && user?.role === "owner_admin" && (
+              <Link
+                href="/system-health"
+                className={"nav-item" + (isActive("/system-health") ? " active" : "")}
+              >
+                <Activity />
+                System Health
               </Link>
             )}
             {items.map((m) => {
