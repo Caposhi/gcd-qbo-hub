@@ -5,14 +5,9 @@ import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
 import { askQuestionAction, importAskMyClientAction } from "./actions";
 import { askMyClientAccountName } from "@/lib/coworker/qbo";
+import { CoworkerBoard, type BoardQuestion } from "./CoworkerBoard";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_CLASS: Record<string, string> = {
-  open: "warn",
-  answered: "ok",
-  closed: "muted",
-};
 
 const STATUSES = ["open", "answered", "closed"] as const;
 
@@ -87,6 +82,7 @@ export default async function CoworkerPortalPage({
       where,
       orderBy: { createdAt: "desc" },
       take: 500,
+      include: { answers: { orderBy: { createdAt: "asc" } } },
     }),
     prisma.cwpQuestion.groupBy({
       by: ["status"],
@@ -97,6 +93,31 @@ export default async function CoworkerPortalPage({
 
   const countBy = (s: string) =>
     counts.find((c) => c.status === s)?._count._all ?? 0;
+
+  const canAnswer = can(user.role, "answer_coworker_questions");
+
+  // Serialize to plain, client-safe data (Dates → ISO strings, Decimal → number).
+  const boardQuestions: BoardQuestion[] = questions.map((q) => ({
+    id: q.id,
+    subject: q.subject,
+    body: q.body,
+    status: q.status,
+    askedByEmail: q.askedByEmail,
+    assignedEmail: q.assignedEmail,
+    source: q.source,
+    qboReference: q.qboReference,
+    relatedRowId: q.relatedRowId,
+    qboTxnDate: q.qboTxnDate,
+    qboTxnType: q.qboTxnType,
+    qboTxnName: q.qboTxnName,
+    createdAt: q.createdAt.toISOString(),
+    answers: q.answers.map((a) => ({
+      id: a.id,
+      body: a.body,
+      answeredByEmail: a.answeredByEmail,
+      createdAt: a.createdAt.toISOString(),
+    })),
+  }));
 
   return (
     <>
@@ -162,61 +183,16 @@ export default async function CoworkerPortalPage({
         </Link>
       </div>
 
-      <div className="table-wrap" style={{ marginTop: "16px" }}>
-        <table className="gcd">
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Source</th>
-              <th>Asked by</th>
-              <th>Assigned to</th>
-              <th>Status</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {questions.map((q) => (
-              <tr key={q.id}>
-                <td>
-                  <Link href={`/coworker-portal/${q.id}`}>{q.subject}</Link>
-                  {q.qboTxnDate && (
-                    <span className="card-subtitle" style={{ display: "block" }}>
-                      {q.qboTxnDate}
-                      {q.qboReference ? ` · ${q.qboReference}` : ""}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {q.source === "ask_my_client" ? (
-                    <span className="badge info">QBO</span>
-                  ) : (
-                    <span className="badge muted">manual</span>
-                  )}
-                </td>
-                <td>{q.askedByEmail}</td>
-                <td>{q.assignedEmail ?? <span className="muted">general pool</span>}</td>
-                <td>
-                  <span className={`badge ${STATUS_CLASS[q.status] ?? "muted"}`}>
-                    {q.status}
-                  </span>
-                </td>
-                <td>{q.createdAt.toISOString().slice(0, 10)}</td>
-              </tr>
-            ))}
-            {questions.length === 0 && (
-              <tr>
-                <td colSpan={6} className="muted">
-                  No questions match this filter.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <CoworkerBoard questions={boardQuestions} canAnswer={canAnswer} canClose={canAsk} />
 
-      {canAsk ? (
-        <div className="card" style={{ marginTop: "24px" }}>
-          <h3 className="card-title">Ask a question</h3>
+      {canAsk && (
+        <details className="card" style={{ marginTop: "24px" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, color: "var(--text-strong)" }}>
+            Ask a question
+          </summary>
+          <p className="card-subtitle" style={{ marginTop: "8px" }}>
+            Raise a question manually (not tied to an imported transaction).
+          </p>
           <form action={askQuestionAction}>
             <div className="grid" style={{ marginTop: "16px" }}>
               <div className="field">
@@ -247,12 +223,7 @@ export default async function CoworkerPortalPage({
               </button>
             </div>
           </form>
-        </div>
-      ) : (
-        <p className="card-subtitle" style={{ marginTop: "24px" }}>
-          You answer questions assigned to you — open one from the list above to
-          respond.
-        </p>
+        </details>
       )}
     </>
   );

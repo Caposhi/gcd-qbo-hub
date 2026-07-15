@@ -242,3 +242,21 @@ table.gcd th.num, table.gcd td.num { text-align:right; }
 
 /* keep a sane light default for any bare (unclassed) form control */
 input:not(.input), select:not(.input), textarea:not(.input) { color: var(--text-strong); }
+
+/* ==========================================================================
+   Coworker portal — master/detail board. Left: a scrollable, fully-clickable
+   list of transactions; right: the selected transaction's detail. Collapses to
+   a single stacked column on narrow screens.
+   ========================================================================== */
+.cwp-board { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.cwp-list { display: flex; flex-direction: column; gap: 10px; max-height: 72vh; overflow-y: auto; }
+.cwp-item { text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px; border: 1px solid var(--border-subtle); background: var(--surface-card);
+  border-radius: var(--radius-md); transition: border-color .12s, background .12s; }
+.cwp-item:hover { border-color: var(--powder-blue); }
+.cwp-item[data-active="true"] { border-color: var(--royal-blue); background: var(--powder-blue-100); }
+.cwp-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+@media (max-width: 720px) {
+  .cwp-board { grid-template-columns: 1fr; }
+  .cwp-list { max-height: none; }
+}
