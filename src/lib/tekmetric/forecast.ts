@@ -13,7 +13,8 @@
  * no randomness, no IO) so it is fully unit-testable; the cache read lives in the
  * history service.
  */
-import { linearRegression, predict, confidenceOf, type Confidence } from "@/lib/projections/regression/ols";
+/** Where the latest month sits relative to the metric's own history. */
+export type Standing = "below" | "typical" | "above";
 
 /** One historical month of the operational drivers we project. */
 export interface OpsMonth {
@@ -33,21 +34,30 @@ export interface OpsMonth {
 }
 
 export interface OpsTrend {
-  /** Fitted level at the most recent month (smoother than the raw last point). */
+  /** Robust "where we are now": the median of the last up-to-3 observed months. */
   current: number;
-  /** Relative month-over-month growth implied by the raw fit (slope / mean). */
-  monthlyGrowthPct: number;
   /**
-   * The growth actually used to project, DAMPED by fit confidence: a weak fit
-   * (near-zero R²) is indistinguishable from no trend, so we hold it flat (0)
-   * rather than compounding noise into a fake decline/climb; moderate fits are
-   * halved; strong fits pass through. Prevents a low-R² slope from producing a
-   * confident-looking monotonic trend.
+   * Month-over-month growth used to project, derived by comparing the median of
+   * an early window of history to the median of a recent window (a robust,
+   * outlier-resistant estimate of the drift) and spreading it across the months
+   * between them. Signed: positive climbs, negative declines, ~0 is genuinely
+   * flat. This is what makes the projection move with the shop's real pattern.
    */
-  effectiveMonthlyGrowthPct: number;
-  r2: number;
+  monthlyGrowthPct: number;
+  /** Mean of the metric across the (clean) history — the shop's own "typical". */
+  mean: number;
+  /** Standard deviation across history (0 when perfectly flat). */
+  std: number;
+  /**
+   * Where `current` sits versus the shop's own history, as a z-score band: more
+   * than half a standard deviation below the mean is "below", above is "above",
+   * within is "typical". This answers "is this level good/normal/low FOR US",
+   * which is what the baseline badge reports — it is NOT a statement about the
+   * trend's statistical confidence.
+   */
+  standing: Standing;
+  /** Months of history used. */
   n: number;
-  confidence: Confidence;
 }
 
 export interface OpsBaseline {
@@ -105,9 +115,6 @@ export function monthAfter(startIso: string, add: number): { start: string; labe
   return { start: `${year}-${mm}-01`, label: `${MONTHS[monthIdx]} ${year}` };
 }
 
-/** How much of the fitted slope to trust when projecting, by confidence tier. */
-const DAMP: Record<Confidence, number> = { strong: 1, moderate: 0.5, weak: 0 };
-
 /**
  * Flags a month whose figures can only come from a bad/partial data pull, not a
  * real month. At this shop labor carries no COGS, so a real gross margin can't
@@ -134,20 +141,61 @@ function robustCurrent(values: number[]): number {
   return Math.max(0, median(values.slice(-3)));
 }
 
+/** Arithmetic mean (0 for empty). */
+function mean(xs: number[]): number {
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+}
+
+/** Population standard deviation (0 for <2 points). */
+function stddev(xs: number[]): number {
+  if (xs.length < 2) return 0;
+  const m = mean(xs);
+  return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
+}
+
+/**
+ * Robust month-over-month growth: compare the MEDIAN of an early window to the
+ * MEDIAN of a recent window and spread the change across the months between the
+ * two window centres. Aggregating each end into a median (rather than reading the
+ * first/last point, or an instantaneous regression slope) is what finds the real
+ * pattern and shrugs off single-month spikes or dips — so the projection reflects
+ * the genuine multi-month drift instead of noise or one outlier. Returns 0 when
+ * there's too little history or the early level is non-positive.
+ */
+function robustGrowth(values: number[]): number {
+  const n = values.length;
+  if (n < 4) return 0;
+  const k = Math.max(3, Math.floor(n / 3)); // window size at each end
+  const early = median(values.slice(0, k));
+  const late = median(values.slice(-k));
+  const span = n - k; // months between the two window centroids
+  if (early <= 0 || span <= 0) return 0;
+  const g = Math.pow(late / early, 1 / span) - 1;
+  return Number.isFinite(g) ? g : 0;
+}
+
+/** Band `current` against the metric's own mean±½σ. */
+function standingOf(current: number, m: number, sd: number): Standing {
+  if (sd <= 0) return "typical";
+  const z = (current - m) / sd;
+  if (z >= 0.5) return "above";
+  if (z <= -0.5) return "below";
+  return "typical";
+}
+
 function deriveTrend(history: OpsMonth[], pick: (m: OpsMonth) => number): OpsTrend {
   const values = history.map(pick);
-  const points = values.map((y, i) => ({ x: i, y }));
-  const fit = linearRegression(points);
-  const monthlyGrowthPct = fit.meanY !== 0 ? fit.slope / fit.meanY : 0;
-  const confidence = confidenceOf(fit.r2, fit.n);
-  const effectiveMonthlyGrowthPct = monthlyGrowthPct * DAMP[confidence];
-  // Launch level: when we actually project a trend, start from the fitted line's
-  // latest point; when we hold flat (weak fit), anchor at the robust recent
-  // actual so the forecast reflects where the shop truly is — not a noisy fit's
-  // endpoint that an outlier could have dragged off.
-  const current =
-    effectiveMonthlyGrowthPct !== 0 ? Math.max(0, predict(fit, Math.max(0, values.length - 1))) : robustCurrent(values);
-  return { current, monthlyGrowthPct, effectiveMonthlyGrowthPct, r2: fit.r2, n: fit.n, confidence };
+  const m = mean(values);
+  const sd = stddev(values);
+  const current = robustCurrent(values);
+  return {
+    current,
+    monthlyGrowthPct: robustGrowth(values),
+    mean: m,
+    std: sd,
+    standing: standingOf(current, m, sd),
+    n: values.length,
+  };
 }
 
 /** Derive the operational baseline from trailing monthly history (oldest → newest). */
@@ -176,14 +224,14 @@ function clampGrowth(g: number): number {
 /** Project the operational drivers forward under a scenario. */
 export function projectOps(baseline: OpsBaseline, scenario: OpsScenario): OpsProjectionMonth[] {
   const horizon = Math.max(1, Math.min(24, Math.round(scenario.horizonMonths)));
-  // Default to the confidence-damped growth (a weak fit projects flat); an
-  // explicit scenario override always wins.
-  const roGrowth = clampGrowth(scenario.roMonthlyGrowthPct ?? baseline.roCount.effectiveMonthlyGrowthPct);
-  const aroGrowth = clampGrowth(scenario.aroMonthlyGrowthPct ?? baseline.aro.effectiveMonthlyGrowthPct);
-  const margin =
-    scenario.grossMarginPct !== undefined
-      ? Math.max(0, Math.min(100, scenario.grossMarginPct))
-      : Math.max(0, Math.min(100, baseline.grossMarginPct.current));
+  // Default to the robust derived growth so the projection tracks the shop's real
+  // pattern; an explicit scenario override always wins. A fixed margin override
+  // holds margin flat; otherwise margin drifts along its own derived trend too.
+  const roGrowth = clampGrowth(scenario.roMonthlyGrowthPct ?? baseline.roCount.monthlyGrowthPct);
+  const aroGrowth = clampGrowth(scenario.aroMonthlyGrowthPct ?? baseline.aro.monthlyGrowthPct);
+  const marginFixed = scenario.grossMarginPct !== undefined;
+  const marginGrowth = marginFixed ? 0 : clampGrowth(baseline.grossMarginPct.monthlyGrowthPct);
+  const marginBase = marginFixed ? (scenario.grossMarginPct as number) : baseline.grossMarginPct.current;
 
   const out: OpsProjectionMonth[] = [];
   for (let t = 1; t <= horizon; t++) {
@@ -193,8 +241,9 @@ export function projectOps(baseline: OpsBaseline, scenario: OpsScenario): OpsPro
     const roCount = Math.max(0, Math.round(baseline.roCount.current * Math.pow(1 + roGrowth, t)));
     const aro = Math.max(0, baseline.aro.current * Math.pow(1 + aroGrowth, t));
     const revenue = roCount * aro;
-    const grossProfit = (revenue * margin) / 100;
-    out.push({ monthIndex: t, start, label, roCount, aro, revenue, grossProfit, grossMarginPct: margin });
+    const grossMarginPct = Math.max(0, Math.min(100, marginBase * Math.pow(1 + marginGrowth, t)));
+    const grossProfit = (revenue * grossMarginPct) / 100;
+    out.push({ monthIndex: t, start, label, roCount, aro, revenue, grossProfit, grossMarginPct });
   }
   return out;
 }

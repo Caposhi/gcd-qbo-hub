@@ -16,8 +16,8 @@ import {
   projectOps,
   summarizeOpsProjection,
   type OpsScenario,
+  type Standing,
 } from "@/lib/tekmetric/forecast";
-import type { Confidence } from "@/lib/projections/regression/ols";
 import { money } from "../reporting/format";
 import { OpsForecastChart } from "./OpsForecastChart";
 
@@ -28,8 +28,11 @@ export interface OpsScenarioInput {
   margin?: string; // fixed gross-margin override, percent
 }
 
-function confBadge(c: Confidence): string {
-  return c === "strong" ? "ok" : c === "moderate" ? "warn" : "muted";
+/** Badge tone + label for where the latest month sits vs the shop's own history. */
+function standingBadge(s: Standing): { cls: string; label: string } {
+  if (s === "above") return { cls: "ok", label: "above avg" };
+  if (s === "below") return { cls: "warn", label: "below avg" };
+  return { cls: "info", label: "average" };
 }
 
 function num(v: string | undefined): number | undefined {
@@ -38,7 +41,14 @@ function num(v: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-const pctMo = (frac: number): string => `${(frac * 100).toFixed(1)}%/mo`;
+/** Signed month-over-month growth as "▲ 0.6%/mo" / "▼ 0.6%/mo" / "flat". */
+function trendLabel(frac: number): string {
+  const pct = frac * 100;
+  if (Math.abs(pct) < 0.05) return "flat trend";
+  return `${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(1)}%/mo`;
+}
+
+const pctMo = (frac: number): string => `${(frac * 100).toFixed(1)}`;
 
 export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
   const configured = isTekmetricConfigured();
@@ -83,59 +93,48 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
   const summary = summarizeOpsProjection(rows);
   const chartData = rows.map((r) => ({ label: r.label, revenue: r.revenue, grossProfit: r.grossProfit }));
 
-  // `held` = the forecast holds this driver flat: RO count / ARO whenever their
-  // fit is too weak to trust (effective growth 0); gross margin always (the
-  // projection uses the current level, it doesn't trend margin).
   const trends: Array<{
     label: string;
     t: (typeof baseline)["roCount"];
     fmt: (n: number) => string;
-    held: boolean;
   }> = [
-    {
-      label: "RO count / mo",
-      t: baseline.roCount,
-      fmt: (n) => Math.round(n).toLocaleString("en-US"),
-      held: baseline.roCount.effectiveMonthlyGrowthPct === 0,
-    },
-    { label: "ARO", t: baseline.aro, fmt: (n) => money(n), held: baseline.aro.effectiveMonthlyGrowthPct === 0 },
-    { label: "Gross margin", t: baseline.grossMarginPct, fmt: (n) => `${n.toFixed(1)}%`, held: true },
+    { label: "RO count / mo", t: baseline.roCount, fmt: (n) => Math.round(n).toLocaleString("en-US") },
+    { label: "ARO", t: baseline.aro, fmt: (n) => money(n) },
+    { label: "Gross margin", t: baseline.grossMarginPct, fmt: (n) => `${n.toFixed(1)}%` },
   ];
 
   return (
     <>
       <p className="page-desc">
         Forward operations scenarios derived from {hist.months} months of your own Tekmetric history
-        ({baseline.lastLabel} is the latest). Baseline trends are fitted by regression and shown as
-        editable defaults — override any lever below. Read-only; nothing is written to Tekmetric.
+        ({baseline.lastLabel} is the latest). Baseline trends are the drift measured across your history
+        and shown as editable defaults — override any lever below. Read-only; nothing is written to Tekmetric.
       </p>
 
       {/* Derived baseline trends */}
       <div className="card">
         <h3 className="card-title" style={{ marginTop: 0 }}>Derived baseline</h3>
         <p className="card-subtitle">
-          Fitted over {baseline.months} months. Confidence reflects fit quality (R²) and sample size.
+          Based on {baseline.months} months of history. The badge shows where the latest month sits versus
+          your own {baseline.months}-month average — not a confidence score. The trend is the month-over-month
+          drift used to project forward.
         </p>
         <div className="kpi-grid" style={{ marginTop: 12 }}>
-          {trends.map((row) => (
-            <div className="kpi-card" key={row.label}>
-              <div className="kpi-label">{row.label}</div>
-              <div className="kpi-value">{row.fmt(row.t.current)}</div>
-              <div className="kpi-foot">
-                <span className={`badge ${confBadge(row.t.confidence)}`}>{row.t.confidence}</span>
-                <span className="card-subtitle">
-                  {row.held ? (
-                    <>held flat · R² {row.t.r2.toFixed(2)}</>
-                  ) : (
-                    <>
-                      {row.t.effectiveMonthlyGrowthPct >= 0 ? "+" : ""}
-                      {pctMo(row.t.effectiveMonthlyGrowthPct)} · R² {row.t.r2.toFixed(2)}
-                    </>
-                  )}
-                </span>
+          {trends.map((row) => {
+            const badge = standingBadge(row.t.standing);
+            return (
+              <div className="kpi-card" key={row.label}>
+                <div className="kpi-label">{row.label}</div>
+                <div className="kpi-value">{row.fmt(row.t.current)}</div>
+                <div className="kpi-foot">
+                  <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                  <span className="card-subtitle">
+                    {trendLabel(row.t.monthlyGrowthPct)} · avg {row.fmt(row.t.mean)}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -144,8 +143,8 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
         <input type="hidden" name="tab" value="ops" />
         <h3 className="card-title" style={{ marginTop: 0 }}>Scenario</h3>
         <p className="card-subtitle">
-          Leave a field blank to use the derived trend. Weak-fit trends (low R²) are held flat rather than
-          extrapolated — enter a rate to project a deliberate trend.
+          Leave a field blank to use the derived trend (the drift from your own history). Enter a rate to
+          override it with a deliberate assumption.
         </p>
         <div className="grid" style={{ marginTop: 12 }}>
           <div className="field">
@@ -164,7 +163,7 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
               type="number"
               step="0.1"
               defaultValue={sp.aro ?? ""}
-              placeholder={(baseline.aro.effectiveMonthlyGrowthPct * 100).toFixed(1)}
+              placeholder={pctMo(baseline.aro.monthlyGrowthPct)}
             />
           </div>
           <div className="field">
@@ -175,7 +174,7 @@ export async function OpsForecastPanel({ sp }: { sp: OpsScenarioInput }) {
               type="number"
               step="0.1"
               defaultValue={sp.ro ?? ""}
-              placeholder={(baseline.roCount.effectiveMonthlyGrowthPct * 100).toFixed(1)}
+              placeholder={pctMo(baseline.roCount.monthlyGrowthPct)}
             />
           </div>
           <div className="field">
