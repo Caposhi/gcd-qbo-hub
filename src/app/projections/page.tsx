@@ -29,10 +29,11 @@ import { ProjectionsPanel } from "./v2/ProjectionsPanel";
 import { ScenariosPanel } from "./ScenariosPanel";
 import { AiCouncilPanel } from "./ai/AiCouncilPanel";
 import { OpsForecastPanel } from "./ops/OpsForecastPanel";
+import { OpsHistoryPanel } from "./ops/OpsHistoryPanel";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "reporting" | "projections" | "scenarios" | "ops" | "council";
+type Tab = "reporting" | "projections" | "scenarios" | "ops" | "opshistory" | "council";
 
 interface SP {
   tab?: string;
@@ -87,9 +88,11 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
         ? "projections"
         : requested === "ops" && canViewOps
           ? "ops"
-          : requested === "council" && canViewCouncil
-            ? "council"
-            : "reporting";
+          : requested === "opshistory" && canViewOps
+            ? "opshistory"
+            : requested === "council" && canViewCouncil
+              ? "council"
+              : "reporting";
   const { filters, state } = parseFilters(searchParams);
   const canRefresh = can(user.role, "view_projections");
 
@@ -115,6 +118,11 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
         {canViewOps && (
           <TabLink tab="ops" active={tab === "ops"}>
             Ops forecast
+          </TabLink>
+        )}
+        {canViewOps && (
+          <TabLink tab="opshistory" active={tab === "opshistory"}>
+            Ops history
           </TabLink>
         )}
         {canViewCouncil && (
@@ -143,6 +151,7 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
           }}
         />
       )}
+      {tab === "opshistory" && canViewOps && <OpsHistoryPanel />}
       {tab === "council" && canViewCouncil && (
         <AiCouncilPanel user={user} selectedRunId={searchParams.run} />
       )}
