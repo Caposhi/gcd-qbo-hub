@@ -25,7 +25,11 @@ export default async function RowDetailPage({ params }: { params: { id: string }
   });
   if (!row) return notFound();
 
-  const changedEvent = row.events.find((e) => e.eventType === "changed_after_posting");
+  // Cell-change history: every edit detected across daily syncs (§11) — both
+  // the per-sync `row_changed` events and any `changed_after_posting` alert.
+  const changeEvents = row.events.filter(
+    (e) => e.eventType === "row_changed" || e.eventType === "changed_after_posting"
+  );
 
   return (
     <>
@@ -85,12 +89,52 @@ export default async function RowDetailPage({ params }: { params: { id: string }
         )}
       </div>
 
-      {changedEvent?.diffJson != null && (
+      {changeEvents.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <h3 className="card-title" style={{ marginBottom: 12 }}>Diff (original → current)</h3>
-          <pre style={{ margin: 0, overflowX: "auto", fontSize: 12.5, background: "var(--gray-50)", padding: 14, borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
-            {JSON.stringify((changedEvent.diffJson as { diff?: unknown }).diff ?? changedEvent.diffJson, null, 2)}
-          </pre>
+          <h3 className="card-title" style={{ marginBottom: 4 }}>Change history</h3>
+          <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 14 }}>
+            Cell edits detected across daily syncs. QBO is never auto-edited in response — these are audit signals only.
+          </p>
+          <div style={{ display: "grid", gap: 14 }}>
+            {changeEvents.map((e) => {
+              const diffs = extractDiffs(e.diffJson);
+              const posted = e.eventType === "changed_after_posting";
+              return (
+                <div
+                  key={e.id}
+                  style={{
+                    borderLeft: `3px solid ${posted ? "var(--danger, #c0392b)" : "var(--royal-blue, #2b5fd0)"}`,
+                    paddingLeft: 12,
+                  }}
+                >
+                  <p className="card-subtitle" style={{ margin: "0 0 6px" }}>
+                    <span className={`badge ${posted ? "danger" : "muted"}`}>
+                      {posted ? "changed after posting" : "edited"}
+                    </span>{" "}
+                    {e.createdAt.toISOString()}
+                  </p>
+                  {diffs.length > 0 ? (
+                    <table className="gcd" style={{ fontSize: 13 }}>
+                      <thead>
+                        <tr><th>Field</th><th>Was</th><th>Now</th></tr>
+                      </thead>
+                      <tbody>
+                        {diffs.map((d, i) => (
+                          <tr key={`${e.id}-${i}`}>
+                            <td>{d.field}</td>
+                            <td style={{ color: "var(--text-muted, #777)" }}>{renderVal(d.oldValue)}</td>
+                            <td style={{ fontWeight: 600 }}>{renderVal(d.newValue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="card-subtitle" style={{ margin: 0 }}>{e.eventMessage}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -145,4 +189,31 @@ export default async function RowDetailPage({ params }: { params: { id: string }
 function fmt(v: unknown): string {
   if (v === null || v === undefined) return "";
   return `$${Number(v).toFixed(2)}`;
+}
+
+interface FieldDiff {
+  field: string;
+  oldValue: unknown;
+  newValue: unknown;
+}
+
+/**
+ * Normalize a RowEvent.diffJson into a flat list of field diffs. `row_changed`
+ * events store the array directly; `changed_after_posting` events wrap it under
+ * a `diff` key.
+ */
+function extractDiffs(diffJson: unknown): FieldDiff[] {
+  if (!diffJson) return [];
+  const raw = Array.isArray(diffJson)
+    ? diffJson
+    : (diffJson as { diff?: unknown }).diff;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (d): d is FieldDiff => !!d && typeof d === "object" && "field" in d
+  );
+}
+
+function renderVal(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  return String(v);
 }

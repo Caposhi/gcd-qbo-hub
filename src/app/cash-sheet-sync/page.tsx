@@ -21,13 +21,23 @@ export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
     getQboEnvironment(),
+    // Latest cell edits detected across daily syncs (§11), newest first, with a
+    // link back to each row's full change history.
+    prisma.rowEvent.findMany({
+      where: { eventType: "row_changed" },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      include: { sheetRow: { select: { id: true, tabName: true, rowNumberLastSeen: true } } },
+    }),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
+  const changedSinceLastSync =
+    Number((lastRun?.summaryJson as { rowsChangedSinceLastSync?: number } | null)?.rowsChangedSinceLastSync ?? 0);
 
   return (
     <>
@@ -80,6 +90,7 @@ export default async function OverviewPage() {
           <StatCard label="Posted" n={lastRun?.rowsPosted ?? 0} />
           <StatCard label="Skipped" n={lastRun?.rowsSkipped ?? 0} />
           <StatCard label="Errors" n={lastRun?.rowsError ?? 0} sev="danger" />
+          <StatCard label="Edited since last sync" n={changedSinceLastSync} sev="warn" />
         </div>
       </div>
 
@@ -93,6 +104,45 @@ export default async function OverviewPage() {
         <StatCard label="Removed after posting" n={counts[RowStatus.RemovedFromSheetAfterPosting] ?? 0} sev="danger" />
         <StatCard label="Audit-only (INV)" n={counts[RowStatus.AuditOnly] ?? 0} />
         <StatCard label="Awaiting QBO match" n={counts[RowStatus.AwaitingQboMatch] ?? 0} />
+      </div>
+
+      <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Recent sheet edits</h2>
+      <p className="page-desc" style={{ marginTop: 0 }}>
+        Cell changes detected between daily syncs. Click a row to see its full change history (was → now).
+      </p>
+      <div className="table-wrap" style={{ marginBottom: 8 }}>
+        <table className="gcd">
+          <thead>
+            <tr><th>When</th><th>Row</th><th>Fields changed</th></tr>
+          </thead>
+          <tbody>
+            {recentChanges.map((e) => (
+              <tr key={e.id}>
+                <td>{e.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
+                <td>
+                  {e.sheetRow ? (
+                    <Link href={`/cash-sheet-sync/rows/${e.sheetRow.id}`}>
+                      {e.sheetRow.tabName} · row {e.sheetRow.rowNumberLastSeen}
+                    </Link>
+                  ) : (
+                    "(row removed)"
+                  )}
+                </td>
+                <td className="card-subtitle" style={{ margin: 0 }}>
+                  {changedFields(e.diffJson) || e.eventMessage}
+                </td>
+              </tr>
+            ))}
+            {recentChanges.length === 0 && (
+              <tr>
+                <td colSpan={3} className="card-subtitle">
+                  No cell edits detected yet. When someone changes a tracked row in the workbook, the next daily
+                  sync flags it here.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Manual actions</h2>
@@ -134,6 +184,15 @@ export default async function OverviewPage() {
       )}
     </>
   );
+}
+
+/** Summarize a row_changed diffJson (array of {field}) into a field-name list. */
+function changedFields(diffJson: unknown): string {
+  if (!Array.isArray(diffJson)) return "";
+  return diffJson
+    .map((d) => (d && typeof d === "object" && "field" in d ? String((d as { field: unknown }).field) : ""))
+    .filter(Boolean)
+    .join(", ");
 }
 
 /** Stat tile: count + a severity badge only when the count is non-zero (calm at 0). */
