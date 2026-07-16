@@ -14,6 +14,31 @@ import { redirect } from "next/navigation";
 import { requirePermission } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { importAskMyClient } from "@/lib/coworker/import-service";
+import { sendEmail } from "@/lib/email/sendgrid";
+
+/**
+ * Best-effort "you've been assigned a question" email. Never throws — a mail
+ * failure must not abort creating the question (mirrors §17). Only fires when the
+ * question is directed at a specific coworker (not the general pool).
+ */
+async function notifyAssignee(opts: {
+  to: string;
+  subject: string;
+  askedByEmail: string;
+  body: string;
+}): Promise<void> {
+  const base = (process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
+  const link = base ? `${base}/coworker-portal` : "the GCD QBO Hub coworker portal";
+  const text =
+    `${opts.askedByEmail} assigned you a question in the GCD QBO Hub.\n\n` +
+    `Subject: ${opts.subject}\n\n${opts.body}\n\n` +
+    `Answer it here: ${link}`;
+  try {
+    await sendEmail({ to: opts.to, subject: `GCD QBO Hub — question for you: ${opts.subject}`, text });
+  } catch {
+    // swallow — the question is already saved; delivery is best-effort
+  }
+}
 
 export async function askQuestionAction(formData: FormData) {
   const user = await requirePermission("ask_coworker_questions");
@@ -34,6 +59,12 @@ export async function askQuestionAction(formData: FormData) {
       status: "open",
     },
   });
+
+  // Let the assigned coworker know (general-pool questions email no one).
+  if (assignedEmail) {
+    await notifyAssignee({ to: assignedEmail, subject, askedByEmail: user.email, body });
+  }
+
   revalidatePath("/coworker-portal");
 }
 

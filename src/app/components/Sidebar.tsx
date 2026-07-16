@@ -17,6 +17,7 @@ import {
   ReceiptText,
   Wrench,
   Users,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { MODULES, type ModuleGroup } from "@/lib/modules/registry";
@@ -42,7 +43,13 @@ function initials(email?: string | null): string {
   return chars.toUpperCase();
 }
 
-export function Sidebar({ user }: { user: { email?: string | null; role?: string } | null }) {
+export function Sidebar({
+  user,
+  coworkerOpenCount = 0,
+}: {
+  user: { email?: string | null; role?: string } | null;
+  coworkerOpenCount?: number;
+}) {
   const pathname = usePathname() || "/";
   const isActive = (basePath: string) =>
     basePath === "/" ? pathname === "/" : pathname === basePath || pathname.startsWith(basePath + "/");
@@ -68,8 +75,19 @@ export function Sidebar({ user }: { user: { email?: string | null; role?: string
                 Home
               </Link>
             )}
+            {group === "Workspace" && user?.role === "owner_admin" && (
+              <Link
+                href="/system-health"
+                className={"nav-item" + (isActive("/system-health") ? " active" : "")}
+              >
+                <Activity />
+                System Health
+              </Link>
+            )}
             {items.map((m) => {
               const Icon = ICONS[m.lucide] ?? Home;
+              const badge =
+                m.id === "coworker-portal" && coworkerOpenCount > 0 ? coworkerOpenCount : null;
               return (
                 <Link
                   key={m.id}
@@ -78,6 +96,11 @@ export function Sidebar({ user }: { user: { email?: string | null; role?: string
                 >
                   <Icon />
                   {m.name}
+                  {badge !== null && (
+                    <span className="badge warn nav-count" style={{ marginLeft: "auto" }}>
+                      {badge > 99 ? "99+" : badge}
+                    </span>
+                  )}
                 </Link>
               );
             })}

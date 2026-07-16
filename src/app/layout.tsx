@@ -8,6 +8,28 @@ import { AiPal } from "./components/AiPal";
 import { getSessionUser } from "@/lib/auth/session";
 import { getQboEnvironment } from "@/lib/config-store";
 import { hasStoredCredential } from "@/lib/qbo/oauth";
+import { prisma } from "@/lib/db";
+import { can, type Role } from "@/lib/auth/roles";
+
+/**
+ * Count the open coworker-portal questions this user would act on — coworkers see
+ * their own + the general pool; owners/reviewers see all. Drives the sidebar
+ * badge. Never throws on the layout.
+ */
+async function coworkerOpenCount(
+  user: { email?: string | null; role?: string } | null
+): Promise<number> {
+  if (!user || !can(user.role as Role | undefined, "view_coworker_portal")) return 0;
+  const scope =
+    user.role === "coworker"
+      ? { OR: [{ assignedEmail: user.email ?? "" }, { assignedEmail: null }] }
+      : {};
+  try {
+    return await prisma.cwpQuestion.count({ where: { status: "open", ...scope } });
+  } catch {
+    return 0;
+  }
+}
 
 export const metadata: Metadata = {
   title: "GCD QBO Hub",
@@ -33,13 +55,14 @@ async function resolveEnv(): Promise<EnvInfo> {
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const [user, env] = await Promise.all([getSessionUser(), resolveEnv()]);
+  const cwpOpen = await coworkerOpenCount(user);
 
   return (
     <html lang="en">
       <body>
         <Providers>
           <div className="app-shell">
-            <Sidebar user={user} />
+            <Sidebar user={user} coworkerOpenCount={cwpOpen} />
             <div className="main">
               <TopBar env={env} />
               <div className="content">

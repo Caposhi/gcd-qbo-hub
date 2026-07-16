@@ -20,6 +20,8 @@ import { RowStatus } from "@/lib/cashsheet/status";
 import { getRolloutStage } from "@/lib/config-store";
 import { readOperationsSnapshot } from "@/lib/tekmetric/snapshot";
 import { presetRange, shopToday, DEFAULT_PRESET, DEFAULT_COMPARISON } from "@/lib/tekmetric/periods";
+import { loadOpsHistory } from "@/lib/tekmetric/history-service";
+import { deriveOpsBaseline, looksLikePartialMonth } from "@/lib/tekmetric/forecast";
 
 export type PalTone = "good" | "watch" | "bad" | "info";
 export interface PalInsight {
@@ -42,6 +44,8 @@ export async function buildModuleInsights(moduleId: string): Promise<PalInsight[
     switch (moduleId) {
       case "cash-sheet-sync":
         return await cashSheetInsights();
+      case "projections":
+        return await projectionsInsights();
       case "tekmetric":
         return await tekmetricInsights();
       case "coworker-portal":
@@ -109,6 +113,73 @@ async function cashSheetInsights(): Promise<PalInsight[]> {
       prompt: `What does the ${stage} rollout stage do, and what's the next stage?`,
     });
   }
+  return rank(out);
+}
+
+/**
+ * Ops-forecast signals for the Financial Projections module, read from the
+ * cached Tekmetric history only (no network). Surfaces data-quality problems
+ * (a partial import that's being excluded), the derived revenue/margin drift,
+ * and where the latest month sits versus the shop's own average.
+ */
+async function projectionsInsights(): Promise<PalInsight[]> {
+  const hist = await loadOpsHistory(shopToday(), 24).catch(() => null);
+  if (!hist || !hist.connected) return [];
+
+  const history = hist.history;
+  const base = deriveOpsBaseline(history);
+  const out: PalInsight[] = [];
+
+  // Data quality first — a partial/corrupt month excluded from the baseline.
+  const suspect = history.filter((m) =>
+    looksLikePartialMonth({ roCount: m.roCount, grossMarginPct: m.grossMarginPct, aro: m.aro })
+  );
+  if (suspect.length > 0) {
+    const labels = suspect.map((m) => m.label).join(", ");
+    out.push({
+      tone: "bad",
+      text: `${suspect.length} ${plural(suspect.length, "month")} (${labels}) look like a partial import and ${plural(suspect.length, "is", "are")} excluded from the forecast. Re-run the Tekmetric backfill.`,
+      prompt: `Why ${plural(suspect.length, "is", "are")} ${labels} flagged as a partial import, and how do I fix ${plural(suspect.length, "it", "them")}?`,
+    });
+  }
+
+  // Combined revenue drift = RO-count growth compounded with ARO growth.
+  const revGrowth = (1 + base.roCount.monthlyGrowthPct) * (1 + base.aro.monthlyGrowthPct) - 1;
+  if (Math.abs(revGrowth) * 100 >= 0.3) {
+    const up = revGrowth >= 0;
+    out.push({
+      tone: up ? "good" : "watch",
+      text: `Projected revenue is trending ${up ? "up" : "down"} ~${Math.abs(revGrowth * 100).toFixed(1)}%/mo based on your last ${base.months} months.`,
+      prompt: "What's driving the revenue trend in the ops forecast — RO count or average ticket?",
+    });
+  }
+
+  // Where the latest ARO sits versus the shop's own history.
+  if (base.aro.standing === "below") {
+    out.push({
+      tone: "watch",
+      text: `Average ticket (${money(base.aro.current)}) is running below your ${base.months}-month average of ${money(base.aro.mean)}.`,
+      prompt: "Why is our average repair order below our historical average, and which makes or advisors are dragging it?",
+    });
+  } else if (base.aro.standing === "above") {
+    out.push({
+      tone: "good",
+      text: `Average ticket (${money(base.aro.current)}) is above your ${base.months}-month average of ${money(base.aro.mean)}.`,
+      prompt: "What's lifting our average repair order above its historical average?",
+    });
+  }
+
+  // Margin drift.
+  const mG = base.grossMarginPct.monthlyGrowthPct;
+  if (Math.abs(mG) * 100 >= 0.3) {
+    const up = mG >= 0;
+    out.push({
+      tone: "info",
+      text: `Gross margin is trending ${up ? "up" : "down"} ~${Math.abs(mG * 100).toFixed(1)}%/mo (now ${base.grossMarginPct.current.toFixed(1)}%).`,
+      prompt: "What's moving our gross margin in the ops forecast?",
+    });
+  }
+
   return rank(out);
 }
 
