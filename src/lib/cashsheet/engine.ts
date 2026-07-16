@@ -61,6 +61,8 @@ export interface RunSummary {
   duplicateRowIds: number;
   changedAfterPosting: number;
   removedAfterPosting: number;
+  /** Rows whose cell values differ from the previous daily sync (§11). */
+  rowsChangedSinceLastSync: number;
   tabsScanned: string[];
 }
 
@@ -112,6 +114,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     duplicateRowIds: 0,
     changedAfterPosting: 0,
     removedAfterPosting: 0,
+    rowsChangedSinceLastSync: 0,
     tabsScanned: [],
   };
 
@@ -396,6 +399,34 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   let status: string = existing?.status ?? RowStatus.New;
   const wasPosted = existing ? isAlreadyPosted(existing.qboTransactionId) : false;
 
+  // Universal per-sync change tracking (§11). Independent of posting state:
+  // compare this row's cells against the snapshot captured on the LAST sync and,
+  // if any cell differs, record a durable `row_changed` event with the full
+  // before/after snapshot and per-field diff. This is edge-triggered — it fires
+  // once per actual edit (next sync's baseline is the new value), so a row that
+  // is edited and then left alone is logged exactly once. It gives every tracked
+  // row an auditable change history in the hub, whether or not it has been posted
+  // to QBO. (Posted rows additionally raise the higher-severity, emailed
+  // changed_after_posting alert below, which compares against the frozen posted
+  // snapshot rather than the previous sync.)
+  if (existing?.currentSnapshotJson) {
+    const changeDiffs = diffSnapshots(
+      existing.currentSnapshotJson as Record<string, unknown>,
+      s.snapshot
+    );
+    if (changeDiffs.length > 0) {
+      await recordRowChange(
+        ctx.run.id,
+        existing.id,
+        `Row edited since last sync — ${changeDiffs.map((d) => d.field).join(", ")}`,
+        existing.currentSnapshotJson,
+        s.snapshot,
+        changeDiffs
+      );
+      ctx.summary.rowsChangedSinceLastSync++;
+    }
+  }
+
   const baseData = {
     spreadsheetId: s.snapshot.spreadsheetId as string,
     sheetGid: s.sheetGid,
@@ -669,6 +700,33 @@ async function recordEvent(
   });
 }
 
+/**
+ * Append a `row_changed` audit event for a cell edit detected between two daily
+ * syncs (§11). Unlike recordEvent it fills the RowEvent before/after columns so
+ * the hub can render a full "was → now" per-field diff for the row's history.
+ * Append-only; never updated or deleted.
+ */
+async function recordRowChange(
+  syncRunId: string,
+  sheetRowId: string,
+  message: string,
+  before: unknown,
+  after: unknown,
+  diff: unknown
+) {
+  await prisma.rowEvent.create({
+    data: {
+      syncRunId,
+      sheetRowId,
+      eventType: "row_changed",
+      eventMessage: message,
+      beforeJson: (before ?? undefined) as Prisma.InputJsonValue | undefined,
+      afterJson: (after ?? undefined) as Prisma.InputJsonValue | undefined,
+      diffJson: (diff ?? undefined) as Prisma.InputJsonValue | undefined,
+    },
+  });
+}
+
 async function failRun(runId: string, message: string) {
   await prisma.syncRun.update({
     where: { id: runId },
@@ -720,6 +778,7 @@ async function sendDailySummary(summary: RunSummary) {
     `Duplicate row ids: ${summary.duplicateRowIds}`,
     `Changed after post:${summary.changedAfterPosting}`,
     `Removed after post:${summary.removedAfterPosting}`,
+    `Edited since last sync:${summary.rowsChangedSinceLastSync}`,
     "",
     appUrl ? `Dashboard: ${appUrl}/cash-sheet-sync` : "",
   ]
