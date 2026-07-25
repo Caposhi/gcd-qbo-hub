@@ -119,8 +119,11 @@ export async function runCouncil(opts: RunCouncilOptions): Promise<RunCouncilRes
     if (opts.kind === "monthly" && isTranscriptsConfigured()) {
       try {
         await refreshTranscriptInsights({ start: month.start, end: month.end });
-      } catch {
-        /* ignore — transcript insights are optional context */
+      } catch (err) {
+        // Transcript insights are optional context — never block the council —
+        // but log so a misconfigured secret/URL is visible in Render logs
+        // instead of silently leaving "Call transcripts" uncached forever.
+        console.error("[ai-council] transcript refresh failed:", err instanceof Error ? err.message : err);
       }
     }
 
