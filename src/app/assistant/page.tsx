@@ -93,6 +93,7 @@ export default async function AssistantPage({ searchParams }: { searchParams: { 
         </div>
 
         <AssistantChat
+          key={active?.id ?? "new"}
           initialConversationId={active?.id ?? null}
           initialMessages={initialMessages}
           initialPrompt={searchParams.q ?? null}
