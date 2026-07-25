@@ -128,7 +128,10 @@ async function checkTekmetric(now: Date): Promise<HealthCheck> {
 }
 
 async function checkTranscripts(now: Date): Promise<HealthCheck> {
-  const base = { key: "transcripts", label: "Call transcripts", href: "/tekmetric" };
+  // No dedicated transcripts page yet (the aggregated insights only feed the AI
+  // council's monthly report) — point at that report instead of the unrelated
+  // Tekmetric page.
+  const base = { key: "transcripts", label: "Call transcripts", href: "/projections?tab=council" };
   if (!isTranscriptsConfigured()) return { ...base, status: "idle", headline: "Not configured." };
   const snap = await prisma.transcriptSnapshot.findFirst({
     orderBy: { fetchedAt: "desc" },
