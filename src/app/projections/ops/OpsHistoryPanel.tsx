@@ -112,6 +112,12 @@ export async function OpsHistoryPanel({
   // Newest month first in the table — how people read recent history.
   const rows = [...history].reverse();
 
+  // Car count isn't on the End of Day Report, but we already compute it
+  // independently (VIN-matched against live Tekmetric data) for every month
+  // in `history` — pre-fill the correction form with that existing figure
+  // instead of leaving it blank, while still letting the owner override it.
+  const draftCarCount = draft ? history.find((m) => m.start === draft.start)?.carCount : undefined;
+
   return (
     <>
       <p className="page-desc">
@@ -259,8 +265,16 @@ export async function OpsHistoryPanel({
                   to report Profit + report Labor Cost (labor treated as free, same as before this month is corrected) ={" "}
                 </>
               )}
-              {money(Number(draft.grossProfit) || 0)}. Check the pre-filled figures below against the report image before saving —{" "}
-              <strong>car count still needs to be entered by hand</strong> (it isn&apos;t on the report).
+              {money(Number(draft.grossProfit) || 0)}. Check the pre-filled figures below against the report image before saving.
+              Revenue below is RO count × ARO, not the report&apos;s Net Sales directly — expect a penny-level rounding gap.{" "}
+              {draftCarCount !== undefined ? (
+                <>Car count is pre-filled from what we already compute for this month (VIN-matched, not from the report) — double-check it.</>
+              ) : (
+                <>
+                  <strong>Car count needs to be entered by hand</strong> — it isn&apos;t on the report, and we don&apos;t have an
+                  existing figure for this month to suggest.
+                </>
+              )}
             </div>
           )}
 
@@ -288,7 +302,15 @@ export async function OpsHistoryPanel({
               </label>
               <label>
                 Car count
-                <input type="number" name="carCount" className="input" min={0} step={1} required />
+                <input
+                  type="number"
+                  name="carCount"
+                  className="input"
+                  min={0}
+                  step={1}
+                  required
+                  defaultValue={draftCarCount !== undefined ? Math.round(draftCarCount) : undefined}
+                />
               </label>
               <label>
                 ARO ($)
