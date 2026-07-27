@@ -121,8 +121,13 @@ export function mapAppointmentStatus(code: string | null | undefined): TekAppoin
 // Cost / revenue primitives on RAW repair orders (cents in, cents out)
 // ===========================================================================
 
-/** Parts cost across all of an RO's jobs, in cents. */
-function roPartsCostCents(ro: TekRawRepairOrder): number {
+/**
+ * Parts cost across all of an RO's jobs, in cents. Exported (alongside the
+ * other cost/revenue primitives below) so a diagnostic script can print the
+ * exact same per-RO breakdown production computes, rather than a
+ * reimplementation that could subtly drift from it.
+ */
+export function roPartsCostCents(ro: TekRawRepairOrder): number {
   let c = 0;
   for (const job of ro.jobs ?? []) {
     for (const p of job.parts ?? []) {
@@ -133,7 +138,7 @@ function roPartsCostCents(ro: TekRawRepairOrder): number {
 }
 
 /** Sublet cost for an RO, in cents. */
-function roSubletCostCents(ro: TekRawRepairOrder): number {
+export function roSubletCostCents(ro: TekRawRepairOrder): number {
   return (ro.sublets ?? []).reduce((s, sub) => s + num(sub.cost), 0);
 }
 
@@ -143,12 +148,12 @@ function jobPartsCostCents(job: TekRawJob): number {
 }
 
 /** Pre-tax revenue for an RO, in cents (grand total minus tax). */
-function roRevenuePreTaxCents(ro: TekRawRepairOrder): number {
+export function roRevenuePreTaxCents(ro: TekRawRepairOrder): number {
   return num(ro.totalSales) - num(ro.taxes);
 }
 
 /** Gross profit for an RO, in cents (pre-tax revenue − parts & sublet cost). */
-function roGrossProfitCents(ro: TekRawRepairOrder): number {
+export function roGrossProfitCents(ro: TekRawRepairOrder): number {
   return roRevenuePreTaxCents(ro) - roPartsCostCents(ro) - roSubletCostCents(ro);
 }
 
@@ -158,7 +163,7 @@ function jobGrossProfitCents(job: TekRawJob): number {
 }
 
 /** True when an RO should be excluded from metrics (deleted/void). */
-function isDeleted(ro: TekRawRepairOrder): boolean {
+export function isDeleted(ro: TekRawRepairOrder): boolean {
   return Boolean(ro.deletedDate) || mapRoStatus(ro.repairOrderStatus?.id) === "void";
 }
 

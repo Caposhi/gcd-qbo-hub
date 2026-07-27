@@ -25,6 +25,7 @@ import {
 } from "./client";
 import { buildOperationsData } from "./normalize";
 import { looksLikePartialMonth } from "./forecast";
+import { readMonthOverride } from "./overrides";
 import type { TekPeriod } from "./types";
 import type { TekOperationsData } from "./types";
 
@@ -247,6 +248,8 @@ export interface OpsKpiValues {
   aro: number;
   grossProfit: number;
   grossMarginPct: number;
+  /** True when these values come from a manual override, not the raw Tekmetric pull. */
+  overridden?: boolean;
 }
 
 /**
@@ -257,8 +260,25 @@ export interface OpsKpiValues {
  * so fully parsing each (via `parseOperationsData`) blows memory. This pulls just
  * the five headline KPIs and lets the big blob be GC'd, so callers can loop over
  * many months cheaply. Returns null when the month isn't cached.
+ *
+ * A manual override (`tek_month_overrides`) for the month, if present, wins
+ * over the cached pull — this is the single choke point every caller (Ops
+ * History, the Ops forecast baseline) reads through, so a correction needs no
+ * separate "recalculate" step.
  */
 export async function readOperationsKpis(period: TekPeriod, comparison: string): Promise<OpsKpiValues | null> {
+  const override = await readMonthOverride(period.start);
+  if (override) {
+    return {
+      carCount: override.carCount,
+      roCount: override.roCount,
+      aro: override.aro,
+      grossProfit: override.grossProfit,
+      grossMarginPct: override.grossMarginPct,
+      overridden: true,
+    };
+  }
+
   const row = await prisma.tekSnapshot.findUnique({
     where: {
       entity_periodStart_periodEnd_comparison: {
