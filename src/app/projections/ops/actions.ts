@@ -83,6 +83,7 @@ export async function extractTekmetricReportAction(formData: FormData) {
   const file = formData.get("reportFile");
   if (!file || typeof file !== "object" || !("arrayBuffer" in file) || (file as File).size === 0) {
     redirect(`${OPS_PATH}&error=${encodeURIComponent("Choose an image or PDF of the End of Day Report first.")}`);
+    return;
   }
   const f = file as File;
 
@@ -91,60 +92,60 @@ export async function extractTekmetricReportAction(formData: FormData) {
   );
   if (!isReportReaderConfigured()) {
     redirect(`${OPS_PATH}&error=${encodeURIComponent("Report reader isn't configured (ANTHROPIC_API_KEY unset).")}`);
+    return;
   }
 
   const bytes = Buffer.from(await f.arrayBuffer());
-  let figures;
+  type Figures = Awaited<ReturnType<typeof extractEndOfDayReport>>;
+  let figures: Figures | null = null;
   try {
     figures = await extractEndOfDayReport(bytes, f.type || "image/png");
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Extraction failed.";
     redirect(`${OPS_PATH}&error=${encodeURIComponent(msg.slice(0, 300))}`);
+    return;
   }
+  if (!figures) return;
 
+  const { periodStart, periodEnd, totalRepairOrders, grandNetSales, grandProfit, laborCost, notes } = figures;
   if (
-    figures.periodStart === null ||
-    figures.periodEnd === null ||
-    figures.totalRepairOrders === null ||
-    figures.grandNetSales === null ||
-    figures.grandProfit === null ||
-    figures.laborCost === null
+    periodStart === null ||
+    periodEnd === null ||
+    totalRepairOrders === null ||
+    grandNetSales === null ||
+    grandProfit === null ||
+    laborCost === null
   ) {
     redirect(
-      `${OPS_PATH}&error=${encodeURIComponent(
-        `Couldn't read every needed figure from that file${figures.notes ? `: ${figures.notes}` : "."}`
-      )}`
+      `${OPS_PATH}&error=${encodeURIComponent(`Couldn't read every needed figure from that file${notes ? `: ${notes}` : "."}`)}`
     );
+    return;
   }
 
   // Our overrides are per exact calendar month — reject a custom/partial range.
-  const isFirstOfMonth = figures.periodStart.slice(8, 10) === "01";
-  if (!isFirstOfMonth || figures.periodEnd !== endOfMonth(figures.periodStart)) {
+  const isFirstOfMonth = periodStart.slice(8, 10) === "01";
+  if (!isFirstOfMonth || periodEnd !== endOfMonth(periodStart)) {
     redirect(
       `${OPS_PATH}&error=${encodeURIComponent(
-        `That report covers ${figures.periodStart} to ${figures.periodEnd}, not one full calendar month — ` +
+        `That report covers ${periodStart} to ${periodEnd}, not one full calendar month — ` +
           "run the End of Day Report for a single month and re-upload."
       )}`
     );
+    return;
   }
 
-  const derived = deriveOverrideFromReport({
-    totalRepairOrders: figures.totalRepairOrders,
-    grandNetSales: figures.grandNetSales,
-    grandProfit: figures.grandProfit,
-    laborCost: figures.laborCost,
-  });
+  const derived = deriveOverrideFromReport({ totalRepairOrders, grandNetSales, grandProfit, laborCost });
 
   const params = new URLSearchParams({
     tab: "opshistory",
-    draftStart: figures.periodStart,
-    draftEnd: figures.periodEnd,
+    draftStart: periodStart,
+    draftEnd: periodEnd,
     draftRoCount: String(derived.roCount),
     draftAro: String(derived.aro),
     draftGrossProfit: String(derived.grossProfit),
-    draftNetSales: String(figures.grandNetSales),
-    draftReportProfit: String(figures.grandProfit),
-    draftLaborCost: String(figures.laborCost),
+    draftNetSales: String(grandNetSales),
+    draftReportProfit: String(grandProfit),
+    draftLaborCost: String(laborCost),
   });
   redirect(`/projections?${params.toString()}`);
 }

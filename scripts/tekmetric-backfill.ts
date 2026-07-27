@@ -11,7 +11,7 @@
  * Requires TEKMETRIC_TOKEN / TEKMETRIC_SHOP_ID (and DATABASE_URL) in the env.
  */
 import { isTekmetricConfigured } from "../src/lib/tekmetric/client";
-import { refreshOperations } from "../src/lib/tekmetric/snapshot";
+import { refreshOperations, fetchTekmetricRoster } from "../src/lib/tekmetric/snapshot";
 import { comparisonRange, monthRangesBack, shopToday } from "../src/lib/tekmetric/periods";
 
 const DEFAULT_MONTHS = 24;
@@ -27,11 +27,18 @@ async function main() {
   const ranges = monthRangesBack(shopToday(), months);
   console.log(`Tekmetric backfill: ${ranges.length} months (${ranges[0]?.label} → ${ranges[ranges.length - 1]?.label}).\n`);
 
+  // Vehicles/employees are account-wide (no date filter) and barely change
+  // month to month — pull the roster once and reuse it across every month
+  // instead of re-fetching it 24 times (Tekmetric's docs ask integrations to
+  // avoid redundant requests).
+  const roster = await fetchTekmetricRoster();
+  console.log(`Shared roster: ${roster.vehicles.length} vehicles, ${roster.employees.length} employees.\n`);
+
   let ok = 0;
   for (const r of ranges) {
     const period = { start: r.start, end: r.end };
     try {
-      const data = await refreshOperations(period, "prior_period", comparisonRange(period, "prior_period"));
+      const data = await refreshOperations(period, "prior_period", comparisonRange(period, "prior_period"), roster);
       ok += 1;
       console.log(`  ✓ ${r.label}: ${data.kpis.roCount.value} ROs, GP $${Math.round(data.kpis.grossProfit.value)}`);
     } catch (err) {
