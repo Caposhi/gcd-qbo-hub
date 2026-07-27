@@ -49,6 +49,7 @@ export async function loadOpsHistory(
       revenue: kpis.aro * kpis.roCount,
       grossProfit: kpis.grossProfit,
       grossMarginPct: kpis.grossMarginPct,
+      overridden: kpis.overridden,
     });
   }
 

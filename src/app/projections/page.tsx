@@ -50,6 +50,7 @@ interface SP {
   aro?: string;
   ro?: string;
   margin?: string;
+  error?: string;
 }
 
 function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
@@ -151,7 +152,12 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
           }}
         />
       )}
-      {tab === "opshistory" && canViewOps && <OpsHistoryPanel />}
+      {tab === "opshistory" && canViewOps && (
+        <OpsHistoryPanel
+          canOverride={can(user.role, "override_tekmetric_ops")}
+          error={searchParams.error}
+        />
+      )}
       {tab === "council" && canViewCouncil && (
         <AiCouncilPanel user={user} selectedRunId={searchParams.run} />
       )}

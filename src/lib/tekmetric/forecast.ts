@@ -31,6 +31,8 @@ export interface OpsMonth {
   grossProfit: number;
   /** Gross margin as a percent number (e.g. 55.2), not a fraction. */
   grossMarginPct: number;
+  /** True when this month is a manually-entered correction, not the raw Tekmetric pull. */
+  overridden?: boolean;
 }
 
 export interface OpsTrend {
@@ -201,8 +203,10 @@ function deriveTrend(history: OpsMonth[], pick: (m: OpsMonth) => number): OpsTre
 /** Derive the operational baseline from trailing monthly history (oldest → newest). */
 export function deriveOpsBaseline(history: OpsMonth[]): OpsBaseline {
   // Exclude months that can only be bad data so they can't skew the fit or the
-  // current level. Fall back to the full set if that would leave too little.
-  const cleaned = history.filter((m) => !looksLikePartialMonth(m));
+  // current level. A manually-overridden month is trusted regardless of its
+  // shape — it's already been human-corrected, so never re-flag or exclude it
+  // here. Fall back to the full set if that would leave too little.
+  const cleaned = history.filter((m) => m.overridden || !looksLikePartialMonth(m));
   const used = cleaned.length >= 3 ? cleaned : history;
   const last = history[history.length - 1]; // labels project forward from the real latest month
   return {

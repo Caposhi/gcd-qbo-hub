@@ -776,6 +776,56 @@ model TekSnapshot {
   @@map("tek_snapshot")
 }
 
+// Manual correction for a single month's Tekmetric top-line KPIs, for when a
+// live pull is reproducibly wrong (not a transient rate-limit blip — see
+// looksLikePartialMonth) and re-running the backfill won't fix it. Owner-only
+// (§ override_tekmetric_ops); ARO and gross profit are entered directly,
+// revenue/margin are always DERIVED from them (roCount × aro, grossProfit /
+// revenue) so an override can never be internally inconsistent. Present for a
+// month ⇒ readOperationsKpis returns these values instead of the cached pull,
+// so the correction flows through Ops History, the Ops forecast baseline, and
+// anything else built on the monthly KPI history with no separate
+// "recalculate" step.
+model TekMonthOverride {
+  id                String   @id @default(cuid())
+  periodStart       DateTime @unique
+  periodEnd         DateTime
+  roCount           Int
+  carCount          Int
+  aro               Decimal  @db.Decimal(12, 2)
+  grossProfit       Decimal  @db.Decimal(12, 2)
+  note              String?  @db.Text
+  // Soft-delete (mirrors ChkPayeeMapping): "clear" sets this false rather than
+  // deleting the row, so the event history below is never lost to a cascade.
+  active            Boolean  @default(true)
+  overriddenByEmail String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  events TekMonthOverrideEvent[]
+
+  @@map("tek_month_overrides")
+}
+
+// Append-only audit trail: one row per save (create or edit) or clear, so a
+// correction's history — who changed what, and from what — is never lost even
+// as the current value is overwritten.
+model TekMonthOverrideEvent {
+  id             String   @id @default(cuid())
+  overrideId     String
+  eventType      String // "create" | "update" | "clear"
+  previousJson   Json?
+  newJson        Json?
+  changedByEmail String
+  note           String?  @db.Text
+  createdAt      DateTime @default(now())
+
+  override TekMonthOverride @relation(fields: [overrideId], references: [id], onDelete: Cascade)
+
+  @@index([overrideId])
+  @@map("tek_month_override_events")
+}
+
 // Call-transcript integration (Build Phase 4). Cache of AGGREGATED monthly call
 // insights read from the sibling gcd-webhook-server transcript service — never
 // raw transcript utterances (handoff §9). Read-only over that service.

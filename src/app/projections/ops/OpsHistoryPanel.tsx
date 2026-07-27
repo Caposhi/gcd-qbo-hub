@@ -8,20 +8,41 @@
  * look like a partial/rate-limited pull (the Apr-2026-style corruption) is flagged
  * inline, so a bad import stands out instead of silently skewing the forecast.
  * Read-only over Tekmetric — reads the cache only, never fetches.
+ *
+ * Owners (`override_tekmetric_ops`) can manually correct a month whose pull is
+ * REPRODUCIBLY wrong (re-running the backfill doesn't help — see
+ * looksLikePartialMonth's doc comment) after cross-checking the real figures
+ * against Tekmetric's own report. The correction is stored in
+ * `tek_month_overrides` and read by `readOperationsKpis`, so it flows through
+ * this table AND the Ops forecast baseline with no separate recalculation step.
  */
 import Link from "next/link";
+import { prisma } from "@/lib/db";
 import { isTekmetricConfigured } from "@/lib/tekmetric/client";
 import { loadOpsHistory } from "@/lib/tekmetric/history-service";
 import { shopToday } from "@/lib/tekmetric/periods";
 import { looksLikePartialMonth, type OpsMonth } from "@/lib/tekmetric/forecast";
 import { money } from "../reporting/format";
 import { OpsForecastChart } from "./OpsForecastChart";
+import { saveTekmetricOverrideAction, clearTekmetricOverrideAction } from "./actions";
 
 function avg(xs: number[]): number {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
 }
 
-export async function OpsHistoryPanel() {
+/** Last day of the calendar month a "YYYY-MM-DD" (1st-of-month) start falls in. */
+function endOfMonth(startIso: string): string {
+  const [y, m] = startIso.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+}
+
+export async function OpsHistoryPanel({
+  canOverride = false,
+  error,
+}: {
+  canOverride?: boolean;
+  error?: string;
+}) {
   const configured = isTekmetricConfigured();
   const hist = await loadOpsHistory(shopToday(), 24);
 
@@ -47,8 +68,15 @@ export async function OpsHistoryPanel() {
 
   const history = hist.history; // oldest → newest
   const suspect = (m: OpsMonth) =>
-    looksLikePartialMonth({ roCount: m.roCount, grossMarginPct: m.grossMarginPct, aro: m.aro });
+    !m.overridden && looksLikePartialMonth({ roCount: m.roCount, grossMarginPct: m.grossMarginPct, aro: m.aro });
   const flagged = history.filter(suspect);
+
+  // Overridden-month detail (who/when/note) for display only — the KPI values
+  // themselves already came through readOperationsKpis via loadOpsHistory. A
+  // small, indexed query over a tiny table — cheap enough to always run.
+  const overrides = await prisma.tekMonthOverride.findMany({ where: { active: true } });
+  const overrideByStart = new Map<string, (typeof overrides)[number]>();
+  for (const o of overrides) overrideByStart.set(o.periodStart.toISOString().slice(0, 10), o);
 
   const chartData = history.map((m) => ({ label: m.label, revenue: m.revenue, grossProfit: m.grossProfit }));
 
@@ -72,13 +100,23 @@ export async function OpsHistoryPanel() {
         use it to sanity-check what was backfilled. Read-only; reads the cache, nothing is fetched.
       </p>
 
+      {error && <div className="notice danger">{error}</div>}
+
       {flagged.length > 0 && (
         <div className="notice warn">
           {flagged.length} {flagged.length === 1 ? "month looks" : "months look"} like a partial or
           rate-limited import ({flagged.map((m) => m.label).join(", ")}) and{" "}
-          {flagged.length === 1 ? "is" : "are"} excluded from the forecast baseline. Re-run{" "}
-          <code>npm run tekmetric:backfill</code> to re-pull{" "}
-          {flagged.length === 1 ? "it" : "them"}.
+          {flagged.length === 1 ? "is" : "are"} excluded from the forecast baseline. Re-running{" "}
+          <code>npm run tekmetric:backfill</code> won&apos;t fix a month whose real Tekmetric pull is
+          consistently this shape
+          {canOverride ? (
+            <>
+              {" "}
+              — cross-check it against Tekmetric&apos;s own report and correct it below.
+            </>
+          ) : (
+            "."
+          )}
         </div>
       )}
 
@@ -129,6 +167,9 @@ export async function OpsHistoryPanel() {
           <tbody>
             {rows.map((m) => {
               const bad = suspect(m);
+              const status = m.overridden ? "overridden" : bad ? "suspect" : "ok";
+              const badgeClass = m.overridden ? "info" : bad ? "danger" : "ok";
+              const ov = overrideByStart.get(m.start);
               return (
                 <tr key={m.start}>
                   <td>{m.label}</td>
@@ -139,7 +180,20 @@ export async function OpsHistoryPanel() {
                   <td className="num">{money(m.grossProfit)}</td>
                   <td className="num">{m.grossMarginPct.toFixed(1)}%</td>
                   <td>
-                    <span className={`badge ${bad ? "danger" : "ok"}`}>{bad ? "suspect" : "ok"}</span>
+                    <span
+                      className={`badge ${badgeClass}`}
+                      title={ov ? `Corrected by ${ov.overriddenByEmail}${ov.note ? `: ${ov.note}` : ""}` : undefined}
+                    >
+                      {status}
+                    </span>
+                    {canOverride && m.overridden && (
+                      <form action={clearTekmetricOverrideAction} style={{ display: "inline", marginLeft: 8 }}>
+                        <input type="hidden" name="periodStart" value={m.start} />
+                        <button type="submit" className="btn ghost" style={{ padding: "2px 8px", fontSize: 12 }}>
+                          clear
+                        </button>
+                      </form>
+                    )}
                   </td>
                 </tr>
               );
@@ -147,6 +201,59 @@ export async function OpsHistoryPanel() {
           </tbody>
         </table>
       </div>
+
+      {canOverride && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h3 className="card-title" style={{ marginTop: 0 }}>Correct a month</h3>
+          <p className="card-subtitle">
+            For a month whose live Tekmetric pull is reproducibly wrong (re-running the backfill won&apos;t
+            change it). Enter the real figures from Tekmetric&apos;s own report — revenue and gross margin are
+            computed automatically (RO count × ARO, and gross profit ÷ that revenue), so they always tie out.
+          </p>
+          <form action={saveTekmetricOverrideAction} style={{ display: "grid", gap: 12, maxWidth: 560, marginTop: 12 }}>
+            <label>
+              Month
+              <select name="period" className="input" required defaultValue="">
+                <option value="" disabled>
+                  Select a month…
+                </option>
+                {[...history].reverse().map((m) => (
+                  <option key={m.start} value={`${m.start}|${endOfMonth(m.start)}`}>
+                    {m.label} {m.overridden ? "(already corrected)" : suspect(m) ? "(suspect)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label>
+                RO count
+                <input type="number" name="roCount" className="input" min={0} step={1} required />
+              </label>
+              <label>
+                Car count
+                <input type="number" name="carCount" className="input" min={0} step={1} required />
+              </label>
+              <label>
+                ARO ($)
+                <input type="number" name="aro" className="input" min={0} step="0.01" required />
+              </label>
+              <label>
+                Gross profit ($)
+                <input type="number" name="grossProfit" className="input" step="0.01" required />
+              </label>
+            </div>
+            <label>
+              Note (optional)
+              <input type="text" name="note" className="input" placeholder="e.g. cross-checked vs. Tekmetric End of Day Report" />
+            </label>
+            <div className="row-actions">
+              <button type="submit" className="btn primary">
+                Save correction
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </>
   );
 }
