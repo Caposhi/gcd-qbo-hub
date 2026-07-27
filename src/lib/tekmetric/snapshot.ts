@@ -28,6 +28,7 @@ import { looksLikePartialMonth } from "./forecast";
 import { readMonthOverride } from "./overrides";
 import type { TekPeriod } from "./types";
 import type { TekOperationsData } from "./types";
+import type { TekRawEmployee, TekRawVehicle } from "./raw";
 
 const DERIVED_ENTITY = "derived_metrics";
 
@@ -149,6 +150,7 @@ export function parseOperationsData(json: unknown, period: TekPeriod): TekOperat
         make: typeof o.make === "string" ? o.make : null,
         model: typeof o.model === "string" ? o.model : null,
         mileage: nOrNull(o.mileage),
+        vin: typeof o.vin === "string" ? o.vin : null,
       };
     }),
     appointments: arr(src.appointments).map((a) => {
@@ -325,16 +327,45 @@ async function fetchRosForRange(shopIds: string[], range: TekDateRange) {
   return all;
 }
 
+export interface TekRosterCache {
+  vehicles: TekRawVehicle[];
+  employees: TekRawEmployee[];
+}
+
+/**
+ * Fetch the account-wide vehicle + employee roster once, for callers (the
+ * 24-month backfill) that would otherwise re-pull the entire, barely-changing
+ * roster on every one of many `refreshOperations` calls — wasted request
+ * volume the Tekmetric API docs explicitly ask integrations to avoid
+ * ("Optimize Requests: cache responses and avoid redundant requests").
+ */
+export async function fetchTekmetricRoster(): Promise<TekRosterCache> {
+  const shopIds = await resolveShopIds();
+  const vehicles: TekRawVehicle[] = [];
+  const employees: TekRawEmployee[] = [];
+  for (const shopId of shopIds) {
+    vehicles.push(...(await fetchVehicles(shopId)));
+    employees.push(...(await fetchEmployees(shopId)));
+  }
+  return { vehicles, employees };
+}
+
 /**
  * Pull live Tekmetric data for the period (across all in-scope shops), build
  * the normalized dataset, and upsert it into `tek_snapshot`. Returns the freshly
  * built data. Callers MUST gate this with `requirePermission` — it is the only
  * mutation in this module.
+ *
+ * `roster` lets a caller doing many refreshes in a row (the backfill) reuse
+ * one shared vehicle/employee pull instead of re-fetching the full,
+ * barely-changing roster every time — appointments still come per-period since
+ * those genuinely differ month to month.
  */
 export async function refreshOperations(
   period: TekPeriod,
   comparisonMode: string,
-  comparison: TekPeriod | null
+  comparison: TekPeriod | null,
+  roster?: TekRosterCache
 ): Promise<TekOperationsData> {
   const shopIds = await resolveShopIds();
   const range: TekDateRange = { start: period.start, end: period.end };
@@ -344,13 +375,13 @@ export async function refreshOperations(
     ? await fetchRosForRange(shopIds, { start: comparison.start, end: comparison.end })
     : null;
 
-  const vehicles = [];
+  const vehicles: TekRawVehicle[] = roster ? roster.vehicles : [];
+  const employees: TekRawEmployee[] = roster ? roster.employees : [];
   const appointments = [];
-  const employees = [];
   for (const shopId of shopIds) {
-    vehicles.push(...(await fetchVehicles(shopId)));
+    if (!roster) vehicles.push(...(await fetchVehicles(shopId)));
     appointments.push(...(await fetchAppointments(shopId, range)));
-    employees.push(...(await fetchEmployees(shopId)));
+    if (!roster) employees.push(...(await fetchEmployees(shopId)));
   }
 
   const data = buildOperationsData({

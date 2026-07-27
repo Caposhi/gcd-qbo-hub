@@ -139,6 +139,10 @@ export interface TekVehicle {
   model: string | null;
   /** Odometer reading at time of service, when captured. */
   mileage: number | null;
+  /** VIN, when Tekmetric has one on file — the authoritative identity for a
+   *  physical vehicle (an internal vehicleId can be duplicated if the same car
+   *  gets re-added). Null when absent. */
+  vin: string | null;
 }
 
 export interface TekAppointment {

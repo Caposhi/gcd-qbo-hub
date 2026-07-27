@@ -24,7 +24,11 @@ import { shopToday } from "@/lib/tekmetric/periods";
 import { looksLikePartialMonth, type OpsMonth } from "@/lib/tekmetric/forecast";
 import { money } from "../reporting/format";
 import { OpsForecastChart } from "./OpsForecastChart";
-import { saveTekmetricOverrideAction, clearTekmetricOverrideAction } from "./actions";
+import {
+  saveTekmetricOverrideAction,
+  clearTekmetricOverrideAction,
+  extractTekmetricReportAction,
+} from "./actions";
 
 function avg(xs: number[]): number {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
@@ -36,12 +40,26 @@ function endOfMonth(startIso: string): string {
   return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
 }
 
+/** Pre-filled values for the correction form, from an uploaded End of Day Report. */
+export interface OverrideDraft {
+  start: string;
+  end: string;
+  roCount: string;
+  aro: string;
+  grossProfit: string;
+  netSales: string;
+  reportProfit: string;
+  laborCost: string;
+}
+
 export async function OpsHistoryPanel({
   canOverride = false,
   error,
+  draft,
 }: {
   canOverride?: boolean;
   error?: string;
+  draft?: OverrideDraft;
 }) {
   const configured = isTekmetricConfigured();
   const hist = await loadOpsHistory(shopToday(), 24);
@@ -207,16 +225,41 @@ export async function OpsHistoryPanel({
           <h3 className="card-title" style={{ marginTop: 0 }}>Correct a month</h3>
           <p className="card-subtitle">
             For a month whose live Tekmetric pull is reproducibly wrong (re-running the backfill won&apos;t
-            change it). Enter the real figures from Tekmetric&apos;s own report — revenue and gross margin are
-            computed automatically (RO count × ARO, and gross profit ÷ that revenue), so they always tie out.
+            change it). Upload that month&apos;s End of Day Report and the figures below pre-fill automatically —
+            or enter them by hand. Revenue and gross margin are always computed (RO count × ARO, and gross
+            profit ÷ that revenue), so they can never drift out of tie-out.
           </p>
-          <form action={saveTekmetricOverrideAction} style={{ display: "grid", gap: 12, maxWidth: 560, marginTop: 12 }}>
+
+          <form
+            action={extractTekmetricReportAction}
+            style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}
+          >
+            <input type="file" name="reportFile" accept=".pdf,application/pdf,image/png,image/jpeg,image/webp" required />
+            <button type="submit" className="btn secondary">
+              Read report &amp; pre-fill below
+            </button>
+          </form>
+
+          {draft && (
+            <div className="notice info" style={{ marginTop: 12 }}>
+              <strong>From your uploaded report ({draft.start} → {draft.end}):</strong> Net Sales {money(Number(draft.netSales) || 0)},
+              report Profit {money(Number(draft.reportProfit) || 0)}, Labor Cost {money(Number(draft.laborCost) || 0)}. Our gross
+              profit = report Profit + Labor Cost (we don&apos;t count labor as a cost — see the Ops History docs) ={" "}
+              {money(Number(draft.grossProfit) || 0)}. Check the pre-filled figures below against the report image before saving —{" "}
+              <strong>car count still needs to be entered by hand</strong> (it isn&apos;t on the report).
+            </div>
+          )}
+
+          <form action={saveTekmetricOverrideAction} style={{ display: "grid", gap: 12, maxWidth: 560, marginTop: 16 }}>
             <label>
               Month
-              <select name="period" className="input" required defaultValue="">
+              <select name="period" className="input" required defaultValue={draft ? `${draft.start}|${draft.end}` : ""}>
                 <option value="" disabled>
                   Select a month…
                 </option>
+                {draft && !history.some((m) => m.start === draft.start) && (
+                  <option value={`${draft.start}|${draft.end}`}>{draft.start} → {draft.end} (from upload)</option>
+                )}
                 {[...history].reverse().map((m) => (
                   <option key={m.start} value={`${m.start}|${endOfMonth(m.start)}`}>
                     {m.label} {m.overridden ? "(already corrected)" : suspect(m) ? "(suspect)" : ""}
@@ -227,7 +270,7 @@ export async function OpsHistoryPanel({
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <label>
                 RO count
-                <input type="number" name="roCount" className="input" min={0} step={1} required />
+                <input type="number" name="roCount" className="input" min={0} step={1} required defaultValue={draft?.roCount} />
               </label>
               <label>
                 Car count
@@ -235,16 +278,29 @@ export async function OpsHistoryPanel({
               </label>
               <label>
                 ARO ($)
-                <input type="number" name="aro" className="input" min={0} step="0.01" required />
+                <input type="number" name="aro" className="input" min={0} step="0.01" required defaultValue={draft?.aro} />
               </label>
               <label>
                 Gross profit ($)
-                <input type="number" name="grossProfit" className="input" step="0.01" required />
+                <input
+                  type="number"
+                  name="grossProfit"
+                  className="input"
+                  step="0.01"
+                  required
+                  defaultValue={draft?.grossProfit}
+                />
               </label>
             </div>
             <label>
               Note (optional)
-              <input type="text" name="note" className="input" placeholder="e.g. cross-checked vs. Tekmetric End of Day Report" />
+              <input
+                type="text"
+                name="note"
+                className="input"
+                placeholder="e.g. cross-checked vs. Tekmetric End of Day Report"
+                defaultValue={draft ? "Cross-checked vs. uploaded Tekmetric End of Day Report" : undefined}
+              />
             </label>
             <div className="row-actions">
               <button type="submit" className="btn primary">

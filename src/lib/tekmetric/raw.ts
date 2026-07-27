@@ -146,6 +146,8 @@ export interface TekRawVehicle {
   make: string | null;
   model: string | null;
   subModel?: string | null;
+  /** Vehicle identification number, when Tekmetric has one on file. */
+  vin?: string | null;
   deletedDate?: string | null;
 }
 

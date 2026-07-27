@@ -248,7 +248,26 @@ export function normalizeVehicle(v: TekRawVehicle): TekVehicle {
     make: v.make ?? null,
     model: v.model ?? null,
     mileage: null, // Vehicle endpoint carries no odometer; RO milesOut holds it.
+    vin: v.vin?.trim() || null,
   };
+}
+
+/** vehicleId → VIN (trimmed, uppercased) when Tekmetric has one on file for that vehicle. */
+function vinByVehicleId(vehicles: TekRawVehicle[]): Map<string, string | null> {
+  return new Map(vehicles.map((v) => [String(v.id), v.vin?.trim() ? v.vin.trim().toUpperCase() : null]));
+}
+
+/**
+ * The identity key for "one physical car" — VIN when Tekmetric has one on
+ * file for the vehicle, else the internal vehicleId. VIN is the more
+ * authoritative identity: an internal vehicleId can end up duplicated if the
+ * same physical car gets re-added as a new vehicle record, which would
+ * silently inflate a vehicleId-only car count.
+ */
+function vehicleIdentityKey(vehicleId: number | null, vinLookup: Map<string, string | null>): string | null {
+  if (vehicleId == null) return null;
+  const vin = vinLookup.get(String(vehicleId));
+  return vin ? `vin:${vin}` : `veh:${vehicleId}`;
 }
 
 export function normalizeAppointment(a: TekRawAppointment): TekAppointment {
@@ -411,6 +430,57 @@ export function computeRevenueByMake(
   return out.sort((x, y) => y.revenue - x.revenue);
 }
 
+export interface TekRepeatVisit {
+  /** VIN when known, else the internal vehicleId. */
+  vehicleKey: string;
+  vin: string | null;
+  year: number | null;
+  make: string | null;
+  model: string | null;
+  customerId: string | null;
+  roCount: number;
+  roIds: string[];
+}
+
+/**
+ * Vehicles with 2+ ROs in the same period — distinct from carCount (unique
+ * vehicles), this is the drill-down for "which cars came back" so a repeat
+ * visit isn't just a hidden gap between RO count and car count. Identifies a
+ * vehicle by VIN when Tekmetric has one on file (authoritative — a vehicleId
+ * can end up duplicated for the same physical car), else falls back to
+ * vehicleId. Operates on the NORMALIZED shapes (already in a cached
+ * TekOperationsData), not raw Tekmetric JSON.
+ */
+export function findRepeatVehicleVisits(ros: TekRepairOrder[], vehicles: TekVehicle[]): TekRepeatVisit[] {
+  const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+  const groups = new Map<string, TekRepairOrder[]>();
+  for (const ro of ros) {
+    if (!ro.vehicleId) continue;
+    const vin = vehicleById.get(ro.vehicleId)?.vin ?? null;
+    const key = vin ? `vin:${vin}` : `veh:${ro.vehicleId}`;
+    const g = groups.get(key);
+    if (g) g.push(ro);
+    else groups.set(key, [ro]);
+  }
+
+  const out: TekRepeatVisit[] = [];
+  for (const [key, group] of groups) {
+    if (group.length < 2) continue;
+    const v = group[0].vehicleId ? vehicleById.get(group[0].vehicleId) : undefined;
+    out.push({
+      vehicleKey: key,
+      vin: v?.vin ?? null,
+      year: v?.year ?? null,
+      make: v?.make ?? null,
+      model: v?.model ?? null,
+      customerId: group[0].customerId,
+      roCount: group.length,
+      roIds: group.map((r) => r.id),
+    });
+  }
+  return out.sort((a, b) => b.roCount - a.roCount);
+}
+
 export function computeAdvisorPerformance(
   ros: TekRawRepairOrder[],
   advisors: TekServiceAdvisor[],
@@ -469,23 +539,24 @@ interface KpiRaw {
   carCount: number;
 }
 
-function rollupKpis(ros: TekRawRepairOrder[]): KpiRaw {
+function rollupKpis(ros: TekRawRepairOrder[], vinLookup: Map<string, string | null>): KpiRaw {
   let roCount = 0;
   let revenueCents = 0;
   let grossProfitCents = 0;
-  const vehicles = new Set<string>();
+  const cars = new Set<string>();
   for (const ro of ros) {
     if (isDeleted(ro)) continue;
     roCount += 1;
     revenueCents += roRevenuePreTaxCents(ro);
     grossProfitCents += roGrossProfitCents(ro);
-    if (ro.vehicleId != null) vehicles.add(String(ro.vehicleId));
+    const key = vehicleIdentityKey(ro.vehicleId, vinLookup);
+    if (key) cars.add(key);
   }
   return {
     roCount,
     revenue: centsToDollars(revenueCents),
     grossProfit: centsToDollars(grossProfitCents),
-    carCount: vehicles.size,
+    carCount: cars.size,
   };
 }
 
@@ -501,10 +572,12 @@ export function buildKpi(value: number, priorValue: number | null): TekKpi {
 
 export function computeKpis(
   currentRos: TekRawRepairOrder[],
-  priorRos: TekRawRepairOrder[] | null
+  priorRos: TekRawRepairOrder[] | null,
+  vehicles: TekRawVehicle[]
 ): TekKpiSummary {
-  const cur = rollupKpis(currentRos);
-  const prior = priorRos ? rollupKpis(priorRos) : null;
+  const vinLookup = vinByVehicleId(vehicles);
+  const cur = rollupKpis(currentRos, vinLookup);
+  const prior = priorRos ? rollupKpis(priorRos, vinLookup) : null;
   const aro = (k: KpiRaw): number => (k.roCount > 0 ? round2(k.revenue / k.roCount) : 0);
   const margin = (k: KpiRaw): number => (k.revenue > 0 ? round2((k.grossProfit / k.revenue) * 100) : 0);
   return {
@@ -549,7 +622,7 @@ export function buildOperationsData(input: BuildOperationsInput): TekOperationsD
     serviceAdvisors,
     vehicles,
     appointments: input.appointments.map(normalizeAppointment),
-    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null),
+    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null, input.vehicles),
     techUtilization: computeTechUtilization(input.repairOrders, technicians, input.period, input.utilization, nameById),
     revenueByMake: computeRevenueByMake(input.repairOrders, vehicles),
     advisorPerformance: computeAdvisorPerformance(input.repairOrders, serviceAdvisors, nameById),
