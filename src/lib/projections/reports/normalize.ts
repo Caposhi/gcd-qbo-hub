@@ -53,6 +53,16 @@ export interface PnlNormalized {
   incomeLines: LineSeries[];
   /** Detail expense lines (operating-expense accounts) across the same periods. */
   expenseLines: LineSeries[];
+  /**
+   * COGS "Labor Wages" line (its own rolled-up total, inclusive of any
+   * sub-accounts like an owner's contract-labor draw) — the real,
+   * payroll-sourced labor cost, for Tekmetric Operations to subtract from
+   * gross profit instead of treating labor as free (see
+   * src/lib/tekmetric/labor-cost.ts). `null` when the company's COGS section
+   * has no such line — deliberately not zero-filled, so "no such line" isn't
+   * mistaken for "labor cost is zero."
+   */
+  laborCost: number[] | null;
 }
 
 export interface BalanceSheetNormalized {
@@ -138,6 +148,41 @@ function findSummaryByLabel(report: QboReport, re: RegExp): QboFlatRow | undefin
   return report.rows.find((r) => r.kind === "section_summary" && re.test(r.label));
 }
 
+/**
+ * Find a specific account (or account group) inside a section by label match
+ * — e.g. "Labor Wages" within COGS — preferring the OUTERMOST (shallowest
+ * `depth`) match, same reasoning as {@link findByGroup}: an account with
+ * sub-accounts reports both its own rolled-up "Total X" summary row AND each
+ * sub-account's individual leaf row under it, and the summary already
+ * includes the sub-accounts — summing both would double-count.
+ *
+ * Matches by `groupCode` OR by the row's own section-header path mentioning
+ * `sectionLabelRe` — a sub-account line doesn't always inherit its section's
+ * groupCode (confirmed against a real chart of accounts with
+ * scripts/qbo-diagnose-cogs.ts, which found "OWNER - Contract Labor" only via
+ * its group path, not a shared groupCode). Returns `null` — not a zero-filled
+ * array — when nothing matches, so a caller can tell "this company's chart of
+ * accounts has no such line" from "this line is genuinely zero," which
+ * matters when the caller would otherwise treat a wrong silent 0 as real.
+ */
+function findLineByLabel(
+  report: QboReport,
+  groupCode: string,
+  sectionLabelRe: RegExp,
+  labelRe: RegExp
+): number[] | null {
+  const matches = report.rows.filter(
+    (r) =>
+      labelRe.test(r.label) &&
+      ((r.groupCode ?? "").toLowerCase() === groupCode.toLowerCase() || r.group.some((g) => sectionLabelRe.test(g)))
+  );
+  const row = matches.reduce<QboFlatRow | undefined>(
+    (best, r) => (best === undefined || r.depth < best.depth ? r : best),
+    undefined
+  );
+  return row ? periodValues(report, row) : null;
+}
+
 function seriesFor(
   report: QboReport,
   groupCode: string,
@@ -202,6 +247,7 @@ export function normalizePnl(report: QboReport): PnlNormalized {
     netIncome,
     incomeLines: detailLines(report, "Income"),
     expenseLines: detailLines(report, "Expenses"),
+    laborCost: findLineByLabel(report, "COGS", /cost of goods sold/i, /labor.*wages/i),
   };
 }
 

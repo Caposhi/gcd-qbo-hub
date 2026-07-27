@@ -147,20 +147,29 @@ export interface ReportDerivedOverride {
 
 /**
  * Turn extracted figures into our override fields. grossProfit adds the
- * report's own Labor Cost back onto its Profit — see this file's header for
- * why: it re-derives OUR zero-labor-cost definition rather than using the
- * report's (different) one.
+ * report's own Labor Cost back onto its Profit, undoing Tekmetric's labor-cost
+ * assumption — then subtracts the REAL, QBO-sourced labor cost for that same
+ * month (see labor-cost.ts), same as every non-overridden month now does, so
+ * an overridden month lands on the same definition as its neighbors instead
+ * of a different (higher) one. Pass null for `qboLaborCostDollars` when QBO's
+ * figure isn't available; the result then falls back to the OLD
+ * zero-labor-cost definition for this one month — callers should surface that
+ * as a caveat rather than let it pass silently.
  */
-export function deriveOverrideFromReport(figures: {
-  totalRepairOrders: number;
-  grandNetSales: number;
-  grandProfit: number;
-  laborCost: number;
-}): ReportDerivedOverride {
+export function deriveOverrideFromReport(
+  figures: {
+    totalRepairOrders: number;
+    grandNetSales: number;
+    grandProfit: number;
+    laborCost: number;
+  },
+  qboLaborCostDollars: number | null
+): ReportDerivedOverride {
   const roCount = Math.max(0, Math.round(figures.totalRepairOrders));
   const revenue = round2(figures.grandNetSales);
   const aro = roCount > 0 ? round2(revenue / roCount) : 0;
-  const grossProfit = round2(figures.grandProfit + figures.laborCost);
+  const zeroLaborGrossProfit = round2(figures.grandProfit + figures.laborCost);
+  const grossProfit = round2(zeroLaborGrossProfit - (qboLaborCostDollars ?? 0));
   const grossMarginPct = revenue > 0 ? round2((grossProfit / revenue) * 100) : 0;
   return { roCount, aro, grossProfit, grossMarginPct };
 }

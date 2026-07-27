@@ -50,6 +50,8 @@ export interface OverrideDraft {
   netSales: string;
   reportProfit: string;
   laborCost: string;
+  /** Real QBO labor cost for this month, or null when QBO wasn't reachable/connected. */
+  qboLaborCost: string | null;
 }
 
 export async function OpsHistoryPanel({
@@ -115,7 +117,9 @@ export async function OpsHistoryPanel({
       <p className="page-desc">
         Actual monthly operations from your Tekmetric history ({history[0]?.label} →{" "}
         {history[history.length - 1]?.label}). This is the real imported data behind the Ops forecast —
-        use it to sanity-check what was backfilled. Read-only; reads the cache, nothing is fetched.
+        use it to sanity-check what was backfilled. Read-only; reads the cache, nothing is fetched. Gross profit
+        subtracts real labor cost from QBO&apos;s payroll ledger for that month — a re-backfill is needed to
+        apply this to months snapshotted before this changed.
       </p>
 
       {error && <div className="notice danger">{error}</div>}
@@ -243,8 +247,18 @@ export async function OpsHistoryPanel({
           {draft && (
             <div className="notice info" style={{ marginTop: 12 }}>
               <strong>From your uploaded report ({draft.start} → {draft.end}):</strong> Net Sales {money(Number(draft.netSales) || 0)},
-              report Profit {money(Number(draft.reportProfit) || 0)}, Labor Cost {money(Number(draft.laborCost) || 0)}. Our gross
-              profit = report Profit + Labor Cost (we don&apos;t count labor as a cost — see the Ops History docs) ={" "}
+              report Profit {money(Number(draft.reportProfit) || 0)}, report Labor Cost {money(Number(draft.laborCost) || 0)}
+              {draft.qboLaborCost !== null ? (
+                <>
+                  , QBO&apos;s actual labor cost for this month {money(Number(draft.qboLaborCost) || 0)}. Gross profit = report
+                  Profit + report Labor Cost − QBO Labor Cost ={" "}
+                </>
+              ) : (
+                <>
+                  . <strong>QBO&apos;s payroll figures weren&apos;t reachable for this month</strong> — gross profit falls back
+                  to report Profit + report Labor Cost (labor treated as free, same as before this month is corrected) ={" "}
+                </>
+              )}
               {money(Number(draft.grossProfit) || 0)}. Check the pre-filled figures below against the report image before saving —{" "}
               <strong>car count still needs to be entered by hand</strong> (it isn&apos;t on the report).
             </div>

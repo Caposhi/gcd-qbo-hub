@@ -60,6 +60,7 @@ interface SP {
   draftNetSales?: string;
   draftReportProfit?: string;
   draftLaborCost?: string;
+  draftQboLaborCost?: string;
 }
 
 function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
@@ -176,6 +177,7 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
                   netSales: searchParams.draftNetSales ?? "",
                   reportProfit: searchParams.draftReportProfit ?? "",
                   laborCost: searchParams.draftLaborCost ?? "",
+                  qboLaborCost: searchParams.draftQboLaborCost || null,
                 }
               : undefined
           }

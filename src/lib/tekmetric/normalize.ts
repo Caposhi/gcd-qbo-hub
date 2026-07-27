@@ -152,7 +152,15 @@ export function roRevenuePreTaxCents(ro: TekRawRepairOrder): number {
   return num(ro.totalSales) - num(ro.taxes);
 }
 
-/** Gross profit for an RO, in cents (pre-tax revenue − parts & sublet cost). */
+/**
+ * Gross profit for an RO, in cents (pre-tax revenue − parts & sublet cost).
+ * Labor still carries no COGS HERE — Tekmetric has no per-RO labor cost to
+ * subtract. The headline monthly `kpis.grossProfit` (computeKpis) ALSO
+ * subtracts a real, QBO-sourced labor cost as a period-level lump sum (see
+ * labor-cost.ts), so don't expect per-RO/job/tech/advisor gross profit to sum
+ * to that headline number anymore — payroll has no honest way to attribute
+ * back to individual ROs.
+ */
 export function roGrossProfitCents(ro: TekRawRepairOrder): number {
   return roRevenuePreTaxCents(ro) - roPartsCostCents(ro) - roSubletCostCents(ro);
 }
@@ -539,7 +547,18 @@ interface KpiRaw {
   carCount: number;
 }
 
-function rollupKpis(ros: TekRawRepairOrder[], vinLookup: Map<string, string | null>): KpiRaw {
+/**
+ * `laborCostDollars` is the real, QBO-sourced labor cost for this same
+ * period (see labor-cost.ts) — subtracted once from the period's aggregate
+ * gross profit, NOT per-RO (Tekmetric carries no per-RO labor cost to
+ * subtract from, and payroll has no honest way to attribute back to
+ * individual ROs). 0 when unavailable (today's zero-labor-cost fallback).
+ */
+function rollupKpis(
+  ros: TekRawRepairOrder[],
+  vinLookup: Map<string, string | null>,
+  laborCostDollars: number
+): KpiRaw {
   let roCount = 0;
   let revenueCents = 0;
   let grossProfitCents = 0;
@@ -555,7 +574,7 @@ function rollupKpis(ros: TekRawRepairOrder[], vinLookup: Map<string, string | nu
   return {
     roCount,
     revenue: centsToDollars(revenueCents),
-    grossProfit: centsToDollars(grossProfitCents),
+    grossProfit: round2(centsToDollars(grossProfitCents) - laborCostDollars),
     carCount: cars.size,
   };
 }
@@ -570,14 +589,21 @@ export function buildKpi(value: number, priorValue: number | null): TekKpi {
   return { value: round2(value), priorValue: round2(priorValue), deltaAbs, deltaPct };
 }
 
+/** Real QBO labor cost (dollars) for the current and comparison periods — null when unavailable for that period. */
+export interface TekLaborCost {
+  current: number | null;
+  prior: number | null;
+}
+
 export function computeKpis(
   currentRos: TekRawRepairOrder[],
   priorRos: TekRawRepairOrder[] | null,
-  vehicles: TekRawVehicle[]
+  vehicles: TekRawVehicle[],
+  laborCost?: TekLaborCost
 ): TekKpiSummary {
   const vinLookup = vinByVehicleId(vehicles);
-  const cur = rollupKpis(currentRos, vinLookup);
-  const prior = priorRos ? rollupKpis(priorRos, vinLookup) : null;
+  const cur = rollupKpis(currentRos, vinLookup, laborCost?.current ?? 0);
+  const prior = priorRos ? rollupKpis(priorRos, vinLookup, laborCost?.prior ?? 0) : null;
   const aro = (k: KpiRaw): number => (k.roCount > 0 ? round2(k.revenue / k.roCount) : 0);
   const margin = (k: KpiRaw): number => (k.revenue > 0 ? round2((k.grossProfit / k.revenue) * 100) : 0);
   return {
@@ -602,6 +628,8 @@ export interface BuildOperationsInput {
   appointments: TekRawAppointment[];
   employees: TekRawEmployee[];
   utilization?: TechUtilizationOptions;
+  /** Real QBO labor cost for period/priorPeriod — omitted falls back to 0 (today's zero-labor-cost definition). */
+  laborCost?: TekLaborCost;
 }
 
 /**
@@ -622,7 +650,7 @@ export function buildOperationsData(input: BuildOperationsInput): TekOperationsD
     serviceAdvisors,
     vehicles,
     appointments: input.appointments.map(normalizeAppointment),
-    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null, input.vehicles),
+    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null, input.vehicles, input.laborCost),
     techUtilization: computeTechUtilization(input.repairOrders, technicians, input.period, input.utilization, nameById),
     revenueByMake: computeRevenueByMake(input.repairOrders, vehicles),
     advisorPerformance: computeAdvisorPerformance(input.repairOrders, serviceAdvisors, nameById),

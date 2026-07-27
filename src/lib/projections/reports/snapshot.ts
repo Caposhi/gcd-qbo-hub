@@ -45,6 +45,9 @@ function optStr(v: unknown): string | undefined {
 function numArray(v: unknown): number[] {
   return Array.isArray(v) ? v.map(num) : [];
 }
+function numArrayOrNull(v: unknown): number[] | null {
+  return Array.isArray(v) ? v.map(num) : null;
+}
 function strArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map(str) : [];
 }
@@ -67,6 +70,7 @@ export function parsePnl(json: unknown): PnlNormalized {
     netIncome: numArray(o.netIncome),
     incomeLines: lineSeries(o.incomeLines),
     expenseLines: lineSeries(o.expenseLines),
+    laborCost: numArrayOrNull(o.laborCost),
   };
 }
 
