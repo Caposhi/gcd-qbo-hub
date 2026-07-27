@@ -119,7 +119,10 @@ export default async function TekmetricPage({
       <h1>Tekmetric Operations</h1>
       <p className="page-desc">
         Read-only shop-management KPIs from Tekmetric — ARO, gross profit, technician utilization, revenue by
-        make, and service-advisor performance. Data is cached; use Refresh to pull the latest.
+        make, and service-advisor performance. Data is cached; use Refresh to pull the latest. The headline{" "}
+        <strong>Gross profit</strong>/<strong>Gross margin</strong> subtract real labor cost from QBO&apos;s payroll
+        ledger — the advisor/vehicle/make breakdowns below don&apos;t (payroll can&apos;t be attributed to one RO),
+        so they won&apos;t sum to the headline figure.
       </p>
 
       {!configured && (

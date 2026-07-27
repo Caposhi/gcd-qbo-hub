@@ -26,6 +26,7 @@ import {
 import { buildOperationsData } from "./normalize";
 import { looksLikePartialMonth } from "./forecast";
 import { readMonthOverride } from "./overrides";
+import { qboLaborCostForPeriod } from "./labor-cost";
 import type { TekPeriod } from "./types";
 import type { TekOperationsData } from "./types";
 import type { TekRawEmployee, TekRawVehicle } from "./raw";
@@ -384,6 +385,15 @@ export async function refreshOperations(
     if (!roster) employees.push(...(await fetchEmployees(shopId)));
   }
 
+  // Real, QBO-sourced labor cost for the same period(s) — see labor-cost.ts
+  // for why this replaces the old "labor is free" assumption. Degrades to
+  // null (→ 0 in computeKpis) when QBO isn't connected/reachable, so a
+  // Tekmetric refresh never fails just because QBO is unavailable.
+  const [currentLaborCost, priorLaborCost] = await Promise.all([
+    qboLaborCostForPeriod(period.start, period.end),
+    comparison ? qboLaborCostForPeriod(comparison.start, comparison.end) : Promise.resolve(null),
+  ]);
+
   const data = buildOperationsData({
     period,
     repairOrders,
@@ -391,6 +401,7 @@ export async function refreshOperations(
     vehicles,
     appointments,
     employees,
+    laborCost: { current: currentLaborCost, prior: priorLaborCost },
   });
 
   // Integrity guard: refuse to cache a month whose figures can only come from a

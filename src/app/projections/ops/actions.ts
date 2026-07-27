@@ -134,7 +134,13 @@ export async function extractTekmetricReportAction(formData: FormData) {
     return;
   }
 
-  const derived = deriveOverrideFromReport({ totalRepairOrders, grandNetSales, grandProfit, laborCost });
+  // Real, QBO-sourced labor cost for this same month — replaces Tekmetric's
+  // own (different) labor-cost assumption so this overridden month lands on
+  // the same definition as every other month (see reportExtract.ts).
+  const { qboLaborCostForPeriod } = await import("@/lib/tekmetric/labor-cost");
+  const qboLaborCost = await qboLaborCostForPeriod(periodStart, periodEnd);
+
+  const derived = deriveOverrideFromReport({ totalRepairOrders, grandNetSales, grandProfit, laborCost }, qboLaborCost);
 
   const params = new URLSearchParams({
     tab: "opshistory",
@@ -146,6 +152,7 @@ export async function extractTekmetricReportAction(formData: FormData) {
     draftNetSales: String(grandNetSales),
     draftReportProfit: String(grandProfit),
     draftLaborCost: String(laborCost),
+    draftQboLaborCost: qboLaborCost === null ? "" : String(qboLaborCost),
   });
   redirect(`/projections?${params.toString()}`);
 }
