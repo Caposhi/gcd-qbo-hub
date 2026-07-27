@@ -51,6 +51,15 @@ interface SP {
   ro?: string;
   margin?: string;
   error?: string;
+  // Draft override values from an uploaded End of Day Report (see ops/actions.ts)
+  draftStart?: string;
+  draftEnd?: string;
+  draftRoCount?: string;
+  draftAro?: string;
+  draftGrossProfit?: string;
+  draftNetSales?: string;
+  draftReportProfit?: string;
+  draftLaborCost?: string;
 }
 
 function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
@@ -156,6 +165,20 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
         <OpsHistoryPanel
           canOverride={can(user.role, "override_tekmetric_ops")}
           error={searchParams.error}
+          draft={
+            searchParams.draftStart
+              ? {
+                  start: searchParams.draftStart,
+                  end: searchParams.draftEnd ?? "",
+                  roCount: searchParams.draftRoCount ?? "",
+                  aro: searchParams.draftAro ?? "",
+                  grossProfit: searchParams.draftGrossProfit ?? "",
+                  netSales: searchParams.draftNetSales ?? "",
+                  reportProfit: searchParams.draftReportProfit ?? "",
+                  laborCost: searchParams.draftLaborCost ?? "",
+                }
+              : undefined
+          }
         />
       )}
       {tab === "council" && canViewCouncil && (
