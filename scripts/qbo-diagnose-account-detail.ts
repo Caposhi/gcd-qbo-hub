@@ -35,17 +35,28 @@ async function main() {
   const report = parseQboReport(raw);
 
   console.log(`\n${report.reportName || "General Ledger"} — ${start} → ${end}`);
-  console.log(`Columns: ${report.columns.map((c) => c.title).join(" | ")}\n`);
+  console.log(`Columns: ${report.columns.map((c) => c.title).join(" | ")}`);
+  console.log(`${report.rows.length} total row(s) across ${new Set(report.rows.map((r) => r.group[0] ?? "")).size} top-level section(s).\n`);
 
-  const matches = report.rows.filter(
-    (r) => r.group.some((g) => g.toLowerCase().includes(accountFilter)) || r.label.toLowerCase().includes(accountFilter)
-  );
+  // This report can be organized by BANK ACCOUNT (each section a register,
+  // the offsetting account showing up only as a "Split" cell within a row)
+  // rather than by the account we actually want — so match against every
+  // cell in the row, not just the section header / label.
+  const rowMatches = (r: (typeof report.rows)[number]) =>
+    r.group.some((g) => g.toLowerCase().includes(accountFilter)) ||
+    r.label.toLowerCase().includes(accountFilter) ||
+    r.rawValues.some((v) => v.toLowerCase().includes(accountFilter));
+
+  const matches = report.rows.filter(rowMatches);
 
   if (matches.length === 0) {
-    console.log(`No rows found matching "${accountArg || "Ask My Client"}". Dumping the first 20 rows instead, so we can see the actual shape:\n`);
-    for (const r of report.rows.slice(0, 20)) {
-      console.log(`  [depth ${r.depth}] [${r.kind}] group=${JSON.stringify(r.group)} label="${r.label}" rawValues=${JSON.stringify(r.rawValues)}`);
-    }
+    const sections = [...new Set(report.rows.map((r) => r.group.join(" > ") || "(top level)"))];
+    console.log(
+      `No rows found matching "${accountArg || "Ask My Client"}" in any column, including "Split". ` +
+        `Here are every section this report actually returned — check this list for the account's real ` +
+        `name/spelling, then re-run with that exact substring as the 3rd argument:\n`
+    );
+    for (const s of sections) console.log(`  - ${s}`);
     return;
   }
 
