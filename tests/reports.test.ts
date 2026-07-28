@@ -344,6 +344,25 @@ describe("comparisonRange", () => {
       end: "2023-02-28",
     });
   });
+
+  it("custom uses the explicit comparison dates, independent of the main range", () => {
+    expect(
+      comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "custom", "2024-03-01", "2024-03-31")
+    ).toEqual({ start: "2024-03-01", end: "2024-03-31" });
+  });
+
+  it("custom falls back to the main range when no comparison dates are given", () => {
+    const range = { start: "2026-06-01", end: "2026-06-30" };
+    expect(comparisonRange(range, "custom")).toEqual(range);
+  });
+
+  it("prior_year works against an arbitrary custom range (e.g. a specific quarter vs. last year)", () => {
+    // Q2 2026 (Apr 1 - Jun 30) vs the same dates a year earlier — the "Q2 2026
+    // vs Q2 2025" case the AI assistant needs, using a custom main range with
+    // the existing prior_year comparison, no new comparison mode required.
+    const q2_2026 = resolveRange("custom", new Date(), "2026-04-01", "2026-06-30");
+    expect(comparisonRange(q2_2026, "prior_year")).toEqual({ start: "2025-04-01", end: "2025-06-30" });
+  });
 });
 
 describe("rollupSeries", () => {
