@@ -103,20 +103,25 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "get_reporting_overview",
     description:
-      "Get cached QuickBooks financial KPIs for a period vs. its comparison period: total revenue, gross profit/margin, net income/margin, operating expenses, A/R total, A/P total, cash — each with the prior-period delta — plus the top expense lines, top customers by revenue, and top items/services by revenue. Reads only the hub's cached report snapshots (never calls QBO live); if the period hasn't been viewed/cached yet, says so. Use for revenue, expense, margin, customer, or item questions.",
+      "Get cached QuickBooks financial KPIs for a period vs. its comparison period: total revenue, gross profit/margin, net income/margin, operating expenses, A/R total, A/P total, cash — each with the prior-period delta — plus the top expense lines, top customers by revenue, and top items/services by revenue. Reads only the hub's cached report snapshots (never calls QBO live); if the period hasn't been viewed/cached yet, says so. Use for revenue, expense, margin, customer, or item questions. Supports an arbitrary date range via preset='custom' — e.g. for 'Q2 2026 vs Q2 2025', pass startDate/endDate for Q2 2026 and comparison='prior_year' (no need for a matching preset to exist); for a comparison to a specific unrelated period, use comparison='custom' with comparisonStartDate/comparisonEndDate instead.",
     input_schema: {
       type: "object",
       properties: {
         preset: {
           type: "string",
-          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12"],
-          description: "Date range preset. Default 'this_month'.",
+          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
+          description: "Date range preset, or 'custom' to use startDate/endDate for any arbitrary range. Default 'this_month'.",
         },
+        startDate: { type: "string", description: "Custom range start, YYYY-MM-DD. Used when preset is 'custom'." },
+        endDate: { type: "string", description: "Custom range end, YYYY-MM-DD. Used when preset is 'custom'." },
         comparison: {
           type: "string",
-          enum: ["prior_period", "prior_year"],
-          description: "Comparison period for deltas. Default 'prior_period'.",
+          enum: ["prior_period", "prior_year", "custom"],
+          description:
+            "Comparison period for deltas: the equal-length span immediately before, the same dates one year earlier (works for a custom range too — e.g. a specific quarter vs. the same quarter last year), or 'custom' for an explicit, otherwise-unrelated comparison range via comparisonStartDate/comparisonEndDate. Default 'prior_period'.",
         },
+        comparisonStartDate: { type: "string", description: "Custom comparison range start, YYYY-MM-DD. Used when comparison is 'custom'." },
+        comparisonEndDate: { type: "string", description: "Custom comparison range end, YYYY-MM-DD. Used when comparison is 'custom'." },
         method: { type: "string", enum: ["accrual", "cash"], description: "Accounting method. Default 'accrual'." },
       },
       additionalProperties: false,
@@ -125,15 +130,17 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "get_ar_aging_detail",
     description:
-      "Get the cached Accounts Receivable aging report — bucket labels (e.g. Current, 1-30, 31-60, 61-90, 91 and over) and how much each customer owes in each bucket, largest total first. Use to answer which customers are past due and by how much. Reads only the cached snapshot; never calls QBO live.",
+      "Get the cached Accounts Receivable aging report — bucket labels (e.g. Current, 1-30, 31-60, 61-90, 91 and over) and how much each customer owes in each bucket, largest total first. Use to answer which customers are past due and by how much. Reads only the cached snapshot; never calls QBO live. Supports an arbitrary as-of date via preset='custom' with startDate/endDate (aging is as of the range end).",
     input_schema: {
       type: "object",
       properties: {
         preset: {
           type: "string",
-          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12"],
-          description: "Date range preset (aging is as-of the period end). Default 'this_month'.",
+          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
+          description: "Date range preset (aging is as-of the period end), or 'custom' to use startDate/endDate. Default 'this_month'.",
         },
+        startDate: { type: "string", description: "Custom range start, YYYY-MM-DD. Used when preset is 'custom'." },
+        endDate: { type: "string", description: "Custom range end (the as-of date), YYYY-MM-DD. Used when preset is 'custom'." },
         method: { type: "string", enum: ["accrual", "cash"], description: "Accounting method. Default 'accrual'." },
       },
       additionalProperties: false,
@@ -302,10 +309,16 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
     }
     case "get_reporting_overview": {
       const preset = RANGE_PRESET_VALUES.has(input.preset as string) ? (input.preset as ReportRangePreset) : "this_month";
-      const comparison: ReportComparisonMode = input.comparison === "prior_year" ? "prior_year" : "prior_period";
+      const comparison: ReportComparisonMode =
+        input.comparison === "prior_year" ? "prior_year" : input.comparison === "custom" ? "custom" : "prior_period";
       const method: AccountingMethod = input.method === "cash" ? "cash" : "accrual";
-      const range = resolveRange(preset, new Date());
-      const priorRange = comparisonRange(range, comparison);
+      const range = resolveRange(preset, new Date(), input.startDate as string | undefined, input.endDate as string | undefined);
+      const priorRange = comparisonRange(
+        range,
+        comparison,
+        input.comparisonStartDate as string | undefined,
+        input.comparisonEndDate as string | undefined
+      );
 
       const [pnl, pnlPrev, bs, bsPrev, ar, arPrev, ap, apPrev, cust, item] = await Promise.all([
         readCachedReport<PnlNormalized>("pnl", range, method),
@@ -363,7 +376,7 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
     case "get_ar_aging_detail": {
       const preset = RANGE_PRESET_VALUES.has(input.preset as string) ? (input.preset as ReportRangePreset) : "this_month";
       const method: AccountingMethod = input.method === "cash" ? "cash" : "accrual";
-      const range = resolveRange(preset, new Date());
+      const range = resolveRange(preset, new Date(), input.startDate as string | undefined, input.endDate as string | undefined);
       const ar = await readCachedReport<AgingNormalized>("ar_aging", range, method);
       if (!ar) {
         return {
