@@ -22,7 +22,8 @@
     "sync:backfill": "tsx scripts/backfill.ts",
     "tekmetric:backfill": "tsx scripts/tekmetric-backfill.ts",
     "tekmetric:diagnose": "tsx scripts/tekmetric-diagnose-month.ts",
-    "qbo:diagnose-cogs": "tsx scripts/qbo-diagnose-cogs.ts"
+    "qbo:diagnose-cogs": "tsx scripts/qbo-diagnose-cogs.ts",
+    "tekmetric:bulk-override": "tsx scripts/tekmetric-bulk-override.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
