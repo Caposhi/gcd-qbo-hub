@@ -28,8 +28,8 @@ export class TranscriptsNotConfiguredError extends Error {
 }
 
 export class TranscriptsApiError extends Error {
-  constructor(public status: number, public path: string) {
-    super(`Transcript service ${status} on ${path}`);
+  constructor(public status: number, public path: string, public url: string) {
+    super(`Transcript service ${status} on ${path} (${url})`);
     this.name = "TranscriptsApiError";
   }
 }
@@ -49,7 +49,7 @@ async function get<T>(path: string, query: Record<string, string | number | unde
     method: "GET",
     headers: { Accept: "application/json", "x-admin-secret": secret },
   });
-  if (!res.ok) throw new TranscriptsApiError(res.status, path);
+  if (!res.ok) throw new TranscriptsApiError(res.status, path, url.toString());
   return (await res.json()) as T;
 }
 
