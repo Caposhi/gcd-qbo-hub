@@ -24,7 +24,8 @@
     "tekmetric:diagnose": "tsx scripts/tekmetric-diagnose-month.ts",
     "qbo:diagnose-cogs": "tsx scripts/qbo-diagnose-cogs.ts",
     "tekmetric:bulk-override": "tsx scripts/tekmetric-bulk-override.ts",
-    "qbo:diagnose-account": "tsx scripts/qbo-diagnose-account-detail.ts"
+    "qbo:diagnose-account": "tsx scripts/qbo-diagnose-account-detail.ts",
+    "transcripts:diagnose": "tsx scripts/transcripts-diagnose.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
