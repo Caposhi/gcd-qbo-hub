@@ -296,13 +296,15 @@ export async function locateProposedPaymentsAction() {
     // amount) so "matched" means the full deposit (payments + fees) can be built.
     let feesNeeded = 0;
     let feesFound = 0;
+    let missingFeeCustomers: string[] = [];
     if (p.processor === "tekmetric" && foundAll) {
       // Confirm each charge's fee JE exists, matched by the payment's customer.
       const payDetails = await getPaymentDetails(ctx, matchedPaymentIds);
       const customers = matchedPaymentIds.map((id) => payDetails.get(id)?.customerName ?? "");
       feesNeeded = customers.length;
-      const { linked } = matchFeesByCustomer(feeJEs, customers, p.settlementDate, feeUsedGlobal, daysApart);
+      const { linked, missing } = matchFeesByCustomer(feeJEs, customers, p.settlementDate, feeUsedGlobal, daysApart);
       feesFound = linked.length;
+      missingFeeCustomers = missing.filter(Boolean);
     }
     const feesOk = p.processor !== "tekmetric" || feesFound === feesNeeded;
 
@@ -323,7 +325,9 @@ export async function locateProposedPaymentsAction() {
       foundAll && feesOk
         ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${feeNote}${osNote}`
         : foundAll && !feesOk
-          ? `Payments located, but only ${feesFound}/${feesNeeded} fee journal entries found — re-run once Back Office has posted them.`
+          ? `Payments located, but only ${feesFound}/${feesNeeded} fee journal entries found${
+              missingFeeCustomers.length ? ` — missing the fee JE for: ${missingFeeCustomers.join(", ")}` : ""
+            }. Re-run once Back Office has posted them (or check that customer's fee JE name matches).`
           : allDeposited
             ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
             : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`;
@@ -332,7 +336,7 @@ export async function locateProposedPaymentsAction() {
         payoutId: p.id,
         eventType: "locate_payments",
         message,
-        dataJson: { detail, start, end, overShortCents } as unknown as object,
+        dataJson: { detail, start, end, overShortCents, missingFeeCustomers } as unknown as object,
       },
     });
   }
