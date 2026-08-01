@@ -71,18 +71,18 @@ export async function findChecksByDocNumber(
   ctx: QboContext,
   docNumber: string,
   bankAccountId: string
-): Promise<Array<{ id: string; total: number }>> {
+): Promise<Array<{ id: string; total: number; payee: string }>> {
   const doc = (docNumber ?? "").trim();
   if (!doc) return [];
   const q = await query<{ QueryResponse?: { Purchase?: any[] } }>(
     ctx,
-    `select Id, TotalAmt, AccountRef, DocNumber from Purchase where DocNumber = '${escapeQuery(doc)}'`
+    `select Id, TotalAmt, AccountRef, EntityRef, DocNumber from Purchase where DocNumber = '${escapeQuery(doc)}'`
   );
-  const out: Array<{ id: string; total: number }> = [];
+  const out: Array<{ id: string; total: number; payee: string }> = [];
   for (const p of q.QueryResponse?.Purchase ?? []) {
     // Same check number on the same bank account = the same physical check.
     if (String(p.AccountRef?.value ?? "") === bankAccountId) {
-      out.push({ id: String(p.Id), total: Number(p.TotalAmt ?? 0) });
+      out.push({ id: String(p.Id), total: Number(p.TotalAmt ?? 0), payee: String(p.EntityRef?.name ?? "") });
     }
   }
   return out;
@@ -192,6 +192,7 @@ export async function buildVendorCategoryMap(ctx: QboContext): Promise<Map<strin
 export interface ExistingCheck {
   id: string;
   total: number;
+  payee: string;
 }
 
 export async function listExistingCheckDocNumbers(
@@ -200,14 +201,14 @@ export async function listExistingCheckDocNumbers(
 ): Promise<Map<string, ExistingCheck>> {
   const res = await query<{ QueryResponse?: { Purchase?: any[] } }>(
     ctx,
-    "select Id, DocNumber, TotalAmt, AccountRef from Purchase orderby TxnDate desc MAXRESULTS 1000"
+    "select Id, DocNumber, TotalAmt, EntityRef, AccountRef from Purchase orderby TxnDate desc MAXRESULTS 1000"
   );
   const out = new Map<string, ExistingCheck>();
   for (const p of res.QueryResponse?.Purchase ?? []) {
     const doc = String(p.DocNumber ?? "").trim();
     if (!doc) continue;
     if (String(p.AccountRef?.value ?? "") !== bankAccountId) continue;
-    if (!out.has(doc)) out.set(doc, { id: String(p.Id), total: Number(p.TotalAmt ?? 0) });
+    if (!out.has(doc)) out.set(doc, { id: String(p.Id), total: Number(p.TotalAmt ?? 0), payee: String(p.EntityRef?.name ?? "") });
   }
   return out;
 }
