@@ -10,7 +10,7 @@
  * interactive QBO connector, which is scoped to invoicing/payroll/reporting and
  * tied to an interactive session (§1, §16, §22).
  */
-import { getValidAccessToken, type ActiveCredential } from "./oauth";
+import { getValidAccessToken, QboAuthError, type ActiveCredential } from "./oauth";
 import type { QboEnvironment } from "@/lib/cashsheet/rollout";
 
 const BASE_URL: Record<QboEnvironment, string> = {
@@ -35,6 +35,20 @@ export async function getContext(environment: QboEnvironment): Promise<QboContex
   const cred = await getValidAccessToken(environment);
   if (!cred) throw new QboNotConnectedError(environment);
   return { cred };
+}
+
+/**
+ * True when `err` is a QBO *connectivity* problem — no credential, a rejected
+ * token, or an API error — as opposed to a genuine programming bug. Read paths
+ * use this to degrade to cache / a "reconnect" notice instead of crashing the
+ * route, while still letting unexpected errors surface.
+ */
+export function isQboConnectivityError(err: unknown): boolean {
+  return (
+    err instanceof QboNotConnectedError ||
+    err instanceof QboAuthError ||
+    err instanceof QboApiError
+  );
 }
 
 /** Redact obviously-sensitive keys from an object before persisting it. */
@@ -103,6 +117,16 @@ export async function query<T = unknown>(ctx: QboContext, statement: string): Pr
 
 export async function post<T = unknown>(ctx: QboContext, entity: string, body: unknown): Promise<T> {
   return request<T>(ctx, "POST", entity, body);
+}
+
+/**
+ * Read-only GET against an Accounting API path (e.g. `reports/ProfitAndLoss?...`).
+ * Reuses the same base-URL-per-environment, bearer auth (auto-refresh via
+ * `getContext`), and minorversion as every other call. Used by the Reports
+ * client (src/lib/qbo/reports.ts), which is strictly read-only.
+ */
+export async function get<T = unknown>(ctx: QboContext, path: string): Promise<T> {
+  return request<T>(ctx, "GET", path);
 }
 
 /** List active accounts (for the Account Mapping resolution UI, §14). */

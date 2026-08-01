@@ -36,11 +36,12 @@ async function loadQboAccounts(): Promise<
 }
 
 const inputStyle: React.CSSProperties = {
-  padding: "0.3rem",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--panel-2)",
-  color: "var(--text)",
+  padding: "8px 12px",
+  borderRadius: "var(--radius-md)",
+  border: "1px solid var(--border-default)",
+  background: "#fff",
+  color: "var(--text-strong)",
+  fontSize: 13,
   width: 140,
 };
 
@@ -65,14 +66,15 @@ export default async function MappingsPage({
 
   return (
     <>
-      <h1>Purpose & Account Mapping</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Purpose &amp; account mapping</h1>
+      <p className="page-desc">
         Admin-editable rules. Resolve each account slot to a real QBO account ID (never rely on names once IDs are
         known). {editable ? "" : "Read-only for your role."}
       </p>
 
       {purposes.length === 0 && accounts.length === 0 ? (
-        <div className="notice">
+        <div className="notice info">
           No mappings loaded yet.{" "}
           {editable
             ? "Click “Load default mappings” to seed the German Car Depot purpose & account rules."
@@ -83,7 +85,7 @@ export default async function MappingsPage({
       {editable && (
         <div className="row-actions" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
           <form action={seedDefaultMappingsAction} className="inline">
-            <button className="btn" type="submit">
+            <button className="btn primary" type="submit">
               {purposes.length === 0 && accounts.length === 0 ? "Load default mappings" : "Restore default mappings"}
             </button>
           </form>
@@ -107,7 +109,7 @@ export default async function MappingsPage({
                 below, then press Save. <a href="?">Hide</a>
               </p>
               <div className="table-wrap">
-                <table>
+                <table className="gcd">
                   <thead>
                     <tr><th>Id</th><th>Name</th><th>Fully-qualified name</th><th>Type</th><th>Subtype</th></tr>
                   </thead>
@@ -137,7 +139,7 @@ export default async function MappingsPage({
 
       <h2>Account mappings</h2>
       <div className="table-wrap">
-        <table>
+        <table className="gcd">
           <thead>
             <tr><th>Friendly name</th><th>QBO account name</th><th>QBO account ID</th><th></th></tr>
           </thead>
@@ -170,7 +172,7 @@ export default async function MappingsPage({
 
       <h2>Purpose mappings</h2>
       <div className="table-wrap">
-        <table>
+        <table className="gcd">
           <thead>
             <tr>
               <th>Pattern</th><th>Amount type</th><th>Action</th><th>Category account</th>

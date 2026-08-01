@@ -38,7 +38,20 @@ export type Permission =
   // Coworker Portal module (prototype) — "Ask My Client"
   | "view_coworker_portal"
   | "ask_coworker_questions"
-  | "answer_coworker_questions";
+  | "answer_coworker_questions"
+  | "import_coworker_questions"
+  // AI C-suite (Financial Projections module, Phase 3)
+  | "view_ai_council"
+  | "run_ai_council"
+  // Tekmetric integration module (Build Phase 4 groundwork) — read-only
+  | "view_tekmetric"
+  | "refresh_tekmetric"
+  // Manually correct a month's Tekmetric top-line KPIs when a live pull is
+  // reproducibly wrong (see looksLikePartialMonth) — owner-only, financial data.
+  | "override_tekmetric_ops"
+  // Call-transcript integration (Build Phase 4) — read-only aggregated insights
+  | "view_transcripts"
+  | "refresh_transcripts";
 
 const PERMISSIONS: Record<Role, Permission[]> = {
   owner_admin: [
@@ -60,6 +73,17 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "view_coworker_portal",
     "ask_coworker_questions",
     "answer_coworker_questions",
+    "import_coworker_questions",
+    "view_ai_council",
+    "run_ai_council",
+    // Tekmetric: owners can view the operations page, trigger a refresh, and
+    // manually correct a month's figures when a live pull is wrong.
+    "view_tekmetric",
+    "refresh_tekmetric",
+    "override_tekmetric_ops",
+    // Transcripts: owners can view aggregated call insights and refresh them.
+    "view_transcripts",
+    "refresh_transcripts",
   ],
   reviewer: [
     "view_dashboard",
@@ -72,6 +96,15 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "use_assistant",
     "view_coworker_portal",
     "ask_coworker_questions",
+    // Reviewers can pull the "Ask My Client" transactions in from QBO (read-only).
+    "import_coworker_questions",
+    // Reviewers can read the AI council's output, but only an owner can spend
+    // tokens running it.
+    "view_ai_council",
+    // Reviewers can view Tekmetric operations, but not trigger a refresh.
+    "view_tekmetric",
+    // Reviewers can read aggregated call insights, but not trigger a refresh.
+    "view_transcripts",
   ],
   // The coworker role is now active for the "Ask My Client" portal (§1): a
   // coworker can view the portal and answer questions directed at them, but has

@@ -15,15 +15,46 @@
  */
 import { prisma } from "@/lib/db";
 import { encrypt, decrypt } from "@/lib/crypto";
+import { getQboEnvironment } from "@/lib/config-store";
 import type { QboEnvironment } from "@/lib/cashsheet/rollout";
 
 const AUTH_BASE = "https://appcenter.intuit.com/connect/oauth2";
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 const SCOPE = "com.intuit.quickbooks.accounting";
 
+/**
+ * QBO rejected the stored token when we tried to use/refresh it (e.g. a 400 on
+ * the refresh grant because the refresh token expired or was revoked). A typed
+ * error so callers can degrade to "reconnect required" instead of crashing, and
+ * can tell it apart from a genuine bug. Never carries the response body (which
+ * may echo secrets) — status only.
+ */
+export class QboAuthError extends Error {
+  constructor(public status: number, statusText: string) {
+    super(`QBO token request failed: ${status} ${statusText}`);
+    this.name = "QboAuthError";
+  }
+}
+
 // Refresh this many ms BEFORE the access token actually expires.
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
+/**
+ * The QBO environment for a connect/read when the caller doesn't specify one.
+ *
+ * DERIVED FROM THE ROLLOUT STAGE (§12) — the single source of truth the posting
+ * path and every module action already use — so the OAuth connect and the
+ * read-only pages can never target a different environment than the dashboard
+ * shows. (Previously these paths read a separate QBO_ENV env var, which could
+ * silently disagree with the stage: e.g. QBO_ENV=sandbox while live → reads hit
+ * the sandbox API with a live-company token and get a 403.)
+ */
+async function defaultEnvironment(): Promise<QboEnvironment> {
+  return getQboEnvironment();
+}
+
+/** Legacy: the raw QBO_ENV var. No longer authoritative for the data path — kept
+ *  only for diagnostics/back-compat. Use {@link defaultEnvironment} instead. */
 export function currentEnvironment(): QboEnvironment {
   return process.env.QBO_ENV === "live" ? "live" : "sandbox";
 }
@@ -66,7 +97,7 @@ async function tokenRequest(body: URLSearchParams): Promise<TokenResponse> {
   });
   if (!res.ok) {
     // Never log the body verbatim (it may echo secrets) — status only.
-    throw new Error(`QBO token request failed: ${res.status} ${res.statusText}`);
+    throw new QboAuthError(res.status, res.statusText);
   }
   return (await res.json()) as TokenResponse;
 }
@@ -77,7 +108,7 @@ export async function exchangeCode(code: string, realmId: string, connectedByEma
   const tokens = await tokenRequest(
     new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri })
   );
-  return persistTokens(currentEnvironment(), realmId, tokens, connectedByEmail);
+  return persistTokens(await defaultEnvironment(), realmId, tokens, connectedByEmail);
 }
 
 async function persistTokens(
@@ -125,14 +156,23 @@ export interface ActiveCredential {
  * Returns null when there is no stored credential (→ dry-run/validation only).
  */
 export async function getValidAccessToken(
-  environment: QboEnvironment = currentEnvironment()
+  environment?: QboEnvironment
 ): Promise<ActiveCredential | null> {
-  const cred = await prisma.qboCredential.findFirst({ where: { environment } });
+  const env = environment ?? (await defaultEnvironment());
+  // A given environment can have more than one credential row (the unique key is
+  // [environment, realmId]), e.g. a stale row from an earlier connect to another
+  // company. Always use the MOST RECENTLY UPDATED one so a fresh reconnect wins —
+  // otherwise an unordered findFirst can return the stale row and its dead refresh
+  // token 400s even right after a successful reconnect.
+  const cred = await prisma.qboCredential.findFirst({
+    where: { environment: env },
+    orderBy: { updatedAt: "desc" },
+  });
   if (!cred) return null;
 
   const expiresAt = cred.accessTokenExpires.getTime();
   if (Date.now() < expiresAt - REFRESH_SKEW_MS) {
-    return { accessToken: decrypt(cred.accessTokenEnc), realmId: cred.realmId, environment };
+    return { accessToken: decrypt(cred.accessTokenEnc), realmId: cred.realmId, environment: env };
   }
 
   // Refresh.
@@ -140,19 +180,44 @@ export async function getValidAccessToken(
   const tokens = await tokenRequest(
     new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken })
   );
-  await persistTokens(environment, cred.realmId, tokens, cred.connectedByEmail ?? undefined);
-  return { accessToken: tokens.access_token, realmId: cred.realmId, environment };
+  await persistTokens(env, cred.realmId, tokens, cred.connectedByEmail ?? undefined);
+  return { accessToken: tokens.access_token, realmId: cred.realmId, environment: env };
 }
 
 /** Cheap check for the dashboard "setup required" state (§16). */
 export async function hasValidCredentials(
-  environment: QboEnvironment = currentEnvironment()
+  environment?: QboEnvironment
 ): Promise<boolean> {
   try {
     return (await getValidAccessToken(environment)) !== null;
   } catch {
     return false;
   }
+}
+
+/**
+ * A **network-free** credential check for chrome that renders on every route
+ * (e.g. the top-bar environment pill). Unlike {@link hasValidCredentials} this
+ * NEVER performs a token refresh — doing so on the shared layout would fire a
+ * refresh on every page load and can race the page's own refresh (Intuit
+ * rotates refresh tokens on use, so the loser gets a 400). Here we only read the
+ * stored row and its expiry: a credential exists and its refresh token has not
+ * lapsed. The authoritative "is the token actually good" answer stays with the
+ * data path, which refreshes exactly once and degrades gracefully on failure.
+ */
+export async function hasStoredCredential(
+  environment?: QboEnvironment
+): Promise<boolean> {
+  const env = environment ?? (await defaultEnvironment());
+  const cred = await prisma.qboCredential
+    .findFirst({
+      where: { environment: env },
+      orderBy: { updatedAt: "desc" }, // the freshest credential (matches getValidAccessToken)
+      select: { refreshTokenExpires: true },
+    })
+    .catch(() => null);
+  if (!cred) return false;
+  return !cred.refreshTokenExpires || cred.refreshTokenExpires.getTime() > Date.now();
 }
 
 function requireEnv(key: string): string {

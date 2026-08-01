@@ -413,6 +413,24 @@ model ProjScenario {
   @@map("proj_scenarios")
 }
 
+// Cached, NORMALIZED QBO report snapshot (Financial Reporting, Phase 1).
+// Keyed by report type + inclusive period + accounting method. `payloadJson`
+// holds the normalized metric series (never raw QBO), so pages render fast and
+// the later monthly AI job can read a stable baseline. Fetched through a TTL
+// cache with a permission-gated manual refresh; strictly read-only over QBO.
+model ProjReportSnapshot {
+  id          String   @id @default(cuid())
+  reportType  String // 'pnl' | 'balance_sheet' | 'ar_aging' | 'ap_aging' | 'customer_sales' | 'item_sales'
+  periodStart DateTime
+  periodEnd   DateTime
+  method      String // 'accrual' | 'cash'
+  payloadJson Json // normalized (not raw) metric series
+  fetchedAt   DateTime @default(now())
+
+  @@unique([reportType, periodStart, periodEnd, method])
+  @@map("proj_report_snapshot")
+}
+
 // ===========================================================================
 // AI Report Assistant module — ai_ prefixed (prototype)
 // ===========================================================================
@@ -445,6 +463,60 @@ model AiMessage {
   @@map("ai_messages")
 }
 
+// AI C-suite (Phase 3): one council meeting (monthly cron) or on-demand run.
+model AiAgentRun {
+  id             String   @id @default(cuid())
+  kind           String // 'monthly' | 'on_demand'
+  monthLabel     String // e.g. 'Jun 2026'
+  periodStart    DateTime
+  periodEnd      DateTime
+  method         String // 'accrual' | 'cash'
+  status         String // 'running' | 'complete' | 'failed' | 'not_connected' | 'not_configured'
+  model          String   @default("claude-opus-4-8")
+  spentUsd       Float    @default(0)
+  ceoTakeaway    String? // cached for quick list display
+  error          String?
+  createdByEmail String?
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+
+  reports     AiAgentReport[]
+  boardReport AiBoardReport?
+
+  @@index([kind, startedAt])
+  @@map("ai_agent_run")
+}
+
+// One agent's structured insight within a run (officer, CEO, or auditor).
+model AiAgentReport {
+  id          String   @id @default(cuid())
+  runId       String
+  personaId   String
+  personaName String
+  layer       String // 'officer' | 'auditor' | 'board'
+  takeaway    String
+  insightJson Json // validated AgentInsight
+  createdAt   DateTime @default(now())
+
+  run AiAgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@map("ai_agent_report")
+}
+
+// The independent Board's end-of-month report for a run.
+model AiBoardReport {
+  id         String   @id @default(cuid())
+  runId      String   @unique
+  takeaway   String
+  reportJson Json // validated BoardReport
+  createdAt  DateTime @default(now())
+
+  run AiAgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("ai_board_report")
+}
+
 // ===========================================================================
 // Coworker Portal module — cwp_ prefixed (prototype)
 // ===========================================================================
@@ -464,10 +536,25 @@ model CwpQuestion {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  // "Ask My Client" import (read-only): a question auto-created from a QBO
+  // transaction parked in the configured account. source distinguishes these
+  // from manually-typed questions; the (qboTxnType, qboTxnId) pair dedupes
+  // re-imports. The txn snapshot fields let the UI show the transaction without
+  // re-fetching. The hub NEVER writes to QBO — an owner reclassifies there by
+  // hand using the coworker's answer.
+  source       String   @default("manual") // manual | ask_my_client
+  qboTxnId     String?
+  qboTxnType   String?
+  qboTxnDate   String? // YYYY-MM-DD as reported by QBO
+  qboTxnAmount Decimal? @db.Decimal(12, 2)
+  qboTxnName   String? // payee / customer as reported by QBO
+
   answers CwpAnswer[]
 
+  @@unique([qboTxnType, qboTxnId]) // dedupe imports; NULLs stay distinct so manual rows are unconstrained
   @@index([status])
   @@index([assignedEmail])
+  @@index([source])
   @@map("cwp_questions")
 }
 
@@ -661,4 +748,95 @@ model ChkEvent {
 
   @@index([checkId])
   @@map("chk_events")
+}
+
+// ===========================================================================
+// Tekmetric integration module — tek_ prefixed (Build Phase 4 groundwork)
+// Read-only shop-management data (repair orders, jobs, technicians, service
+// advisors, appointments, vehicles) pulled from the Tekmetric API and cached
+// as NORMALIZED (never raw) payloads. A fetch-through cache keyed by entity +
+// date range; refreshed by a permission-gated manual action. See
+// docs/PROGRESS_tekmetric.md and src/lib/tekmetric/*.
+// ===========================================================================
+
+model TekSnapshot {
+  id          String   @id @default(cuid())
+  entity      String // 'repair_orders' | 'jobs' | 'technicians' | 'appointments' | 'vehicles' | 'derived_metrics'
+  periodStart DateTime
+  periodEnd   DateTime
+  // The comparison mode baked into payloadJson's KPI deltas
+  // ('prior_period' | 'prior_year' | 'none'). Part of the key so a period
+  // refreshed under one comparison never overwrites — or is misread as — the
+  // same period under another (the deltas differ).
+  comparison  String   @default("prior_period")
+  payloadJson Json // normalized (not raw) TekOperationsData
+  fetchedAt   DateTime @default(now())
+
+  @@unique([entity, periodStart, periodEnd, comparison])
+  @@map("tek_snapshot")
+}
+
+// Manual correction for a single month's Tekmetric top-line KPIs, for when a
+// live pull is reproducibly wrong (not a transient rate-limit blip — see
+// looksLikePartialMonth) and re-running the backfill won't fix it. Owner-only
+// (§ override_tekmetric_ops); ARO and gross profit are entered directly,
+// revenue/margin are always DERIVED from them (roCount × aro, grossProfit /
+// revenue) so an override can never be internally inconsistent. Present for a
+// month ⇒ readOperationsKpis returns these values instead of the cached pull,
+// so the correction flows through Ops History, the Ops forecast baseline, and
+// anything else built on the monthly KPI history with no separate
+// "recalculate" step.
+model TekMonthOverride {
+  id                String   @id @default(cuid())
+  periodStart       DateTime @unique
+  periodEnd         DateTime
+  roCount           Int
+  carCount          Int
+  aro               Decimal  @db.Decimal(12, 2)
+  grossProfit       Decimal  @db.Decimal(12, 2)
+  note              String?  @db.Text
+  // Soft-delete (mirrors ChkPayeeMapping): "clear" sets this false rather than
+  // deleting the row, so the event history below is never lost to a cascade.
+  active            Boolean  @default(true)
+  overriddenByEmail String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  events TekMonthOverrideEvent[]
+
+  @@map("tek_month_overrides")
+}
+
+// Append-only audit trail: one row per save (create or edit) or clear, so a
+// correction's history — who changed what, and from what — is never lost even
+// as the current value is overwritten.
+model TekMonthOverrideEvent {
+  id             String   @id @default(cuid())
+  overrideId     String
+  eventType      String // "create" | "update" | "clear"
+  previousJson   Json?
+  newJson        Json?
+  changedByEmail String
+  note           String?  @db.Text
+  createdAt      DateTime @default(now())
+
+  override TekMonthOverride @relation(fields: [overrideId], references: [id], onDelete: Cascade)
+
+  @@index([overrideId])
+  @@map("tek_month_override_events")
+}
+
+// Call-transcript integration (Build Phase 4). Cache of AGGREGATED monthly call
+// insights read from the sibling gcd-webhook-server transcript service — never
+// raw transcript utterances (handoff §9). Read-only over that service.
+model TranscriptSnapshot {
+  id          String   @id @default(cuid())
+  entity      String // 'monthly_insights'
+  periodStart DateTime
+  periodEnd   DateTime
+  payloadJson Json // normalized TranscriptInsights
+  fetchedAt   DateTime @default(now())
+
+  @@unique([entity, periodStart, periodEnd])
+  @@map("transcript_snapshot")
 }

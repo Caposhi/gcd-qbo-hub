@@ -12,9 +12,9 @@ export const metadata = {
  */
 export default function TermsPage() {
   return (
-    <article style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem", lineHeight: 1.6 }}>
+    <article className="card" style={{ maxWidth: 760, margin: "2rem auto", lineHeight: 1.6 }}>
       <h1>Terms of Use &amp; End-User License Agreement</h1>
-      <p>
+      <p className="page-desc">
         <strong>GCD QBO Hub</strong> (&quot;the Application&quot;) is an internal software tool operated by Alan
         Gelfand Inc. DBA German Car Depot (&quot;German Car Depot&quot;, &quot;we&quot;) for its own accounting
         automation with QuickBooks Online. Last updated: 2026.

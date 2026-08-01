@@ -52,6 +52,14 @@ describe("role-gated actions (§14, §18, §20)", () => {
     expect(can("reviewer", "answer_coworker_questions")).toBe(false);
   });
 
+  it("AI council: owner can run, reviewer can only view, coworker neither (§ Phase 3)", () => {
+    expect(can("owner_admin", "run_ai_council")).toBe(true);
+    expect(can("owner_admin", "view_ai_council")).toBe(true);
+    expect(can("reviewer", "view_ai_council")).toBe(true);
+    expect(can("reviewer", "run_ai_council")).toBe(false);
+    expect(can("coworker", "view_ai_council")).toBe(false);
+  });
+
   it("anonymous / null role is denied everything", () => {
     expect(can(null, "view_dashboard")).toBe(false);
     expect(can(undefined, "approve_posting")).toBe(false);

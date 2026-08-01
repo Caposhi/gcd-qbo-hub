@@ -44,7 +44,11 @@ services:
         value: 1NGz6sOiJtKOOBZYpM5_0ODZxgHkSQRWYZQqufpotTWA
       - key: GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
         sync: false
-      # --- QBO (sandbox first) ---
+      # --- QBO ---
+      # NOTE: QBO_ENV is LEGACY and no longer authoritative. The QBO environment
+      # (sandbox vs live) is derived from the rollout stage (§12) — the single
+      # source of truth used by the connect flow, the posting engine, and every
+      # read-only page. This var is kept only for back-compat/diagnostics.
       - key: QBO_ENV
         value: sandbox
       - key: QBO_CLIENT_ID
@@ -55,8 +59,23 @@ services:
         value: https://gcd-qbo-hub.onrender.com/api/qbo/callback
       - key: QBO_REALM_ID
         sync: false
-      # --- AI Report Assistant (prototype) ---
+      # --- AI Report Assistant (prototype) + AI C-suite (Phase 3) ---
       - key: ANTHROPIC_API_KEY
+        sync: false
+      # --- Tekmetric integration (read-only shop-management data) ---
+      - key: TEKMETRIC_BASE_URL
+        value: https://shop.tekmetric.com
+      - key: TEKMETRIC_TOKEN
+        sync: false
+      - key: TEKMETRIC_SHOP_ID
+        sync: false
+      # --- Coworker Portal "Ask My Client" import (read-only over QBO) ---
+      - key: COWORKER_QBO_ACCOUNT_NAME
+        value: Ask My Client
+      # --- Call-transcript service (read-only aggregated insights) ---
+      - key: TRANSCRIPTS_BASE_URL
+        value: https://gcd-webhook-server.onrender.com
+      - key: TRANSCRIPTS_SECRET
         sync: false
       # --- SendGrid ---
       - key: SENDGRID_API_KEY
@@ -87,6 +106,27 @@ services:
     # to know whether we're in dry-run, sandbox, or live.
     startCommand: >-
       curl -fsS -X POST "$PUBLIC_APP_URL/api/cron/sync"
+      -H "Authorization: Bearer $CRON_SECRET"
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: PUBLIC_APP_URL
+        value: https://gcd-qbo-hub.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
+  # ---- Cron Job: monthly AI council run on the 1st (06:00 UTC) for the prior
+  # month (Financial Projections, Phase 3). Calls the protected internal route;
+  # the orchestrator enforces the $15/run token budget and is read-only over QBO.
+  - type: cron
+    name: gcd-qbo-hub-monthly-ai-council
+    runtime: node
+    plan: starter
+    rootDir: .
+    schedule: "0 6 1 * *"
+    buildCommand: npm install
+    startCommand: >-
+      curl -fsS -X POST "$PUBLIC_APP_URL/api/cron/ai-council"
       -H "Authorization: Bearer $CRON_SECRET"
     envVars:
       - key: NODE_VERSION

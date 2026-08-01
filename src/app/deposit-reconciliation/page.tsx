@@ -1,3 +1,4 @@
+import { Landmark } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
@@ -70,87 +71,110 @@ export default async function DepositReconciliationPage() {
 
   return (
     <>
-      <h1>🏦 Deposit Reconciliation</h1>
-      <p className="sub">
+      <div className="accent-bar" />
+      <h1>Deposit reconciliation</h1>
+      <p className="page-desc">
         Drop your processor exports and the hub reconstructs each payout into the exact QBO deposit it should become —
         Chase Paymentech (gross card sales by batch date) and Tekmetric/Stripe (payouts + charges, netted by fee). Each
         deposit is gated by an exact-sum checksum; anything that doesn&apos;t tie is flagged, never posted.
       </p>
 
       {editable ? (
-        <form action={ingestDepositFilesAction} className="notice" style={{ display: "grid", gap: "0.6rem" }}>
-          <strong>File reception center</strong>
-          <span className="muted" style={{ fontSize: "0.85rem" }}>
+        <form
+          action={ingestDepositFilesAction}
+          className="card"
+          style={{ border: "2px dashed var(--border-default)", display: "grid", gap: "0.6rem" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Landmark size={22} strokeWidth={1.75} aria-hidden />
+            <h3 className="card-title" style={{ margin: 0 }}>Drop your Chase Paymentech + Tekmetric CSVs</h3>
+          </div>
+          <p className="card-subtitle" style={{ margin: 0 }}>
             Drop CSVs: the Chase <em>Paymentech</em> settlement, and both Tekmetric files (the <em>payouts</em> export
             and the <em>Payments/charges</em> export). Re-dropping the same files does nothing (idempotent).
-          </span>
+          </p>
           <input type="file" name="files" multiple accept=".csv,text/csv" />
-          <div>
-            <button className="btn" type="submit">Ingest files</button>
+          <div className="row-actions" style={{ margin: 0 }}>
+            <button className="btn primary" type="submit">Ingest files</button>
           </div>
         </form>
       ) : (
-        <p className="muted">Ingesting files requires owner_admin.</p>
+        <p className="notice info">Ingesting files requires owner_admin.</p>
       )}
 
       <h2>Proposed deposits</h2>
-      {editable && payouts.length > 0 && (
-        <form action={locateProposedPaymentsAction} className="row-actions" style={{ marginBottom: "0.75rem" }}>
-          <button className="btn secondary" type="submit">Locate payments in QBO (read-only)</button>
-          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
-            Confirms each payout&apos;s charges exist as Undeposited-Funds payments before any deposit is created.
-            Nothing is written to QBO.
-          </span>
-        </form>
-      )}
-      {editable && dupCount > 0 && (
-        <form action={cleanupDuplicatePayoutsAction} className="row-actions" style={{ marginBottom: "0.5rem" }}>
-          <button className="btn secondary" type="submit">Remove {dupCount} duplicate payout{dupCount === 1 ? "" : "s"}</button>
-          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
-            Same processor + source ref appears more than once (from re-dropping files). Keeps the earliest; never
-            touches a posted one.
-          </span>
-        </form>
+      {editable && (matchedCount > 0 || payouts.length > 0 || dupCount > 0) && (
+        <div className="row-actions">
+          {matchedCount > 0 && (
+            <form action={createAllMatchedDepositsAction}>
+              <button className="btn primary" type="submit">
+                Create all {matchedCount} matched deposit{matchedCount === 1 ? "" : "s"}
+              </button>
+            </form>
+          )}
+          {payouts.length > 0 && (
+            <form action={locateProposedPaymentsAction}>
+              <button className="btn ghost" type="submit">Locate payments in QBO (read-only)</button>
+            </form>
+          )}
+          {dupCount > 0 && (
+            <form action={cleanupDuplicatePayoutsAction}>
+              <button className="btn ghost" type="submit">
+                Remove {dupCount} duplicate payout{dupCount === 1 ? "" : "s"}
+              </button>
+            </form>
+          )}
+        </div>
       )}
       {editable && matchedCount > 0 && (
-        <form action={createAllMatchedDepositsAction} className="row-actions" style={{ marginBottom: "0.5rem" }}>
-          <button className="btn" type="submit">Create all {matchedCount} matched deposit{matchedCount === 1 ? "" : "s"}</button>
-          <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
-            Posts every matched payout (Paymentech + Tekmetric) in one go — each re-verified and checksum-gated. Then
-            match each in the Chase bank feed.
-          </span>
-        </form>
+        <p className="card-subtitle">
+          Posts every matched payout (Paymentech + Tekmetric) in one go — each re-verified and checksum-gated. Then
+          match each in the Chase bank feed.
+        </p>
+      )}
+      {editable && payouts.length > 0 && (
+        <p className="card-subtitle">
+          Confirms each payout&apos;s charges exist as Undeposited-Funds payments before any deposit is created.
+          Nothing is written to QBO.
+        </p>
+      )}
+      {editable && dupCount > 0 && (
+        <p className="card-subtitle">
+          Same processor + source ref appears more than once (from re-dropping files). Keeps the earliest; never
+          touches a posted one.
+        </p>
       )}
       {lastLocate && (
-        <p className="muted" style={{ fontSize: "0.8rem" }}>
+        <p className="card-subtitle">
           {lastLocate.message} · {lastLocate.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
         </p>
       )}
       {lastBatch && (
-        <p className="muted" style={{ fontSize: "0.8rem" }}>
+        <p className="card-subtitle">
           {lastBatch.message} · {lastBatch.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
         </p>
       )}
       {payouts.length === 0 ? (
-        <p className="muted">No payouts ingested yet. Drop your processor CSVs above.</p>
+        <p className="notice info">No payouts ingested yet. Drop your processor CSVs above.</p>
       ) : (
         <div className="table-wrap">
-          <table>
+          <table className="gcd">
             <thead>
               <tr>
-                <th>Settlement</th><th>Processor</th><th>Gross</th><th>Fee</th><th>Net (deposit)</th>
-                <th>Lines</th><th>Status</th><th>Source</th><th></th>
+                <th>Settlement</th><th>Processor</th><th className="num">Gross</th><th className="num">Fee</th>
+                <th className="num">Net (deposit)</th>
+                <th className="num">Lines</th><th>Status</th><th>Source</th><th></th>
               </tr>
             </thead>
             <tbody>
               {payouts.map((p) => (
                 <tr key={p.id}>
                   <td>{p.settlementDate}</td>
-                  <td className="muted">{p.processor}</td>
-                  <td className="muted">{money(p.grossAmount)}</td>
-                  <td className="muted">{money(p.feeAmount)}</td>
-                  <td><strong>{money(p.netAmount)}</strong></td>
-                  <td>{p._count.lines}</td>
+                  <td>{p.processor}</td>
+                  <td className="num">{money(p.grossAmount)}</td>
+                  <td className="num">{money(p.feeAmount)}</td>
+                  <td className="num"><strong>{money(p.netAmount)}</strong></td>
+                  <td className="num">{p._count.lines}</td>
                   <td>
                     {p.status === "proposed" ? (
                       <span className="badge ok">proposed</span>
@@ -176,7 +200,7 @@ export default async function DepositReconciliationPage() {
                     {editable && p.status === "matched" && !p.qboDepositId && (
                       <form action={createDepositFromPayoutAction}>
                         <input type="hidden" name="payoutId" value={p.id} />
-                        <button className="btn" type="submit">Create deposit</button>
+                        <button className="btn primary" type="submit">Create deposit</button>
                       </form>
                     )}
                     {p.status === "matched" && createMsg.get(p.id) && createMsg.get(p.id)!.kind !== "create_deposit" && (
@@ -196,7 +220,7 @@ export default async function DepositReconciliationPage() {
         </div>
       )}
 
-      <p className="muted" style={{ marginTop: "1rem" }}>
+      <p className="card-subtitle" style={{ marginTop: "1rem" }}>
         Next step (needs the live QBO connection): for each <em>proposed</em> deposit, locate the matching
         Undeposited-Funds payments (and Tekmetric fee entries) and create the QBO Bank Deposit so the bank-feed line
         auto-matches. That runs behind the rollout ladder (propose → create-you-match → auto). See

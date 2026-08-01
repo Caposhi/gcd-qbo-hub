@@ -11,9 +11,9 @@ export const metadata = {
  */
 export default function PrivacyPage() {
   return (
-    <article style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem", lineHeight: 1.6 }}>
+    <article className="card" style={{ maxWidth: 760, margin: "2rem auto", lineHeight: 1.6 }}>
       <h1>Privacy Policy</h1>
-      <p>
+      <p className="page-desc">
         This policy explains how <strong>GCD QBO Hub</strong> (&quot;the Application&quot;), operated by Alan Gelfand
         Inc. DBA German Car Depot (&quot;we&quot;), handles data. The Application is an internal tool for German Car
         Depot&apos;s own accounting automation. Last updated: 2026.
