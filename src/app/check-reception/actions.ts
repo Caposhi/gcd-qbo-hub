@@ -77,7 +77,7 @@ export async function ingestCheckPdfAction(formData: FormData) {
   // a check we've already posted is flagged "already in QBO" on read, and a check
   // number that exists at a DIFFERENT amount is surfaced as a discrepancy rather
   // than a false "already in QBO".
-  let existingChecks = new Map<string, { id: string; total: number }>();
+  let existingChecks = new Map<string, { id: string; total: number; payee: string }>();
   let qboReached = false;
   try {
     const { getQboEnvironment } = await import("@/lib/config-store");
@@ -90,7 +90,7 @@ export async function ingestCheckPdfAction(formData: FormData) {
       buildVendorCategoryMap(ctx),
       chase?.qboAccountId
         ? listExistingCheckDocNumbers(ctx, chase.qboAccountId)
-        : Promise.resolve(new Map<string, { id: string; total: number }>()),
+        : Promise.resolve(new Map<string, { id: string; total: number; payee: string }>()),
     ]);
     vendors = v;
     vendorCategory = vc;
@@ -158,11 +158,11 @@ export async function ingestCheckPdfAction(formData: FormData) {
           status: amtMatches ? "already_in_qbo" : "needs_review",
           statusReason: amtMatches
             ? `Already in QBO (Purchase ${existing.id}) — check #${c.checkNumber} is already recorded on Chase 9680; nothing to post.`
-            : `⚠️ Amount mismatch: QBO already has check #${c.checkNumber} (Purchase ${existing.id}) for $${existing.total.toFixed(
+            : `⚠️ Check # collision: QBO already has check #${c.checkNumber} (Purchase ${existing.id}) for $${existing.total.toFixed(
                 2
-              )}, but this check is $${(c.amount ?? 0).toFixed(
-                2
-              )}. QBO can't match the bank line to a wrong-amount entry — fix or void Purchase ${existing.id} in QBO, then re-read.`,
+              )}${existing.payee ? ` to ${existing.payee}` : ""}, but this check is $${(c.amount ?? 0).toFixed(2)}${
+                c.payee ? ` to ${c.payee}` : ""
+              }. Different amount/payee — likely a number reused by an electronic draft. Re-number or fix Purchase ${existing.id} in QBO, then re-read.`,
         },
       });
       if (amtMatches) alreadyInQbo++;
@@ -460,11 +460,11 @@ async function createOneCheck(
     }
     const e = existing[0];
     return blocked(
-      `⚠️ Amount mismatch: QBO already has check #${check.checkNumber} (Purchase ${e.id}) for $${e.total.toFixed(
-        2
-      )}, but this check is $${amount.toFixed(
-        2
-      )}. Not posting a duplicate — fix or void Purchase ${e.id} in QBO, then re-read/re-create.`
+      `⚠️ Check # collision: QBO already has check #${check.checkNumber} (Purchase ${e.id}) for $${e.total.toFixed(2)}${
+        e.payee ? ` to ${e.payee}` : ""
+      }, but this check is $${amount.toFixed(2)}${
+        check.qboVendorName ? ` to ${check.qboVendorName}` : ""
+      }. Not posting a duplicate — re-number or fix Purchase ${e.id} in QBO first.`
     );
   }
 
