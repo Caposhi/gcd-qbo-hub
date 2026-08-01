@@ -10,6 +10,7 @@ import {
   skipCheckAction,
   createCheckAction,
   createAllReadyChecksAction,
+  recheckChecksAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -66,6 +67,11 @@ export default async function CheckReceptionPage() {
     where: { eventType: "create_batch" },
     orderBy: { createdAt: "desc" },
   });
+  const lastRecheck = await prisma.chkEvent.findFirst({
+    where: { eventType: "recheck" },
+    orderBy: { createdAt: "desc" },
+  });
+  const openCount = checks.filter((c) => c.status !== "created" && c.status !== "skipped").length;
   const learned = await prisma.chkPayeeMapping.count({ where: { active: true } });
 
   // Activity log — a visible record of every read, classify, create, block,
@@ -81,6 +87,7 @@ export default async function CheckReceptionPage() {
     already_in_qbo: "Already in QBO",
     create_error: "Create error",
     create_batch: "Batch",
+    recheck: "QBO re-check",
     skip: "Skipped",
   };
 
@@ -132,6 +139,16 @@ export default async function CheckReceptionPage() {
         </form>
       )}
 
+      {editable && openCount > 0 && (
+        <form action={recheckChecksAction} className="row-actions" style={{ margin: "0.5rem 0" }}>
+          <button className="btn" type="submit">Re-check QBO (read-only)</button>
+          <span className="card-subtitle" style={{ alignSelf: "center" }}>
+            Re-verifies each open check against QBO without re-uploading — flips a check back to <em>ready</em> once you
+            fix the QBO entry that was blocking it (e.g. a re-numbered draft). Nothing is written to QBO.
+          </span>
+        </form>
+      )}
+
       {lastIngest && (
         <p className="card-subtitle">
           {lastIngest.message} · {lastIngest.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
@@ -140,6 +157,11 @@ export default async function CheckReceptionPage() {
       {lastBatch && (
         <p className="card-subtitle">
           {lastBatch.message} · {lastBatch.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
+      {lastRecheck && (
+        <p className="card-subtitle">
+          {lastRecheck.message} · {lastRecheck.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
         </p>
       )}
       <p className="card-subtitle" style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
