@@ -183,6 +183,30 @@ export async function buildVendorCategoryMap(ctx: QboContext): Promise<Map<strin
   return out;
 }
 
+/**
+ * Map of check number → existing QBO Purchase id for checks already recorded on
+ * a bank account. One scan of recent Purchases (checks clear within weeks), so
+ * ingest can flag a check that's already in QBO up front — instead of only
+ * discovering it at create time. Read-only.
+ */
+export async function listExistingCheckDocNumbers(
+  ctx: QboContext,
+  bankAccountId: string
+): Promise<Map<string, string>> {
+  const res = await query<{ QueryResponse?: { Purchase?: any[] } }>(
+    ctx,
+    "select Id, DocNumber, AccountRef from Purchase orderby TxnDate desc MAXRESULTS 1000"
+  );
+  const out = new Map<string, string>();
+  for (const p of res.QueryResponse?.Purchase ?? []) {
+    const doc = String(p.DocNumber ?? "").trim();
+    if (!doc) continue;
+    if (String(p.AccountRef?.value ?? "") !== bankAccountId) continue;
+    if (!out.has(doc)) out.set(doc, String(p.Id));
+  }
+  return out;
+}
+
 export interface CheckPost {
   bankAccountId: string; // paid-from (Chase Checking 9680)
   vendor: VendorRef;
