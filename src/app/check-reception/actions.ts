@@ -574,3 +574,101 @@ export async function createAllReadyChecksAction() {
   });
   revalidatePath(PATH);
 }
+
+/**
+ * Re-check every not-yet-created check against live QBO (READ-ONLY) — the
+ * on-demand "verify" the owner needs when re-uploading the PDF does nothing
+ * (idempotent). Re-scans check numbers on Chase 9680 (with amount + payee) and
+ * re-classifies each open check:
+ *   - exists at the same amount → already in QBO (true duplicate)
+ *   - exists at a DIFFERENT amount → needs review (check-# collision)
+ *   - no longer in QBO (e.g. you re-numbered the colliding entry) → freed back to
+ *     ready (if vendor + category are set) or needs review, so it can be created.
+ * Never writes to QBO; only updates hub status.
+ */
+export async function recheckChecksAction() {
+  await requirePermission("edit_mappings");
+  const { getQboEnvironment } = await import("@/lib/config-store");
+  const { getContext } = await import("@/lib/qbo/client");
+  const { listExistingCheckDocNumbers } = await import("@/lib/checks/qbo-check");
+
+  const chase = await prisma.accountMapping.findFirst({ where: { friendlyName: "Chase Checking 9680" } });
+  if (!chase?.qboAccountId) {
+    await prisma.chkEvent.create({ data: { eventType: "recheck", message: "Chase Checking 9680 mapping unresolved — can't verify against QBO." } });
+    revalidatePath(PATH);
+    return;
+  }
+
+  let existing: Awaited<ReturnType<typeof listExistingCheckDocNumbers>>;
+  try {
+    const ctx = await getContext(await getQboEnvironment());
+    existing = await listExistingCheckDocNumbers(ctx, chase.qboAccountId);
+  } catch (err) {
+    await prisma.chkEvent.create({ data: { eventType: "recheck", message: `Couldn't reach QBO to verify: ${String(err)}`.slice(0, 500) } });
+    revalidatePath(PATH);
+    return;
+  }
+
+  const checks = await prisma.chkCheck.findMany({
+    where: { status: { in: ["ready", "needs_review", "already_in_qbo"] }, qboPurchaseId: null },
+  });
+
+  let nowDuplicate = 0;
+  let nowCollision = 0;
+  let freed = 0;
+  for (const c of checks) {
+    if (!c.checkNumber) continue;
+    const amt = c.amount != null ? Number(c.amount) : null;
+    const e = existing.get(c.checkNumber.trim());
+    if (e) {
+      const amtMatch = amt != null && Math.abs(Math.round(e.total * 100) - Math.round(amt * 100)) <= 1;
+      if (amtMatch) {
+        if (c.status !== "already_in_qbo") nowDuplicate++;
+        await prisma.chkCheck.update({
+          where: { id: c.id },
+          data: {
+            status: "already_in_qbo",
+            statusReason: `Already in QBO (Purchase ${e.id}) — check #${c.checkNumber} ($${(amt ?? 0).toFixed(2)})${
+              e.payee ? ` to ${e.payee}` : ""
+            } is already recorded on Chase 9680; nothing to post.`,
+          },
+        });
+      } else {
+        if (c.status !== "needs_review") nowCollision++;
+        await prisma.chkCheck.update({
+          where: { id: c.id },
+          data: {
+            status: "needs_review",
+            statusReason: `⚠️ Check # collision: QBO already has check #${c.checkNumber} (Purchase ${e.id}) for $${e.total.toFixed(
+              2
+            )}${e.payee ? ` to ${e.payee}` : ""}, but this check is $${(amt ?? 0).toFixed(
+              2
+            )}. Re-number or fix Purchase ${e.id} in QBO, then re-check.`,
+          },
+        });
+      }
+    } else if (c.status === "already_in_qbo") {
+      // The QBO entry that was blocking this check is gone (renumbered/voided) —
+      // free it so it can be created.
+      const readyToPost = !!(c.qboVendorId && c.categoryAccountId);
+      freed++;
+      await prisma.chkCheck.update({
+        where: { id: c.id },
+        data: {
+          status: readyToPost ? "ready" : "needs_review",
+          statusReason: readyToPost
+            ? "No longer in QBO — ready to create."
+            : "No longer in QBO — confirm the vendor & category to create.",
+        },
+      });
+    }
+  }
+
+  await prisma.chkEvent.create({
+    data: {
+      eventType: "recheck",
+      message: `QBO re-check: ${checks.length} open check(s) verified — ${nowDuplicate} newly already-in-QBO, ${nowCollision} collision(s), ${freed} freed to create.`,
+    },
+  });
+  revalidatePath(PATH);
+}
