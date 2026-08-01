@@ -42,6 +42,25 @@ export function normCustomer(s: string): string {
   return (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/**
+ * Order-insensitive customer key: the name's word tokens, uppercased and sorted,
+ * so "Castillo, Junior" and "Junior Castillo" collapse to the same key. Tekmetric
+ * stores the customer as "Last, First" on the payment but sometimes "First Last"
+ * in the fee-JE description; matching the sorted token set pairs them without
+ * loosening into different people (same tokens = same customer). Still guarded by
+ * date proximity, de-dup, and the deposit's exact-sum checksum.
+ */
+export function customerMatchKey(s: string): string {
+  return (s ?? "")
+    .toUpperCase()
+    .replace(/'/g, "") // O'BRIEN -> OBRIEN (apostrophes are within-word, not separators)
+    .split(/[\s,]+/) // split on the real separators between name parts (space, comma)
+    .map((t) => t.replace(/[^A-Z0-9]/g, "")) // strip any remaining punctuation within a token
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
 export interface FeeMatch {
   linked: FeeJournalEntry[];
   /** Customers for which no fee JE was found. */
@@ -65,10 +84,10 @@ export function matchFeesByCustomer(
   const linked: FeeJournalEntry[] = [];
   const missing: string[] = [];
   for (const cust of customers) {
-    const key = normCustomer(cust);
+    const key = customerMatchKey(cust);
     if (!key) { missing.push(cust); continue; }
     const je = feeJEs
-      .filter((j) => !used.has(j.jeId) && normCustomer(j.customerName) === key && daysApart(j.date, settlementDate) <= maxDays)
+      .filter((j) => !used.has(j.jeId) && customerMatchKey(j.customerName) === key && daysApart(j.date, settlementDate) <= maxDays)
       .sort((a, b) => daysApart(a.date, settlementDate) - daysApart(b.date, settlementDate))[0];
     if (je) {
       used.add(je.jeId);
