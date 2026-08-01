@@ -73,10 +73,11 @@ export async function ingestCheckPdfAction(formData: FormData) {
   // If QBO isn't reachable we still ingest; the dropdowns just start blank.
   let vendors: Awaited<ReturnType<typeof import("@/lib/checks/qbo-check").listVendors>> = [];
   let vendorCategory = new Map<string, { id: string; name: string }>();
-  // Check numbers already recorded in QBO on Chase 9680 → so a check we've
-  // already posted (or that overlaps a prior PDF) is flagged "already in QBO"
-  // on read, instead of surfacing as a scary "blocked" only at create time.
-  let existingChecks = new Map<string, string>();
+  // Check numbers already recorded in QBO on Chase 9680 (with their amount) → so
+  // a check we've already posted is flagged "already in QBO" on read, and a check
+  // number that exists at a DIFFERENT amount is surfaced as a discrepancy rather
+  // than a false "already in QBO".
+  let existingChecks = new Map<string, { id: string; total: number }>();
   let qboReached = false;
   try {
     const { getQboEnvironment } = await import("@/lib/config-store");
@@ -87,7 +88,9 @@ export async function ingestCheckPdfAction(formData: FormData) {
     const [v, vc, existing] = await Promise.all([
       listVendors(ctx),
       buildVendorCategoryMap(ctx),
-      chase?.qboAccountId ? listExistingCheckDocNumbers(ctx, chase.qboAccountId) : Promise.resolve(new Map<string, string>()),
+      chase?.qboAccountId
+        ? listExistingCheckDocNumbers(ctx, chase.qboAccountId)
+        : Promise.resolve(new Map<string, { id: string; total: number }>()),
     ]);
     vendors = v;
     vendorCategory = vc;
@@ -133,10 +136,14 @@ export async function ingestCheckPdfAction(formData: FormData) {
       continue;
     }
 
-    // Already recorded in QBO (same check number on Chase 9680)? Flag it up front
-    // as a benign "already in QBO" — not something to post or review.
-    const existingPurchaseId = c.checkNumber ? existingChecks.get(c.checkNumber.trim()) : undefined;
-    if (existingPurchaseId) {
+    // Already recorded in QBO (same check number on Chase 9680)? If the amount
+    // ALSO matches, it's a benign "already in QBO". If a check with that number
+    // exists at a DIFFERENT amount, that existing entry is wrong (or a different
+    // check) — QBO can't match the bank line to a wrong-amount entry — so surface
+    // it as a discrepancy to fix rather than a silent "done".
+    const existing = c.checkNumber ? existingChecks.get(c.checkNumber.trim()) : undefined;
+    if (existing) {
+      const amtMatches = c.amount !== null && Math.abs(Math.round(existing.total * 100) - Math.round(c.amount * 100)) <= 1;
       await prisma.chkCheck.create({
         data: {
           batchId: batch.id,
@@ -148,11 +155,17 @@ export async function ingestCheckPdfAction(formData: FormData) {
           memo: c.memo,
           confidence: c.confidence,
           extractionJson: c as unknown as object,
-          status: "already_in_qbo",
-          statusReason: `Already in QBO (Purchase ${existingPurchaseId}) — check #${c.checkNumber} is already recorded on Chase 9680; nothing to post.`,
+          status: amtMatches ? "already_in_qbo" : "needs_review",
+          statusReason: amtMatches
+            ? `Already in QBO (Purchase ${existing.id}) — check #${c.checkNumber} is already recorded on Chase 9680; nothing to post.`
+            : `⚠️ Amount mismatch: QBO already has check #${c.checkNumber} (Purchase ${existing.id}) for $${existing.total.toFixed(
+                2
+              )}, but this check is $${(c.amount ?? 0).toFixed(
+                2
+              )}. QBO can't match the bank line to a wrong-amount entry — fix or void Purchase ${existing.id} in QBO, then re-read.`,
         },
       });
-      alreadyInQbo++;
+      if (amtMatches) alreadyInQbo++;
       continue;
     }
 
@@ -429,15 +442,30 @@ async function createOneCheck(
   const amount = check.amount !== null ? Number(check.amount) : NaN;
   if (!Number.isFinite(amount) || amount <= 0) return blocked("No positive amount.");
 
-  // Duplicate guard: same check number already on this bank account. This is a
-  // benign, expected outcome (not an error) — mark it "already in QBO" so it
-  // leaves the actionable queue instead of looking like a failed post.
+  // Duplicate guard: same check number already on this bank account. Only a true
+  // duplicate when the AMOUNT matches too — then mark "already in QBO". If a
+  // check with that number exists at a different amount, block with a discrepancy
+  // message (the existing entry is wrong / a different check); never post a
+  // second check with the same number.
   const existing = await findChecksByDocNumber(cc.ctx, check.checkNumber, cc.bankId);
   if (existing.length) {
-    const message = `Already in QBO (Purchase ${existing[0].id}) — check #${check.checkNumber} is already recorded on Chase 9680; not posting a duplicate.`;
-    await prisma.chkCheck.update({ where: { id: check.id }, data: { status: "already_in_qbo", statusReason: message } });
-    await prisma.chkEvent.create({ data: { checkId: check.id, eventType: "already_in_qbo", message } });
-    return { status: "already_in_qbo", message };
+    const amtMatch = existing.find((e) => Math.abs(Math.round(e.total * 100) - Math.round(amount * 100)) <= 1);
+    if (amtMatch) {
+      const message = `Already in QBO (Purchase ${amtMatch.id}) — check #${check.checkNumber} ($${amount.toFixed(
+        2
+      )}) is already recorded on Chase 9680; not posting a duplicate.`;
+      await prisma.chkCheck.update({ where: { id: check.id }, data: { status: "already_in_qbo", statusReason: message } });
+      await prisma.chkEvent.create({ data: { checkId: check.id, eventType: "already_in_qbo", message } });
+      return { status: "already_in_qbo", message };
+    }
+    const e = existing[0];
+    return blocked(
+      `⚠️ Amount mismatch: QBO already has check #${check.checkNumber} (Purchase ${e.id}) for $${e.total.toFixed(
+        2
+      )}, but this check is $${amount.toFixed(
+        2
+      )}. Not posting a duplicate — fix or void Purchase ${e.id} in QBO, then re-read/re-create.`
+    );
   }
 
   let result;

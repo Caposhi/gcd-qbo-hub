@@ -173,7 +173,7 @@ export async function locateProposedPaymentsAction() {
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
   const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
-  const { findFeeJournalEntries, matchFeesByCustomer } = await import("@/lib/qbo/journal-entries");
+  const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
 
   // Terminal-keying discrepancy tolerance: the amount charged at the Chase
   // terminal can differ from the RO/QBO payment by a small typo. Match within
@@ -296,14 +296,20 @@ export async function locateProposedPaymentsAction() {
     // amount) so "matched" means the full deposit (payments + fees) can be built.
     let feesNeeded = 0;
     let feesFound = 0;
+    let feesAmountMatched = 0;
     let missingFeeCustomers: string[] = [];
     if (p.processor === "tekmetric" && foundAll) {
-      // Confirm each charge's fee JE exists, matched by the payment's customer.
+      // Confirm each charge's fee JE exists: by the payment's customer, falling
+      // back to the charge's known fee amount when the name doesn't line up.
       const payDetails = await getPaymentDetails(ctx, matchedPaymentIds);
-      const customers = matchedPaymentIds.map((id) => payDetails.get(id)?.customerName ?? "");
-      feesNeeded = customers.length;
-      const { linked, missing } = matchFeesByCustomer(feeJEs, customers, p.settlementDate, feeUsedGlobal, daysApart);
+      const charges = p.lines.map((line, i) => ({
+        customer: payDetails.get(matchedPaymentIds[i])?.customerName ?? "",
+        feeAmount: line.feeAmount != null ? Number(line.feeAmount) : null,
+      }));
+      feesNeeded = charges.length;
+      const { linked, missing, amountMatched } = matchFees(feeJEs, charges, p.settlementDate, feeUsedGlobal, daysApart);
       feesFound = linked.length;
+      feesAmountMatched = amountMatched;
       missingFeeCustomers = missing.filter(Boolean);
     }
     const feesOk = p.processor !== "tekmetric" || feesFound === feesNeeded;
@@ -320,7 +326,10 @@ export async function locateProposedPaymentsAction() {
       data: { status, deltaCents: status === "matched" ? overShortCents : null },
     });
     const osNote = overShortCents !== 0 ? ` Over/short from keying: ${(overShortCents / 100).toFixed(2)} (booked to Cash over/short on deposit).` : "";
-    const feeNote = p.processor === "tekmetric" && feesNeeded ? ` ${feesFound}/${feesNeeded} fee JEs located.` : "";
+    const feeNote =
+      p.processor === "tekmetric" && feesNeeded
+        ? ` ${feesFound}/${feesNeeded} fee JEs located${feesAmountMatched ? ` (${feesAmountMatched} matched by fee amount — name differed in QBO)` : ""}.`
+        : "";
     const message =
       foundAll && feesOk
         ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${feeNote}${osNote}`
@@ -407,7 +416,7 @@ async function createOneDeposit(
     "@/lib/qbo/deposits"
   );
   const { shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
-  const { findFeeJournalEntries, matchFeesByCustomer } = await import("@/lib/qbo/journal-entries");
+  const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
 
   const blockedP = async (message: string): Promise<DepCreateOutcome> => {
     await prisma.depEvent.create({ data: { payoutId: payout.id, eventType: "create_blocked", message } });
@@ -443,8 +452,13 @@ async function createOneDeposit(
 
   if (payout.processor === "tekmetric") {
     const feeJEs = await findFeeJournalEntries(dc.ctx, feeStart, feeEnd);
-    const customers = ids.map((id) => details.get(id)!.customerName);
-    const { linked, missing } = matchFeesByCustomer(feeJEs, customers, payout.settlementDate, feeUsed, daysApart);
+    // Charge = the matched payment's customer + that line's known fee (from the
+    // Tekmetric export), so a name discrepancy can fall back to the fee amount.
+    const charges = payout.lines.map((l) => ({
+      customer: details.get(l.matchedQboTxnId as string)!.customerName,
+      feeAmount: l.feeAmount != null ? Number(l.feeAmount) : null,
+    }));
+    const { linked, missing } = matchFees(feeJEs, charges, payout.settlementDate, feeUsed, daysApart);
     if (missing.length) return blockedP(`Fee journal entry not found for: ${missing.join(", ")} (searched ${feeStart}…${feeEnd}) — re-run Locate.`);
     journalEntries = linked.map((je) => ({ id: je.jeId, lineId: je.ufLineId, amount: -je.amount }));
     const sumFeeCents = linked.reduce((s, je) => s + Math.round(je.amount * 100), 0);

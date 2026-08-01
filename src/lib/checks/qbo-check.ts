@@ -189,20 +189,25 @@ export async function buildVendorCategoryMap(ctx: QboContext): Promise<Map<strin
  * ingest can flag a check that's already in QBO up front — instead of only
  * discovering it at create time. Read-only.
  */
+export interface ExistingCheck {
+  id: string;
+  total: number;
+}
+
 export async function listExistingCheckDocNumbers(
   ctx: QboContext,
   bankAccountId: string
-): Promise<Map<string, string>> {
+): Promise<Map<string, ExistingCheck>> {
   const res = await query<{ QueryResponse?: { Purchase?: any[] } }>(
     ctx,
-    "select Id, DocNumber, AccountRef from Purchase orderby TxnDate desc MAXRESULTS 1000"
+    "select Id, DocNumber, TotalAmt, AccountRef from Purchase orderby TxnDate desc MAXRESULTS 1000"
   );
-  const out = new Map<string, string>();
+  const out = new Map<string, ExistingCheck>();
   for (const p of res.QueryResponse?.Purchase ?? []) {
     const doc = String(p.DocNumber ?? "").trim();
     if (!doc) continue;
     if (String(p.AccountRef?.value ?? "") !== bankAccountId) continue;
-    if (!out.has(doc)) out.set(doc, String(p.Id));
+    if (!out.has(doc)) out.set(doc, { id: String(p.Id), total: Number(p.TotalAmt ?? 0) });
   }
   return out;
 }
