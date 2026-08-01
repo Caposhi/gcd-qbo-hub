@@ -51,7 +51,8 @@ export default async function CheckReceptionPage() {
   const readyCount = checks.filter((c) => c.status === "ready" && !c.qboPurchaseId).length;
 
   // Only pay the QBO round-trip when there are checks to classify.
-  const needsForms = editable && checks.some((c) => c.status !== "created" && c.status !== "skipped");
+  const needsForms =
+    editable && checks.some((c) => c.status !== "created" && c.status !== "skipped" && c.status !== "already_in_qbo");
   const { vendors, categories, reached } = needsForms
     ? await loadQboLists()
     : { vendors: [], categories: [], reached: true };
@@ -65,6 +66,22 @@ export default async function CheckReceptionPage() {
     orderBy: { createdAt: "desc" },
   });
   const learned = await prisma.chkPayeeMapping.count({ where: { active: true } });
+
+  // Activity log — a visible record of every read, classify, create, block,
+  // duplicate, and error, so nothing the system does is invisible.
+  const activity = await prisma.chkEvent.findMany({ orderBy: { createdAt: "desc" }, take: 40 });
+  const eventLabel: Record<string, string> = {
+    ingest: "Read",
+    ingest_error: "Read error",
+    classify: "Confirmed",
+    classify_blocked: "Confirm blocked",
+    create_check: "Created",
+    create_blocked: "Blocked",
+    already_in_qbo: "Already in QBO",
+    create_error: "Create error",
+    create_batch: "Batch",
+    skip: "Skipped",
+  };
 
   return (
     <>
@@ -128,6 +145,8 @@ export default async function CheckReceptionPage() {
                 <span className="badge ok">created</span>
               ) : c.status === "ready" ? (
                 <span className="badge ok">ready</span>
+              ) : c.status === "already_in_qbo" ? (
+                <span className="badge muted">already in QBO</span>
               ) : c.status === "skipped" ? (
                 <span className="badge muted">skipped</span>
               ) : (
@@ -155,7 +174,7 @@ export default async function CheckReceptionPage() {
                   </div>
                 )}
 
-                {editable && c.status !== "created" && c.status !== "skipped" && (
+                {editable && c.status !== "created" && c.status !== "skipped" && c.status !== "already_in_qbo" && (
                   <form action={classifyCheckAction} style={{ display: "grid", gap: "0.4rem" }}>
                     <input type="hidden" name="checkId" value={c.id} />
                     <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
@@ -251,9 +270,52 @@ export default async function CheckReceptionPage() {
         </div>
       )}
 
+      <h2 style={{ marginTop: "1.5rem" }}>Recent activity</h2>
+      {activity.length === 0 ? (
+        <p className="muted">No activity yet.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When (UTC)</th>
+                <th>Event</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activity.map((e) => (
+                <tr key={e.id}>
+                  <td className="muted" style={{ fontSize: "0.75rem", whiteSpace: "nowrap" }}>
+                    {e.createdAt.toISOString().replace("T", " ").slice(0, 19)}
+                  </td>
+                  <td style={{ fontSize: "0.78rem" }}>
+                    <span
+                      className={`badge ${
+                        e.eventType === "create_check"
+                          ? "ok"
+                          : e.eventType === "create_error" || e.eventType === "ingest_error"
+                            ? "danger"
+                            : e.eventType === "create_blocked" || e.eventType === "classify_blocked"
+                              ? "warn"
+                              : "muted"
+                      }`}
+                    >
+                      {eventLabel[e.eventType] ?? e.eventType}
+                    </span>
+                  </td>
+                  <td className="muted" style={{ fontSize: "0.75rem", whiteSpace: "normal" }}>{e.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <p className="muted" style={{ marginTop: "1rem" }}>
         Runs behind the rollout ladder (read → confirm → create-you-match → auto). Nothing posts unless the stage allows
-        live posting and QBO is connected; a check number already in QBO is never posted twice.
+        live posting and QBO is connected; a check number already in QBO is never posted twice — those show as
+        “already in QBO”, a safe duplicate block, not an error.
       </p>
     </>
   );

@@ -73,13 +73,25 @@ export async function ingestCheckPdfAction(formData: FormData) {
   // If QBO isn't reachable we still ingest; the dropdowns just start blank.
   let vendors: Awaited<ReturnType<typeof import("@/lib/checks/qbo-check").listVendors>> = [];
   let vendorCategory = new Map<string, { id: string; name: string }>();
+  // Check numbers already recorded in QBO on Chase 9680 → so a check we've
+  // already posted (or that overlaps a prior PDF) is flagged "already in QBO"
+  // on read, instead of surfacing as a scary "blocked" only at create time.
+  let existingChecks = new Map<string, string>();
   let qboReached = false;
   try {
     const { getQboEnvironment } = await import("@/lib/config-store");
     const { getContext } = await import("@/lib/qbo/client");
-    const { listVendors, buildVendorCategoryMap } = await import("@/lib/checks/qbo-check");
+    const { listVendors, buildVendorCategoryMap, listExistingCheckDocNumbers } = await import("@/lib/checks/qbo-check");
     const ctx = await getContext(await getQboEnvironment());
-    [vendors, vendorCategory] = await Promise.all([listVendors(ctx), buildVendorCategoryMap(ctx)]);
+    const chase = await prisma.accountMapping.findFirst({ where: { friendlyName: "Chase Checking 9680" } });
+    const [v, vc, existing] = await Promise.all([
+      listVendors(ctx),
+      buildVendorCategoryMap(ctx),
+      chase?.qboAccountId ? listExistingCheckDocNumbers(ctx, chase.qboAccountId) : Promise.resolve(new Map<string, string>()),
+    ]);
+    vendors = v;
+    vendorCategory = vc;
+    existingChecks = existing;
     qboReached = true;
   } catch {
     qboReached = false;
@@ -97,6 +109,7 @@ export async function ingestCheckPdfAction(formData: FormData) {
 
   let ready = 0;
   let skipped = 0;
+  let alreadyInQbo = 0;
   for (const c of extraction.checks) {
     // A page with neither a check number nor an amount isn't a check (Chase
     // downloads often start with a cover/summary page) — skip it, don't nag.
@@ -117,6 +130,29 @@ export async function ingestCheckPdfAction(formData: FormData) {
         },
       });
       skipped++;
+      continue;
+    }
+
+    // Already recorded in QBO (same check number on Chase 9680)? Flag it up front
+    // as a benign "already in QBO" — not something to post or review.
+    const existingPurchaseId = c.checkNumber ? existingChecks.get(c.checkNumber.trim()) : undefined;
+    if (existingPurchaseId) {
+      await prisma.chkCheck.create({
+        data: {
+          batchId: batch.id,
+          page: c.page,
+          checkNumber: c.checkNumber,
+          amount: c.amount !== null ? dec(c.amount) : null,
+          checkDate: c.date,
+          payeeRaw: c.payee,
+          memo: c.memo,
+          confidence: c.confidence,
+          extractionJson: c as unknown as object,
+          status: "already_in_qbo",
+          statusReason: `Already in QBO (Purchase ${existingPurchaseId}) — check #${c.checkNumber} is already recorded on Chase 9680; nothing to post.`,
+        },
+      });
+      alreadyInQbo++;
       continue;
     }
 
@@ -167,12 +203,13 @@ export async function ingestCheckPdfAction(formData: FormData) {
   }
 
   const counted = extraction.checks.length - skipped;
+  const needReview = counted - ready - alreadyInQbo;
   await prisma.chkEvent.create({
     data: {
       eventType: "ingest",
-      message: `Read ${extraction.checks.length} page(s) from ${f.name || "PDF"} — ${counted} check(s) (${ready} ready, ${
-        counted - ready
-      } need review)${skipped ? `, ${skipped} non-check page(s) skipped` : ""}${
+      message: `Read ${extraction.checks.length} page(s) from ${f.name || "PDF"} — ${counted} check(s) (${ready} ready, ${needReview} need review${
+        alreadyInQbo ? `, ${alreadyInQbo} already in QBO` : ""
+      })${skipped ? `, ${skipped} non-check page(s) skipped` : ""}${
         qboReached ? "" : " · QBO not reached, dropdowns unfilled"
       }.`,
       dataJson: { usage: extraction.usage } as unknown as object,
@@ -364,7 +401,7 @@ async function prepareCheckCreateContext(): Promise<{ ok: true; value: ChkCreate
   return { ok: true, value: { gateEnv: gate.environment!, ctx, bankId: chase.qboAccountId } };
 }
 
-type ChkCreateOutcome = { status: "created" | "skipped" | "blocked" | "error"; message?: string };
+type ChkCreateOutcome = { status: "created" | "skipped" | "blocked" | "error" | "already_in_qbo"; message?: string };
 
 /**
  * Post ONE ready check to QBO as a Check (Purchase). Guards: must be ready and
@@ -392,10 +429,15 @@ async function createOneCheck(
   const amount = check.amount !== null ? Number(check.amount) : NaN;
   if (!Number.isFinite(amount) || amount <= 0) return blocked("No positive amount.");
 
-  // Duplicate guard: same check number already on this bank account.
+  // Duplicate guard: same check number already on this bank account. This is a
+  // benign, expected outcome (not an error) — mark it "already in QBO" so it
+  // leaves the actionable queue instead of looking like a failed post.
   const existing = await findChecksByDocNumber(cc.ctx, check.checkNumber, cc.bankId);
   if (existing.length) {
-    return blocked(`Check #${check.checkNumber} already exists in QBO (Purchase ${existing[0].id}) — not posting a duplicate.`);
+    const message = `Already in QBO (Purchase ${existing[0].id}) — check #${check.checkNumber} is already recorded on Chase 9680; not posting a duplicate.`;
+    await prisma.chkCheck.update({ where: { id: check.id }, data: { status: "already_in_qbo", statusReason: message } });
+    await prisma.chkEvent.create({ data: { checkId: check.id, eventType: "already_in_qbo", message } });
+    return { status: "already_in_qbo", message };
   }
 
   let result;
@@ -480,10 +522,12 @@ export async function createAllReadyChecksAction() {
   let created = 0;
   let blocked = 0;
   let errored = 0;
+  let already = 0;
   for (const check of ready) {
     try {
       const outcome = await createOneCheck(check, prep.value, user.email);
       if (outcome.status === "created") created++;
+      else if (outcome.status === "already_in_qbo") already++;
       else if (outcome.status === "blocked") blocked++;
       else if (outcome.status === "error") errored++;
     } catch (err) {
@@ -495,7 +539,9 @@ export async function createAllReadyChecksAction() {
   await prisma.chkEvent.create({
     data: {
       eventType: "create_batch",
-      message: `Batch create: ${created} created, ${blocked} blocked, ${errored} errored (of ${ready.length} ready) · env ${prep.value.gateEnv}`,
+      message: `Batch create: ${created} created${already ? `, ${already} already in QBO (safe duplicate blocks)` : ""}${
+        blocked ? `, ${blocked} blocked` : ""
+      }${errored ? `, ${errored} errored` : ""} (of ${ready.length} ready) · env ${prep.value.gateEnv}`,
     },
   });
   revalidatePath(PATH);
