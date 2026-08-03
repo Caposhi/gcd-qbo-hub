@@ -626,7 +626,11 @@ model DepPayoutLine {
   feeAmount         Decimal? @db.Decimal(12, 2) // per-charge processor fee (Tekmetric); matched to the fee JE
   brand             String?
   ref               String?
-  matchedQboTxnId   String?
+  matchedQboTxnId   String? // first/only matched payment (back-compat)
+  // A single Paymentech settlement charge can be a consolidation of several
+  // same-card Undeposited-Funds payments — all of them are linked into the
+  // deposit. Holds one id for a normal 1:1 charge, or the whole group.
+  matchedQboTxnIds  String[] @default([])
   matchedQboTxnType String? // Payment | JournalEntry
   createdAt         DateTime @default(now())
 
