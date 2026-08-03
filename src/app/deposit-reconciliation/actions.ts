@@ -354,6 +354,7 @@ export async function locateProposedPaymentsAction() {
     else payoutsReview++;
 
     const missing = detail.filter((d) => !d.found && !d.alreadyDeposited).map((d) => d.amount.toFixed(2));
+    const depositedAmounts = detail.filter((d) => d.alreadyDeposited).map((d) => d.amount.toFixed(2));
     const overShortCents = detail.reduce((s, d) => s + Math.round((d.delta ?? 0) * 100), 0);
     await prisma.depPayout.update({
       where: { id: p.id },
@@ -377,7 +378,9 @@ export async function locateProposedPaymentsAction() {
             }. Re-run once Back Office has posted them (or check that customer's fee JE name matches).`
           : allDeposited
             ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
-            : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).${consolidatedNote}${ambiguousNote}`;
+            : `Located ${foundCount}/${p.lines.length}${
+                depositedCount ? `, ${depositedCount} already deposited (${depositedAmounts.join(", ")})` : ""
+              }; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).${consolidatedNote}${ambiguousNote}`;
     await prisma.depEvent.create({
       data: {
         payoutId: p.id,
