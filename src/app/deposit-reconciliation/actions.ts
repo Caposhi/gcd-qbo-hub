@@ -172,7 +172,7 @@ export async function locateProposedPaymentsAction() {
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
-  const { collectDepositedPaymentIds, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
+  const { collectDepositedPaymentMap, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
   const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
   const { findConsolidatedMatch } = await import("@/lib/deposits/consolidation");
 
@@ -210,12 +210,14 @@ export async function locateProposedPaymentsAction() {
   // all here is already reconciled, so we surface "already deposited" instead of
   // a false "matched" that would only get blocked at create time.
   let depositedIds = new Set<string>();
+  let depositedMap = new Map<string, string>(); // paymentId → the Deposit it's on
   let feeJEs: Awaited<ReturnType<typeof findFeeJournalEntries>> = [];
   const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
   if (settleDates.length) {
     const spanStart = shiftDate(settleDates[0], -8);
     const spanEnd = shiftDate(settleDates[settleDates.length - 1], 4);
-    depositedIds = await collectDepositedPaymentIds(ctx, spanStart, spanEnd);
+    depositedMap = await collectDepositedPaymentMap(ctx, spanStart, spanEnd);
+    depositedIds = new Set(depositedMap.keys());
     feeJEs = await findFeeJournalEntries(ctx, spanStart, spanEnd);
   }
   // Fee JEs claimed this run (a JE backs only one payout).
@@ -230,12 +232,14 @@ export async function locateProposedPaymentsAction() {
 
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
-    // Tight, processor-specific window: Paymentech posts on the batch date;
-    // Tekmetric charges settle the next day. Narrow windows + the global
-    // no-reuse guard keep same-amount transactions on different days apart.
-    const start = shiftDate(p.settlementDate, p.processor === "tekmetric" ? -6 : -3);
+    // Processor-specific look-back: a card sale is PAID in QBO on the sale date
+    // but Paymentech settles it into a batch several days later (e.g. a 07/17
+    // sale in the 07/21 batch, over a weekend), so the payment can predate the
+    // batch by up to ~6 days. Tekmetric charges settle the next day. The global
+    // no-reuse guard + nearest-date preference keep same-amount payments apart.
+    const start = shiftDate(p.settlementDate, -6);
     const end = shiftDate(p.settlementDate, 2);
-    const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; group?: number; matchedAmount?: number; delta?: number; candidates: number }> = [];
+    const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; depositId?: string; group?: number; matchedAmount?: number; delta?: number; candidates: number }> = [];
     const matchedPaymentIds: string[] = [];
     let foundCount = 0;
     let depositedCount = 0;
@@ -306,9 +310,10 @@ export async function locateProposedPaymentsAction() {
         });
       } else if (pool.some((c) => depositedIds.has(c.id))) {
         // A payment of this amount exists but is already on a deposit → this
-        // charge was reconciled previously.
+        // charge was reconciled previously. Capture which deposit swept it.
         depositedCount++;
-        detail.push({ amount: amt, found: false, alreadyDeposited: true, candidates: pool.length });
+        const depId = pool.map((c) => depositedMap.get(c.id)).find(Boolean);
+        detail.push({ amount: amt, found: false, alreadyDeposited: true, depositId: depId, candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
           data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
@@ -354,7 +359,9 @@ export async function locateProposedPaymentsAction() {
     else payoutsReview++;
 
     const missing = detail.filter((d) => !d.found && !d.alreadyDeposited).map((d) => d.amount.toFixed(2));
-    const depositedAmounts = detail.filter((d) => d.alreadyDeposited).map((d) => d.amount.toFixed(2));
+    const depositedAmounts = detail
+      .filter((d) => d.alreadyDeposited)
+      .map((d) => `${d.amount.toFixed(2)}${d.depositId ? ` on Deposit ${d.depositId}` : ""}`);
     const overShortCents = detail.reduce((s, d) => s + Math.round((d.delta ?? 0) * 100), 0);
     await prisma.depPayout.update({
       where: { id: p.id },
