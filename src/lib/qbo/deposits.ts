@@ -217,3 +217,31 @@ export async function collectDepositedPaymentIds(
   }
   return ids;
 }
+
+/**
+ * Like collectDepositedPaymentIds, but maps each already-deposited payment id to
+ * the QBO Deposit it sits on — so a "charge already deposited" diagnostic can
+ * point straight at the deposit that swept it. Read-only.
+ */
+export async function collectDepositedPaymentMap(
+  ctx: QboContext,
+  startDate: string,
+  endDate: string
+): Promise<Map<string, string>> {
+  const res = await query<{ QueryResponse?: { Deposit?: any[] } }>(
+    ctx,
+    `select * from Deposit where TxnDate >= '${escapeQuery(startDate)}' ` +
+      `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
+  );
+  const map = new Map<string, string>();
+  for (const dep of res.QueryResponse?.Deposit ?? []) {
+    for (const line of dep.Line ?? []) {
+      for (const lt of line.LinkedTxn ?? []) {
+        if (lt?.TxnType === "Payment" && lt?.TxnId && !map.has(String(lt.TxnId))) {
+          map.set(String(lt.TxnId), String(dep.Id ?? ""));
+        }
+      }
+    }
+  }
+  return map;
+}
