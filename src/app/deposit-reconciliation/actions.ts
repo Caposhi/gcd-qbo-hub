@@ -232,10 +232,12 @@ export async function locateProposedPaymentsAction() {
 
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
-    // Tight, processor-specific window: Paymentech posts on the batch date;
-    // Tekmetric charges settle the next day. Narrow windows + the global
-    // no-reuse guard keep same-amount transactions on different days apart.
-    const start = shiftDate(p.settlementDate, p.processor === "tekmetric" ? -6 : -3);
+    // Processor-specific look-back: a card sale is PAID in QBO on the sale date
+    // but Paymentech settles it into a batch several days later (e.g. a 07/17
+    // sale in the 07/21 batch, over a weekend), so the payment can predate the
+    // batch by up to ~6 days. Tekmetric charges settle the next day. The global
+    // no-reuse guard + nearest-date preference keep same-amount payments apart.
+    const start = shiftDate(p.settlementDate, -6);
     const end = shiftDate(p.settlementDate, 2);
     const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; depositId?: string; group?: number; matchedAmount?: number; delta?: number; candidates: number }> = [];
     const matchedPaymentIds: string[] = [];
