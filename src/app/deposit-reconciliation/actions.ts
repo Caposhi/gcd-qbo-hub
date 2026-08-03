@@ -172,8 +172,9 @@ export async function locateProposedPaymentsAction() {
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
-  const { collectDepositedPaymentIds } = await import("@/lib/qbo/deposits");
+  const { collectDepositedPaymentIds, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
   const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
+  const { findConsolidatedMatch } = await import("@/lib/deposits/consolidation");
 
   // Terminal-keying discrepancy tolerance: the amount charged at the Chase
   // terminal can differ from the RO/QBO payment by a small typo. Match within
@@ -234,10 +235,18 @@ export async function locateProposedPaymentsAction() {
     // no-reuse guard keep same-amount transactions on different days apart.
     const start = shiftDate(p.settlementDate, p.processor === "tekmetric" ? -6 : -3);
     const end = shiftDate(p.settlementDate, 2);
-    const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; matchedAmount?: number; delta?: number; candidates: number }> = [];
+    const detail: Array<{ amount: number; found: boolean; alreadyDeposited?: boolean; group?: number; matchedAmount?: number; delta?: number; candidates: number }> = [];
     const matchedPaymentIds: string[] = [];
     let foundCount = 0;
     let depositedCount = 0;
+    let consolidatedCount = 0;
+    const ambiguousCharges: string[] = [];
+
+    // Paymentech can consolidate several same-card charges into one settlement
+    // line; fetch the whole window's payments once so a charge with no single
+    // match can fall back to the same-customer group that sums to it.
+    const windowPool =
+      p.processor !== "tekmetric" ? await findPaymentsInWindow(ctx, start, end) : [];
 
     for (const line of p.lines) {
       const amt = Number(line.amount);
@@ -262,6 +271,19 @@ export async function locateProposedPaymentsAction() {
           )[0];
       }
 
+      // Paymentech only: if no single payment matched, try the same-card
+      // consolidation group that sums to this charge (available payments only).
+      let consolidated: ReturnType<typeof findConsolidatedMatch>["match"] = null;
+      let consolidatedAmbiguous = false;
+      if (!pick && p.processor !== "tekmetric") {
+        const available = windowPool
+          .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
+          .map((c) => ({ id: c.id, amount: c.amount, customer: c.customerName ?? "" }));
+        const res = findConsolidatedMatch(amt, available);
+        consolidated = res.match;
+        consolidatedAmbiguous = !res.match && res.ambiguous.length > 0;
+      }
+
       if (pick) {
         globalUsed.add(pick.id);
         matchedPaymentIds.push(pick.id);
@@ -269,7 +291,18 @@ export async function locateProposedPaymentsAction() {
         detail.push({ amount: amt, found: true, matchedAmount: pick.amount, delta: Number((amt - pick.amount).toFixed(2)), candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
-          data: { matchedQboTxnId: pick.id, matchedQboTxnType: "Payment" },
+          data: { matchedQboTxnId: pick.id, matchedQboTxnIds: [pick.id], matchedQboTxnType: "Payment" },
+        });
+      } else if (consolidated) {
+        // A single charge made of several same-customer payments — link them all.
+        for (const id of consolidated.ids) globalUsed.add(id);
+        matchedPaymentIds.push(...consolidated.ids);
+        foundCount++;
+        consolidatedCount++;
+        detail.push({ amount: amt, found: true, group: consolidated.ids.length, candidates: consolidated.ids.length });
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: consolidated.ids[0], matchedQboTxnIds: consolidated.ids, matchedQboTxnType: "Payment" },
         });
       } else if (pool.some((c) => depositedIds.has(c.id))) {
         // A payment of this amount exists but is already on a deposit → this
@@ -278,13 +311,14 @@ export async function locateProposedPaymentsAction() {
         detail.push({ amount: amt, found: false, alreadyDeposited: true, candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
-          data: { matchedQboTxnId: null, matchedQboTxnType: null },
+          data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
         });
       } else {
+        if (consolidatedAmbiguous) ambiguousCharges.push(amt.toFixed(2));
         detail.push({ amount: amt, found: false, candidates: pool.length });
         await prisma.depPayoutLine.update({
           where: { id: line.id },
-          data: { matchedQboTxnId: null, matchedQboTxnType: null },
+          data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
         });
       }
     }
@@ -326,20 +360,24 @@ export async function locateProposedPaymentsAction() {
       data: { status, deltaCents: status === "matched" ? overShortCents : null },
     });
     const osNote = overShortCents !== 0 ? ` Over/short from keying: ${(overShortCents / 100).toFixed(2)} (booked to Cash over/short on deposit).` : "";
+    const consolidatedNote = consolidatedCount ? ` ${consolidatedCount} charge(s) matched a same-card consolidation group.` : "";
+    const ambiguousNote = ambiguousCharges.length
+      ? ` Ambiguous consolidation for ${ambiguousCharges.join(", ")} — more than one same-customer group sums to it; resolve in QBO.`
+      : "";
     const feeNote =
       p.processor === "tekmetric" && feesNeeded
         ? ` ${feesFound}/${feesNeeded} fee JEs located${feesAmountMatched ? ` (${feesAmountMatched} matched by fee amount — name differed in QBO)` : ""}.`
         : "";
     const message =
       foundAll && feesOk
-        ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${feeNote}${osNote}`
+        ? `All ${p.lines.length} charge payments located in Undeposited Funds (window ${start}…${end}).${consolidatedNote}${feeNote}${osNote}`
         : foundAll && !feesOk
           ? `Payments located, but only ${feesFound}/${feesNeeded} fee journal entries found${
               missingFeeCustomers.length ? ` — missing the fee JE for: ${missingFeeCustomers.join(", ")}` : ""
             }. Re-run once Back Office has posted them (or check that customer's fee JE name matches).`
           : allDeposited
             ? `Already reconciled — all ${p.lines.length} payments are on an existing QBO deposit. Nothing to do.`
-            : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).`;
+            : `Located ${foundCount}/${p.lines.length}${depositedCount ? `, ${depositedCount} already deposited` : ""}; missing amounts: ${missing.join(", ") || "-"} (searched ${start}…${end}).${consolidatedNote}${ambiguousNote}`;
     await prisma.depEvent.create({
       data: {
         payoutId: p.id,
@@ -423,9 +461,14 @@ async function createOneDeposit(
     return { status: "blocked", message };
   };
 
+  // A charge line links one payment normally, or a whole same-card group when
+  // Paymentech consolidated several charges into it.
+  const lineIds = (l: (typeof payout.lines)[number]): string[] =>
+    l.matchedQboTxnIds?.length ? l.matchedQboTxnIds : l.matchedQboTxnId ? [l.matchedQboTxnId] : [];
+
   if (payout.qboDepositId) return { status: "skipped" };
   if (payout.status !== "matched") return blockedP("Not matched — run Locate first so every charge is confirmed.");
-  const unlocated = payout.lines.filter((l) => !l.matchedQboTxnId);
+  const unlocated = payout.lines.filter((l) => lineIds(l).length === 0);
   if (unlocated.length) return blockedP(`${unlocated.length} line(s) not located — re-run Locate.`);
 
   // Double-count guard: refuse if any matched payment is already on a deposit.
@@ -434,10 +477,10 @@ async function createOneDeposit(
     shiftDate(payout.settlementDate, -16),
     shiftDate(payout.settlementDate, 2)
   );
-  const already = payout.lines.filter((l) => l.matchedQboTxnId && deposited.has(l.matchedQboTxnId));
+  const already = payout.lines.filter((l) => lineIds(l).some((id) => deposited.has(id)));
   if (already.length) return blockedP(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
 
-  const ids = payout.lines.map((l) => l.matchedQboTxnId as string);
+  const ids = payout.lines.flatMap(lineIds);
   const details = await getPaymentDetails(dc.ctx, ids);
   if (ids.some((id) => !details.has(id))) return blockedP("Could not read some matched payment amounts from QBO — re-run Locate.");
   const payments = ids.map((id) => ({ id, amount: details.get(id)!.amount }));
@@ -455,7 +498,7 @@ async function createOneDeposit(
     // Charge = the matched payment's customer + that line's known fee (from the
     // Tekmetric export), so a name discrepancy can fall back to the fee amount.
     const charges = payout.lines.map((l) => ({
-      customer: details.get(l.matchedQboTxnId as string)!.customerName,
+      customer: details.get(lineIds(l)[0])?.customerName ?? "",
       feeAmount: l.feeAmount != null ? Number(l.feeAmount) : null,
     }));
     const { linked, missing } = matchFees(feeJEs, charges, payout.settlementDate, feeUsed, daysApart);
