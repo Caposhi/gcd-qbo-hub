@@ -10,6 +10,7 @@
  */
 import {
   type QboReport,
+  type QboColumn,
   type QboFlatRow,
   periodColumnIndices,
 } from "./qbo";
@@ -358,23 +359,45 @@ export function normalizeAging(report: QboReport): AgingNormalized {
  * or "last column" pick lands on the wrong figure — this picker excludes those.
  */
 function pickMoneyColumnIndex(report: QboReport): number {
-  if (report.totalColumnIndex >= 0) return report.totalColumnIndex;
   const cols = report.columns;
-  const excluded = (t: string) => /qty|quantity|units|avg|average|price|%|percent|margin|\bcost\b/i.test(t);
-  const isMoney = (t: string) => /money/i.test(t);
+  if (cols.length === 0) return -1;
 
-  // 1) a money-typed column explicitly titled amount/sales/total.
-  let idx = cols.findIndex((c) => isMoney(c.type) && /amount|sales|total/i.test(c.title) && !excluded(c.title));
-  if (idx >= 0) return idx;
-  // 2) any money-typed column that isn't a qty/price/%/margin/cost column.
-  idx = cols.findIndex((c) => isMoney(c.type) && !excluded(c.title));
-  if (idx >= 0) return idx;
-  // 3) title-based amount/total when column types are absent.
-  idx = cols.findIndex((c) => /amount|total/i.test(c.title) && !excluded(c.title));
-  if (idx >= 0) return idx;
-  // 4) last resort: the last money column, else the last value column.
-  const lastMoney = [...cols].map((c, i) => ({ c, i })).reverse().find(({ c }) => isMoney(c.type));
-  return lastMoney ? lastMoney.i : cols.length - 1;
+  // A column that is definitely NOT the sales amount — quantity, unit/avg price,
+  // %-of-sales, margin, cost, SKU. Checked against title, ColType, AND ColKey,
+  // because QBO's Sales-by-Item report labels these inconsistently (a leading
+  // "Qty" column can carry a blank title), and picking it plots units as dollars.
+  const NON_AMOUNT = /qty|quantity|units|avg|average|price|rate|%|percent|margin|\bcost\b|sku/i;
+  const excluded = (c: QboColumn) => NON_AMOUNT.test(c.title) || NON_AMOUNT.test(c.type) || NON_AMOUNT.test(c.colKey ?? "");
+  const looksAmount = (c: QboColumn) =>
+    c.colKey === "total" || /amount|sales|subt_?nat|^total$/i.test(c.title) || /amount|sales|subt/i.test(c.colKey ?? "");
+
+  const candidates = cols.map((c, i) => ({ c, i })).filter(({ c }) => !excluded(c));
+
+  // 1) An explicit amount/sales/total column that isn't a qty/price/% column.
+  const explicit = candidates.find(({ c }) => looksAmount(c));
+  if (explicit) return explicit.i;
+
+  // 2) The report's declared total column — but only if it isn't itself a
+  //    qty/price/% column (QBO sometimes flags the wrong one).
+  if (report.totalColumnIndex >= 0 && !excluded(cols[report.totalColumnIndex])) return report.totalColumnIndex;
+
+  // 3) Ambiguous metadata (blank titles/types): the sales amount is the column
+  //    with the largest dollar magnitude across data rows — Amount dwarfs Qty,
+  //    Avg Price, and %. Self-correcting when the labels don't help.
+  const dataRows = report.rows.filter((r) => r.kind === "data");
+  let best = -1;
+  let bestMag = -1;
+  for (const { i } of candidates) {
+    const mag = dataRows.reduce((s, r) => s + Math.abs(ZERO_IF_NULL(r.values[i])), 0);
+    if (mag > bestMag) {
+      bestMag = mag;
+      best = i;
+    }
+  }
+  if (best >= 0) return best;
+
+  // 4) last resort
+  return report.totalColumnIndex >= 0 ? report.totalColumnIndex : cols.length - 1;
 }
 
 export function normalizeSales(report: QboReport): SalesNormalized {
