@@ -324,10 +324,36 @@ describe("resolveRange", () => {
 });
 
 describe("comparisonRange", () => {
-  it("prior_period is the equal-length span ending the day before start", () => {
+  it("prior_period on a whole calendar month is the prior CALENDAR month", () => {
     expect(comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "prior_period")).toEqual({
-      start: "2026-05-02",
+      start: "2026-05-01",
       end: "2026-05-31",
+    });
+    // Jul (31 days) → all of Jun, NOT May 31–Jun 30.
+    expect(comparisonRange({ start: "2026-07-01", end: "2026-07-31" }, "prior_period")).toEqual({
+      start: "2026-06-01",
+      end: "2026-06-30",
+    });
+    // Year boundary + multi-month (Q3 → Q2).
+    expect(comparisonRange({ start: "2026-01-01", end: "2026-01-31" }, "prior_period")).toEqual({
+      start: "2025-12-01",
+      end: "2025-12-31",
+    });
+    expect(comparisonRange({ start: "2026-07-01", end: "2026-09-30" }, "prior_period")).toEqual({
+      start: "2026-04-01",
+      end: "2026-06-30",
+    });
+  });
+
+  it("prior_period still uses an equal-length shift for partial ranges", () => {
+    // Month-to-date and rolling windows aren't whole months.
+    expect(comparisonRange({ start: "2026-08-01", end: "2026-08-04" }, "prior_period")).toEqual({
+      start: "2026-07-28",
+      end: "2026-07-31",
+    });
+    expect(comparisonRange({ start: "2026-07-05", end: "2026-08-03" }, "prior_period")).toEqual({
+      start: "2026-06-05",
+      end: "2026-07-04",
     });
   });
 
