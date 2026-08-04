@@ -432,6 +432,40 @@ model ProjReportSnapshot {
 }
 
 // ===========================================================================
+// Financial Reports module — fin_ prefixed (see docs/FINANCIAL_REPORTS.md)
+// Read-only statement/report cache over the QBO Reports API. Payloads are the
+// NORMALIZED Statement/TabularReport shapes (src/lib/finreports), so the page
+// and GCD Pal always read the same figures.
+// ===========================================================================
+
+model FinReportSnapshot {
+  id          String   @id @default(cuid())
+  // Catalog key from src/lib/finreports/catalog.ts ('pnl' | 'cash_flow' | …).
+  reportKey   String
+  periodStart DateTime
+  periodEnd   DateTime
+  // 'cash' | 'accrual' | 'none' (reports that take no basis, e.g. agings).
+  basis       String
+  payloadJson Json
+  fetchedAt   DateTime @default(now())
+
+  @@unique([reportKey, periodStart, periodEnd, basis])
+  @@index([reportKey])
+  @@map("fin_report_snapshot")
+}
+
+// One row: which optional QBO features this company actually uses (classes,
+// budgets, inventory). Probed rarely; hides reports whose data doesn't exist.
+model FinCapability {
+  id          String   @id @default(cuid())
+  singleton   String   @unique @default("company")
+  payloadJson Json
+  probedAt    DateTime @default(now())
+
+  @@map("fin_capabilities")
+}
+
+// ===========================================================================
 // AI Report Assistant module — ai_ prefixed (prototype)
 // ===========================================================================
 
