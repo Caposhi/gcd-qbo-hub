@@ -216,9 +216,10 @@ export default async function QboDiagnosticsPage() {
 /**
  * Recent sync runs and their tab-level events (§4, §13). Sheet write-back
  * failures (a tab whose managed columns never got stamped — e.g. a protected
- * range blocking the service account) are logged as `writeback_error` events
- * with `sheetRowId: null`, so they never show up on any row's own event list
- * and were otherwise invisible anywhere in the hub. This surfaces them.
+ * range blocking the service account, or the tab's grid being too small for
+ * the managed columns) are logged as `writeback_error` events with
+ * `sheetRowId: null`, so they never show up on any row's own event list and
+ * were otherwise invisible anywhere in the hub. This surfaces them.
  */
 async function SheetSyncRunsCard() {
   const recentRuns = await prisma.syncRun.findMany({
@@ -250,7 +251,8 @@ async function SheetSyncRunsCard() {
       <p className="card-subtitle">
         Tab-level events per run — which tabs were scanned, and any tab read or sheet write-back failure. A tab
         missing its <code>GCD_QBO_Row_ID</code> columns in the workbook will show a <code>writeback_error</code>{" "}
-        here with the exact reason (e.g. a protected range blocking the service account).
+        here with the exact reason (e.g. a protected range blocking the service account, or the tab's grid being
+        too small — auto-grown as of §4's ensureGridSize, but shown here regardless if it ever recurs).
       </p>
       <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
         {recentRuns.map((run) => {
