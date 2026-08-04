@@ -412,3 +412,54 @@ describe("parseReportPayload (stored-JSON validation)", () => {
     expect(sales).toEqual({ total: 0, rows: [] });
   });
 });
+
+describe("normalizeSales — picks the amount column, never quantity (§ItemSales)", () => {
+  it("selects the Amount column when a Sales-by-Item report leads with Qty", () => {
+    const payload = {
+      Header: { ReportName: "ItemSales" },
+      Columns: {
+        Column: [
+          { ColTitle: "Product/Service", ColType: "String" },
+          { ColTitle: "Qty", ColType: "Numeric" },
+          { ColTitle: "Amount", ColType: "Money" },
+          { ColTitle: "% of Sales", ColType: "Rate" },
+        ],
+      },
+      Rows: {
+        Row: [
+          { ColData: [{ value: "TEK Sales-Parts Sales" }, { value: "1483.79" }, { value: "98938.69" }, { value: "42.3" }] },
+          { ColData: [{ value: "TEK Sales-Labor Sales" }, { value: "590.13" }, { value: "132117.46" }, { value: "56.48" }] },
+        ],
+      },
+    };
+    const sales = normalizeSales(parseQboReport(payload));
+    // Sorted desc by AMOUNT → Labor ($132k) leads Parts ($99k), NOT by qty.
+    expect(sales.rows.map((r) => r.name)).toEqual(["TEK Sales-Labor Sales", "TEK Sales-Parts Sales"]);
+    expect(sales.rows[0].amount).toBeCloseTo(132117.46, 2);
+    expect(sales.rows[1].amount).toBeCloseTo(98938.69, 2);
+    expect(sales.total).toBeCloseTo(231056.15, 2);
+  });
+
+  it("falls back to the largest-magnitude column when titles/types are blank", () => {
+    // Ambiguous metadata (blank titles/types): qty column first, amount second.
+    const payload = {
+      Header: { ReportName: "ItemSales" },
+      Columns: {
+        Column: [
+          { ColTitle: "", ColType: "String" },
+          { ColTitle: "", ColType: "String" },
+          { ColTitle: "", ColType: "String" },
+        ],
+      },
+      Rows: {
+        Row: [
+          { ColData: [{ value: "Parts" }, { value: "1483.79" }, { value: "98938.69" }] },
+          { ColData: [{ value: "Labor" }, { value: "590.13" }, { value: "132117.46" }] },
+        ],
+      },
+    };
+    const sales = normalizeSales(parseQboReport(payload));
+    expect(sales.rows[0].amount).toBeCloseTo(132117.46, 2); // amount col, not qty (590.13)
+    expect(sales.total).toBeCloseTo(231056.15, 2);
+  });
+});
