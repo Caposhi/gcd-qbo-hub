@@ -80,8 +80,27 @@ function rangeLengthDays(range: TekPeriod): number {
 }
 
 /**
+ * Whole calendar month(s)? True when `range` starts on the 1st and ends on the
+ * last day of a month. "Last month" and month-to-month ranges are the common
+ * case, and for those the honest comparison is the PRIOR CALENDAR MONTH — not an
+ * equal-length day shift, which would drag in the last day of the month before
+ * (e.g. Jul 1–31 → May 31–Jun 30) and compare 31 days against June's 30.
+ */
+function wholeCalendarMonths(range: TekPeriod): number | null {
+  const s = new Date(`${range.start}T00:00:00Z`);
+  const e = new Date(`${range.end}T00:00:00Z`);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return null;
+  if (s.getUTCDate() !== 1) return null;
+  if (e.getUTCDate() !== daysInMonth(e.getUTCFullYear(), e.getUTCMonth())) return null;
+  const months =
+    (e.getUTCFullYear() - s.getUTCFullYear()) * 12 + (e.getUTCMonth() - s.getUTCMonth()) + 1;
+  return months >= 1 ? months : null;
+}
+
+/**
  * Comparison range for a given range + mode:
- *  - prior_period: the equal-length window immediately before `range`.
+ *  - prior_period: the prior calendar month(s) when `range` is whole calendar
+ *    months; otherwise the equal-length window immediately before `range`.
  *  - prior_year:   the same calendar window shifted back one year.
  *  - none:         null (no comparison).
  */
@@ -103,6 +122,18 @@ export function comparisonRange(range: TekPeriod, mode: ComparisonMode): TekPeri
     };
   }
   // prior_period
+  // Whole calendar month(s) → the immediately preceding same number of whole
+  // calendar months (Jul 1–31 → Jun 1–30), so a 31-day month isn't compared
+  // against a 31-day window that straddles two months.
+  const months = wholeCalendarMonths(range);
+  if (months !== null) {
+    const s = new Date(`${range.start}T00:00:00Z`);
+    const endM = s.getUTCMonth() - 1; // month before the range starts
+    const endY = s.getUTCFullYear();
+    const priorEnd = utc(endY, endM + 1, 0); // last day of that month
+    const priorStart = utc(priorEnd.getUTCFullYear(), priorEnd.getUTCMonth() - (months - 1), 1);
+    return { start: iso(priorStart), end: iso(priorEnd) };
+  }
   const len = rangeLengthDays(range);
   const start = new Date(range.start);
   const priorEnd = utc(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() - 1);

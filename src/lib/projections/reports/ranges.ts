@@ -126,6 +126,23 @@ function dayCount(range: DateRange): number {
 }
 
 /**
+ * Number of whole calendar months a range covers, or null when it isn't whole
+ * months. A range that starts on the 1st and ends on a month's last day (the
+ * common "Last month" / "This year" case) must compare against the prior
+ * CALENDAR month(s): an equal-length day shift would drag in the previous
+ * month's last day (Jul 1–31 → May 31–Jun 30) and pit 31 days against June's 30.
+ */
+function wholeCalendarMonths(range: DateRange): number | null {
+  const s = parseIso(range.start);
+  const e = parseIso(range.end);
+  if (!s || !e) return null;
+  if (s.d !== 1) return null;
+  if (e.d !== daysInMonth(e.y, e.m0)) return null;
+  const months = (e.y - s.y) * 12 + (e.m0 - s.m0) + 1;
+  return months >= 1 ? months : null;
+}
+
+/**
  * The comparison range for a given range.
  *   - prior_period: the equal-length span ending the day before `start`.
  *   - prior_year:   the same calendar dates one year earlier (clamped for leap
@@ -154,6 +171,20 @@ export function comparisonRange(
     return { start: iso(s.y - 1, s.m0, sd), end: iso(e.y - 1, e.m0, ed) };
   }
   // prior_period
+  // Whole calendar month(s) compare to the preceding whole calendar month(s).
+  const months = wholeCalendarMonths(range);
+  if (months !== null) {
+    const s = parseIso(range.start)!;
+    // Last day of the month before the range starts.
+    const pe = { y: s.m0 === 0 ? s.y - 1 : s.y, m0: s.m0 === 0 ? 11 : s.m0 - 1 };
+    const startM0Abs = pe.y * 12 + pe.m0 - (months - 1);
+    const psY = Math.floor(startM0Abs / 12);
+    const psM0 = ((startM0Abs % 12) + 12) % 12;
+    return {
+      start: iso(psY, psM0, 1),
+      end: iso(pe.y, pe.m0, daysInMonth(pe.y, pe.m0)),
+    };
+  }
   const days = dayCount(range);
   const startMs = Date.parse(`${range.start}T00:00:00Z`);
   const prevEnd = new Date(startMs - 86_400_000);

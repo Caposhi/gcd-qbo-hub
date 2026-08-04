@@ -1,14 +1,15 @@
 "use client";
 /* =============================================================================
    App-shell top bar (§2). Frosted, sticky. Left: breadcrumb (Hub / <group>) +
-   page title in Eurostile. Right: a (non-functional) search affordance + the
-   environment pill. The pill replaces the loose env `notice` row that used to
-   sit atop the Cash Sheet Sync page. Env facts come from the server layout so
-   the pill can never disagree with the derived QBO environment (§12/§16).
+   page title in Eurostile. Right: the ⌘K command palette (a real search — see
+   CommandPalette) + the environment pill. The pill replaces the loose env
+   `notice` row that used to sit atop the Cash Sheet Sync page. Env facts come
+   from the server layout so the pill can never disagree with the derived QBO
+   environment (§12/§16).
    ========================================================================== */
 import { usePathname } from "next/navigation";
-import { Search } from "lucide-react";
 import { MODULES } from "@/lib/modules/registry";
+import { CommandPalette } from "./CommandPalette";
 
 export interface EnvInfo {
   environment: "sandbox" | "live";
@@ -38,11 +39,7 @@ export function TopBar({ env }: { env: EnvInfo }) {
         <div className="title">{title}</div>
       </div>
 
-      <div className="topbar-search" aria-hidden="true">
-        <Search size={15} />
-        <span>Search…</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>⌘K</span>
-      </div>
+      <CommandPalette />
 
       <EnvPill env={env} />
     </header>
