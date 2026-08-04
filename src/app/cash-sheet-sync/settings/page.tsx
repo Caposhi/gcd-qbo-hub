@@ -6,7 +6,7 @@ import { prisma } from "@/lib/db";
 import { getRolloutStage, getQboEnvironment, getSheetWritebackEnabled } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { ROLLOUT_STAGES, type RolloutStage } from "@/lib/cashsheet/rollout";
-import { advanceStageAction, setSheetWritebackAction, resetSandboxPostingsAction } from "../actions";
+import { advanceStageAction, setSheetWritebackAction, resetSandboxPostingsAction, lockdownWritebackColumnsAction } from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -22,10 +22,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [stage, environment, writebackEnabled] = await Promise.all([
+  const [stage, environment, writebackEnabled, lastLockdown] = await Promise.all([
     getRolloutStage(),
     getQboEnvironment(),
     getSheetWritebackEnabled(),
+    prisma.rowEvent.findFirst({ where: { eventType: "writeback_lockdown" }, orderBy: { createdAt: "desc" } }),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   // Show the actual stored credential for the ACTIVE environment so it's obvious
@@ -165,6 +166,29 @@ export default async function SettingsPage({ searchParams }: { searchParams: { q
         </form>
       </div>
       {!canChange && <p className="muted">Changing write-back requires owner_admin (§14).</p>}
+
+      <h3 style={{ fontSize: 15, margin: "18px 0 8px" }}>Hide &amp; protect managed columns</h3>
+      <p className="muted">
+        Hides the <code>GCD_QBO_Row_ID</code> through <code>GCD_QBO_Error</code> columns on every scanned month tab
+        and restricts editing them to the sync&apos;s own service account — using the same credentials the sync
+        already writes with, so no manual Google Sheets pass is needed. A tab whose managed columns haven&apos;t
+        been fully written yet is skipped (nothing to protect there). Safe to run repeatedly — it won&apos;t
+        double-protect a tab it already locked down, and the spreadsheet owner can always remove a protection from
+        the Sheets UI. Does <strong>not</strong> touch the Template tab — set that up once by hand so future months
+        inherit it.
+      </p>
+      <div className="row-actions">
+        <form action={lockdownWritebackColumnsAction}>
+          <button className="btn primary" disabled={!canChange}>
+            Hide &amp; protect managed columns (all tabs)
+          </button>
+        </form>
+      </div>
+      {lastLockdown && (
+        <p className="muted" style={{ marginTop: 8 }}>
+          Last run: {lastLockdown.createdAt.toISOString().slice(0, 16).replace("T", " ")} — {lastLockdown.eventMessage}
+        </p>
+      )}
 
       <h2>Go-live reset</h2>
       <p className="muted">
