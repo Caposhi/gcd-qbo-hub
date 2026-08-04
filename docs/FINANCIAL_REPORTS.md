@@ -1,7 +1,11 @@
 # Financial Reports — build scope & phases
 
-Status: **scoped, not started**
-Proposed module id: `financial-reports` · table prefix: `fin_` · base path: `/financial-reports`
+Status: **scoped & decided — ready to build Phase 1**
+Module id: `financial-reports` · table prefix: `fin_` · base path: `/financial-reports`
+
+Decisions locked (owner, this session): its own module with **departmental tabs**;
+**cash** default for P&L-type reports and **accrual** for Balance-Sheet-type, always
+toggleable; classes/budgets/inventory **auto-detected** rather than assumed.
 
 ---
 
@@ -30,118 +34,162 @@ under a minute**, and GCD Pal can answer it in one sentence with a citation.
 - **Every figure is traceable.** Each statement line shows its QBO account(s) and
   can drill to the transactions behind it — the "why is rent up $1,200" path.
 
-## 2. Report catalog (what to build, by audience)
+## 2. Shape: one module, departmental tabs
 
-### Tier 1 — the statements (must-have)
-| Report | QBO entity | Why it matters here |
+One module at `/financial-reports`, with a tab per **business function** — so each
+role opens the hub, clicks their own tab, and sees only reports written for their
+job. Every report lives in exactly one tab (no duplicates), and each tab states
+who it's for.
+
+| Tab | Audience | What it answers |
 |---|---|---|
-| **Profit & Loss** | `ProfitAndLoss` | Monthly performance; needs **% of revenue** column + prior-period/prior-year compare. |
-| **Balance Sheet** | `BalanceSheet` | Cash, A/R, A/P, loans, equity at a point in time. |
-| **Statement of Cash Flows** | `CashFlow` | The one owners actually feel — operating vs investing vs financing. **Not currently pulled at all.** |
-| **P&L Detail** | `ProfitAndLossDetail` | The drill-down target: every transaction behind a P&L line. |
-| **A/R & A/P Aging** | `AgedReceivables` / `AgedPayables` | Already pulled — surface here as first-class reports. |
+| **Accounting** | Bookkeeper, CPA, owner | Are the books right and closeable? |
+| **Executive** | Owner, director | Are we making money, and is it improving? |
+| **Operations** | Service manager | Are the bays and techs producing? |
+| **Sales & Customers** | Owner, service manager | Where is revenue coming from, and is it repeat? |
+| **Parts & Purchasing** | Parts manager | Are we buying well and holding margin? |
+| **Labor & Payroll** | Owner, service manager | Is labor earning its cost? |
+| **Cash & Banking** | Owner, bookkeeper | What's in the bank, what's owed, what's coming? |
+| **Tax & Compliance** | Owner, CPA | What do we owe and to whom? |
 
-### Tier 2 — the operating lens (high value for GCD specifically)
-| Report | Source | Why |
+### Accounting
+P&L · Balance Sheet · Statement of Cash Flows · P&L Detail (drill-down) ·
+Trial Balance · General Ledger · **Month-end close pack** (one click → the closed
+month's statements + agings) · journal/audit trail.
+
+### Executive
+Owner scorecard (revenue, GP, net margin, ARO, car count, cash days on hand,
+breakeven revenue) · 12-month P&L trend · period-over-period variance callouts
+("Building Rent +$1,200 vs prior") · **gross-margin bridge** — reconciles QBO's
+gross margin to Tekmetric's labor-loaded margin, which today read 72.3% vs 60.9%
+on two different pages with nothing explaining the gap.
+
+### Operations
+ARO · car count / RO count · technician productivity · advisor performance ·
+revenue by make · repeat visits · effective vs posted labor rate · bay//day
+throughput. Sourced from the existing Tekmetric snapshot — **linked, not
+duplicated** (the Tekmetric Operations module stays the system of record; this tab
+is the financial framing of it).
+
+### Sales & Customers
+Revenue by customer · customer concentration (top-10 share) · new vs returning ·
+revenue by service/item · discounts given (and as % of sales) · average ticket
+trend · warranty/comeback revenue if identifiable.
+
+### Parts & Purchasing
+Parts sales vs parts cost → **parts margin** · top vendors by spend
+(`VendorExpenses`) · sublet spend · purchase mix by vendor · inventory valuation
+*(only if inventory is tracked in QBO)*.
+
+### Labor & Payroll
+Labor sales vs real labor cost (QBO payroll ledger) → **labor margin** · effective
+labor rate · billed hours vs paid hours · payroll as % of revenue · overtime
+exposure. This tab is where the labor-cost figure the Tekmetric page subtracts
+(~$23.4K in July) becomes visible and auditable.
+
+### Cash & Banking
+Cash position by account · A/R aging · A/P aging · deposits in flight (ties to
+Deposit Reconciliation) · checks written (ties to Check Reception) ·
+**13-week rolling cash outlook** (opening cash + A/R due + A/P due + fixed costs +
+payroll cadence).
+
+### Tax & Compliance
+Sales tax collected vs owed · battery/tire tax (a real TEK line item) · 1099
+vendor totals · licenses & fees. GCD already has a dedicated Chase Sales Tax
+account, so this reconciles collected-vs-remitted.
+
+## 3. Accounting basis — per-report defaults, always toggleable
+
+Default per report to how that report is normally read, with a visible toggle and
+the active basis **always labeled on screen and in every export**:
+
+| Report | Default | Why |
 |---|---|---|
-| **P&L by month (trend)** | `ProfitAndLoss` + `summarize_column_by=Month` | 12-month strip: spot creep in any expense line. |
-| **Expense by vendor** | `VendorExpenses` | Who we actually pay — pairs with Check Reception. |
-| **Sales by customer / item** | `CustomerSales` / `ItemSales` | Already pulled (revenue mix). |
-| **Gross-margin bridge** | derived: P&L + Tekmetric labor cost | Reconciles QBO gross margin (72.3%) to Tekmetric's labor-loaded margin (60.9%) — **the two pages currently disagree by design and nothing explains it.** |
-| **Owner scorecard** | derived | ARO, car count, effective labor rate, GP/RO, revenue per bay, breakeven revenue, **cash days on hand**. |
+| P&L, P&L Detail, P&L trend | **Cash** | How the owner reads performance (and how a shop typically files). |
+| Sales by customer / item | **Cash** | Must tie to the P&L revenue shown beside it. |
+| Statement of Cash Flows | **Cash** | Cash movement by nature. |
+| Balance Sheet, Trial Balance, General Ledger | **Accrual** | The books; A/R and A/P only exist on accrual. |
+| A/R & A/P aging | n/a | Point-in-time; QBO takes no basis for these. |
 
-### Tier 3 — accountant/close support
-| Report | Source | Why |
-|---|---|---|
-| **Trial Balance** | `TrialBalance` | Hand-off to the CPA; ties the books. |
-| **General Ledger** | `GeneralLedger` | Full audit trail for a period. |
-| **Budget vs Actual** | `BudgetVsActuals` | Only if budgets exist in QBO — needs confirmation. |
-| **Month-end close pack** | composite | One click → P&L + BS + Cash Flow + agings for the closed month. |
+⚠️ **Cross-page consistency to flag on screen:** Projections → Reporting defaults
+to **accrual** (July revenue $233,900.96). A cash-basis P&L for the same month will
+show a *different* number, and that is correct, not a bug. Both pages must state
+their basis prominently, and the Executive tab should note which basis its
+scorecard uses.
 
-### Tier 4 — forward-looking (owner favorite)
-- **13-week rolling cash outlook** — opening cash + A/R due + known A/P due +
-  recurring fixed costs + payroll cadence. Bridges this module to Projections.
+## 4. QBO Classes — what they are, and how we'll answer it
 
-## 3. What already exists vs. what's new
+A **class** in QuickBooks is an optional tag you can put on each transaction line
+to split one company's books into segments — e.g. tagging every RO line as
+`Service`, `Parts`, or `Towing` — so QBO can produce a P&L *per segment* ("P&L by
+Class") without needing separate companies. It's how a shop would answer "is my
+sublet/towing line actually profitable?"
 
-**Reuse (don't rebuild):**
-- `src/lib/qbo/reports.ts` — report fetcher + param builder (add entities).
-- `src/lib/projections/reports/qbo.ts` — raw QBO report → flat typed rows.
-- `normalize.ts` — P&L / BS / aging / sales normalizers, `pickMoneyColumnIndex`.
-- `getReportSnapshot` — fetch-through cache; `ranges.ts` — presets + comparison
-  (now calendar-month-correct).
-- Recharts client-island pattern, `KpiTiles`, `FilterBar`.
+You don't need to know whether GCD uses them: **Phase 1 includes a capability
+probe** that asks QBO directly (query the `Class` entity; likewise `Budget` for
+Budget-vs-Actual, and `Item` types for inventory). The result is cached, and the
+module then shows the class/budget/inventory reports **only if the data exists** —
+so no empty tabs and no question you have to research.
 
-**New:**
-- `CashFlow`, `TrialBalance`, `GeneralLedger`, `ProfitAndLossDetail`,
-  `VendorExpenses` entities + normalizers.
-- A **statement renderer** — hierarchical, collapsible, subtotal-aware rows with
-  a compare column and % of revenue. This is the main new UI primitive.
-- Drill-down: statement line → transactions.
-- Export (CSV per statement; PDF for the close pack).
-- GCD Pal tools over the cached statements.
+## 5. Phases
 
-## 4. Phases (ship one at a time, each independently useful)
+Each phase ends with something usable. **GCD Pal access is architectural, not a
+phase:** every report registers itself in one shared catalog that drives the page
+tabs *and* the assistant's tools, so each report added becomes AI-answerable for
+free, reading the same cached snapshot the page renders.
 
-### Phase 1 — Statement data layer *(foundation, no UI)*
-Extend the QBO report client with `CashFlow`, `ProfitAndLossDetail`,
-`TrialBalance`, `GeneralLedger`, `VendorExpenses`. Write pure normalizers that
-turn each into a common `Statement` shape:
+### Phase 1 — Data layer + capability probe *(no UI)*
+Add QBO entities: `CashFlow`, `ProfitAndLossDetail`, `TrialBalance`,
+`GeneralLedger`, `VendorExpenses` (+ `ClassSales`, `BudgetVsActuals`,
+`InventoryValuationSummary` behind the probe). Pure normalizers → one common shape:
 ```
-Statement = { title, period, comparison?, method, lines: StatementLine[] }
+Statement     = { key, title, period, comparison?, basis, lines, totals, fetchedAt }
 StatementLine = { label, depth, kind: 'section'|'detail'|'subtotal'|'total',
                   accountIds?, value, priorValue?, pctOfRevenue? }
 ```
-Cache via `getReportSnapshot`. **Exit criteria:** unit tests prove subtotals equal
-the sum of their children and that each statement's total matches QBO's own total
-row (the same discipline as the deposit checksum).
+Cache through `getReportSnapshot`. Capability probe for classes/budgets/inventory.
+**Exit:** tests prove every subtotal equals the sum of its children and each
+statement total matches QBO's own total row (deposit-checksum discipline).
 
-### Phase 2 — Financial Reports page *(the deliverable)*
-Report catalog/landing (cards by tier) → statement viewer with: period presets +
-custom range, compare (prior period / prior year / none), accrual↔cash toggle,
-collapse/expand, **% of revenue**, variance highlighting, CSV export. Register the
-module in `registry.ts` under **Finance**, gated `view_projections` (or a new
-`view_financial_reports`). **Exit criteria:** P&L, Balance Sheet, and Cash Flow
-render and tie to QBO to the penny for a chosen month.
+### Phase 2 — Module shell + report registry + **Accounting** tab
+Register the module (`financial-reports`, `fin_`, group **Finance**, permission
+`view_financial_reports`). Build the tab framework, the shared filter bar (period,
+compare, basis toggle), and the **hierarchical statement renderer** (collapsible,
+subtotal-aware, compare column, % of revenue, CSV export). Ship P&L, Balance
+Sheet, Cash Flow, P&L Detail, Trial Balance. **The report registry is live here, so
+GCD Pal can answer statement questions from day one.**
+**Exit:** all three statements tie to QBO to the penny for a chosen month, and GCD
+Pal answers "what was net income last month" citing the P&L.
 
-### Phase 3 — Owner insight layer
-Owner scorecard tiles, the **gross-margin bridge** (QBO vs Tekmetric-labor-loaded
-— resolves the 72.3% vs 60.9% confusion), variance callouts ("Building Rent
-+$1,200 vs prior"), month-end close pack, drill-down to transactions.
-**Exit criteria:** every scorecard number is click-through traceable.
+### Phase 3 — **Executive** + **Cash & Banking** tabs
+Owner scorecard, 12-month trend, variance callouts, the gross-margin bridge; cash
+position, agings, deposits/checks in flight, 13-week cash outlook.
+**Exit:** every scorecard number is click-through traceable to a statement line.
 
-### Phase 4 — GCD Pal integration
-New read-only tools over the **cached** statements, so the assistant answers from
-the same snapshot the page shows:
-- `get_financial_statement(type, period, method, compare)` — P&L / BS / Cash Flow.
-- `get_statement_line_detail(type, period, accountOrLabel)` — the drill-down.
-- `list_available_reports()` — so it can say what it can pull.
-- `get_owner_scorecard(period)`.
-Extend the system prompt with statement-reading rules: quote only from tool
-results, always state period + accounting method, name the account, and say
-"as of <snapshot time>". Also feed the statements into the AI council's monthly
-context (it currently gets KPIs + charts, not the actual statements).
-**Exit criteria:** ask GCD Pal "why did net income move last month" and it cites
-real P&L lines with figures matching the page.
+### Phase 4 — **Operations**, **Sales & Customers**, **Parts & Purchasing**, **Labor & Payroll** tabs
+Mostly composition over existing data (Tekmetric snapshot + sales/vendor reports +
+payroll labor cost). Labor tab makes the subtracted labor cost auditable.
+**Exit:** parts margin and labor margin reconcile to the P&L's COGS section.
 
-### Phase 5 — Distribution *(optional)*
-Saved views, scheduled monthly email/PDF pack (reuse the Render cron + SendGrid
-pattern), and role-scoped sharing for a manager who should see ops but not equity.
+### Phase 5 — **Tax & Compliance**, exports, distribution
+Sales-tax reconciliation, 1099 totals; PDF close pack; scheduled monthly email
+(reuse Render cron + SendGrid); saved views. Feed statements into the AI council's
+monthly context (it currently gets KPIs and charts, not the statements).
 
-## 5. Open decisions (need your call before Phase 2)
+## 6. Access control
 
-1. **Audience gating** — should a *manager* see the full Balance Sheet and equity,
-   or a restricted set (P&L + agings + ops)? This drives whether we add a new
-   permission or reuse `view_projections`.
-2. **Cash vs accrual default** — which basis do you think in day-to-day?
-3. **Classes/departments** — does GCD use QBO classes (e.g. by service type)? If
-   so, a class P&L is high value; if not, skip it.
-4. **Budgets** — are there budgets in QBO to support Budget vs Actual?
-5. **Placement** — its own `financial-reports` module (recommended: statements are
-   a distinct job from projections), or a new tab inside Financial Projections?
+New permission **`view_financial_reports`**. Proposed grants:
+- `owner_admin` — every tab.
+- `reviewer` — Accounting, Executive, Operations, Sales, Parts, Labor, Cash,
+  Tax (read-only; same as owner minus any future admin action).
+- `coworker` — no access.
 
-## 6. Explicitly out of scope
+If a manager should ever be excluded from equity/Balance-Sheet detail, that's a
+second permission (`view_balance_sheet`) gating just the Accounting tab's
+balance-sheet/TB/GL reports — deferred until you say a manager needs a login.
 
-- Any QBO **write** (no journal entries, no adjustments, no reclassing).
+## 7. Explicitly out of scope
+
+- Any QBO **write** (no journal entries, adjustments, or reclassing).
 - Replacing the CPA's close process — this reports, it doesn't book.
 - Tax provision / filing forms.
