@@ -23,7 +23,14 @@ import { computeFingerprint, computeRowHash, rowSnapshot } from "./fingerprint";
 import { extractRowUuid, generateRowUuid, CONTROL_KEYS, isValidRowUuid } from "./uuid";
 import { buildPostingPlan, type AccountMappingLike } from "./classify";
 import type { MappingLike } from "./purpose";
-import { findDuplicateRowIds, findPossibleDuplicate, isAlreadyPosted, type PostedRowRef } from "./duplicates";
+import {
+  findDuplicateRowIds,
+  findPossibleDuplicate,
+  findInvNumberSibling,
+  isAlreadyPosted,
+  type PostedRowRef,
+  type InvNumberRowRef,
+} from "./duplicates";
 import { isChangedAfterPosting, diffSnapshots, findRemovedAfterPosting } from "./detection";
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
@@ -274,6 +281,15 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     qboTransactionId: p.qboTransactionId ?? "",
   }));
 
+  // Rows whose INV#/RO already has a QBO outcome — the re-identification guard
+  // (§4, §10, §11) checks new/still-unresolved rows against this list instead
+  // of the fingerprint, so a name/date correction can't slip a re-post past
+  // duplicate detection. See duplicates.ts for why.
+  const invResolvedRows: InvNumberRowRef[] = await prisma.sheetRow.findMany({
+    where: { spreadsheetId, invNumber: { not: null }, status: { in: RESOLVED_INV_STATUSES } },
+    select: { id: true, tabName: true, invNumber: true, status: true },
+  });
+
   // ---- 3. Per-row upsert + classify + gate + post ------------------------
   for (const s of scanned) {
     try {
@@ -289,6 +305,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
         accounts,
         dupRowIds,
         postedRefs,
+        invResolvedRows,
         summary,
       });
     } catch (err) {
@@ -372,6 +389,9 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
   return summary;
 }
 
+/** Statuses meaning a row's INV#/RO already has a QBO outcome (§10). */
+const RESOLVED_INV_STATUSES: string[] = [RowStatus.Posted, RowStatus.PostedWithWarning, RowStatus.DepositCreated];
+
 interface RowCtx {
   run: { id: string };
   stage: RolloutStage;
@@ -384,6 +404,7 @@ interface RowCtx {
   accounts: AccountMappingLike[];
   dupRowIds: Map<string, unknown>;
   postedRefs: PostedRowRef[];
+  invResolvedRows: InvNumberRowRef[];
   summary: RunSummary;
 }
 
@@ -507,6 +528,34 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   const dup = findPossibleDuplicate(s.synthetic ? null : s.rowUuid, s.fingerprint, ctx.postedRefs);
   if (dup) {
     await upsertRow(existing?.id, baseData, RowStatus.PossibleDuplicate, `Matches posted QBO txn ${dup.qboTransactionId}`);
+    ctx.summary.possibleDuplicates++;
+    return;
+  }
+
+  // Re-identification guard (§4, §10, §11): this row's INV# already has a QBO
+  // outcome under a DIFFERENT row identity — almost always a name/date/etc.
+  // correction made on a row before it had captured a stable UUID, which the
+  // fingerprint check above cannot catch (the fingerprint genuinely changed).
+  // Never auto-post/re-sweep here — route to review instead, exactly like the
+  // fingerprint duplicate case above.
+  const invSibling = findInvNumberSibling(
+    { id: existing?.id ?? "", tabName, invNumber: row.invNumber || null },
+    RESOLVED_INV_STATUSES,
+    ctx.invResolvedRows
+  );
+  if (invSibling) {
+    const saved = await upsertRow(
+      existing?.id,
+      baseData,
+      RowStatus.PossibleDuplicate,
+      `INV# ${row.invNumber} already resolved (${invSibling.status}) on another row — this row's identity likely changed after a sheet edit (e.g. a name or date correction); review before reprocessing.`
+    );
+    await recordEvent(
+      ctx.run.id,
+      saved.id,
+      "inv_reidentified_duplicate",
+      `INV# ${row.invNumber} already resolved as ${invSibling.status} on row ${invSibling.id}`
+    );
     ctx.summary.possibleDuplicates++;
     return;
   }
