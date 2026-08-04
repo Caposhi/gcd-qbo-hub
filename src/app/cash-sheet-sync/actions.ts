@@ -338,10 +338,26 @@ async function postDepositForRow(
   depositedPaymentIds: Set<string>
 ): Promise<DepositOutcome> {
   const { postCashDeposit } = await import("@/lib/qbo/deposits");
-  const { locateRow, alreadyHasDeposit } = await import("@/lib/cashsheet/cash-deposit-service");
+  const { locateRow, alreadyHasDeposit, findAlreadyResolvedInvSibling } = await import(
+    "@/lib/cashsheet/cash-deposit-service"
+  );
   const { buildMemo } = await import("@/lib/cashsheet/memo");
 
   if (alreadyHasDeposit(row)) return { status: "skipped" };
+
+  // Re-identification guard (§4, §10): the row's INV# may already be resolved
+  // under a DIFFERENT row (e.g. a name/date typo fixed on the sheet after the
+  // original was deposited, which resets fingerprint-based identity). Checked
+  // here — not just via the candidate-list filter — so a direct single-row
+  // "Create deposit" click can't bypass it either.
+  const invSibling = await findAlreadyResolvedInvSibling(row);
+  if (invSibling) {
+    const reason = `INV# ${row.invNumber} already resolved (${invSibling.status}) on another row (id ${invSibling.id}) — likely the same transaction under a changed identity after a sheet edit. Not created, to avoid a duplicate QBO write.`;
+    await prisma.rowEvent.create({
+      data: { sheetRowId: row.id, eventType: "cash_deposit_blocked", eventMessage: reason },
+    });
+    return { status: "blocked", reason };
+  }
 
   const located = await locateRow(dc.ctx, row, depositedPaymentIds);
   if (!located.found || !located.plan) {

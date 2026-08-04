@@ -3,8 +3,11 @@ import {
   findDuplicateRowIds,
   findPossibleDuplicate,
   isAlreadyPosted,
+  normalizeInvNumber,
+  findInvNumberSibling,
   type ScannedRowRef,
   type PostedRowRef,
+  type InvNumberRowRef,
 } from "@/lib/cashsheet/duplicates";
 
 describe("duplicate detection (§10)", () => {
@@ -45,5 +48,79 @@ describe("duplicate detection (§10)", () => {
     expect(isAlreadyPosted("")).toBe(false);
     expect(isAlreadyPosted(null)).toBe(false);
     expect(isAlreadyPosted(undefined)).toBe(false);
+  });
+});
+
+describe("INV# re-identification guard (§4, §10, §11)", () => {
+  it("normalizes an INV#/RO to its leading token, upper-cased", () => {
+    expect(normalizeInvNumber("73801")).toBe("73801");
+    expect(normalizeInvNumber("73663 GILLIS")).toBe("73663");
+    expect(normalizeInvNumber("  73801  ")).toBe("73801");
+    expect(normalizeInvNumber(null)).toBe("");
+    expect(normalizeInvNumber("")).toBe("");
+  });
+
+  it("flags a row whose INV# already resolved on a DIFFERENT row after a name edit — the WITYY -> WITTY case", () => {
+    // A typo fix ("WITYY" -> "WITTY") changes the content fingerprint, so the
+    // engine sees what looks like a brand-new row for the same invoice. The
+    // ORIGINAL row already has a QBO deposit; the corrected row must be
+    // caught here even though its fingerprint no longer matches anything.
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-wityy", tabName: "July", invNumber: "73801", status: "Deposit Created" },
+    ];
+    const sibling = findInvNumberSibling(
+      { id: "row-witty", tabName: "July", invNumber: "73801" },
+      ["Posted", "Posted With Warning", "Deposit Created"],
+      siblings
+    );
+    expect(sibling?.id).toBe("row-wityy");
+  });
+
+  it("flags a row whose INV# already resolved after a date edit — the VEGA 7/21 -> 7/24 case", () => {
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-vega-721", tabName: "July", invNumber: "73845", status: "Deposit Created" },
+    ];
+    const sibling = findInvNumberSibling(
+      { id: "row-vega-724", tabName: "July", invNumber: "73845" },
+      ["Posted", "Posted With Warning", "Deposit Created"],
+      siblings
+    );
+    expect(sibling).not.toBeNull();
+  });
+
+  it("does not flag a row against its own prior state (same id excluded)", () => {
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-1", tabName: "July", invNumber: "73801", status: "Deposit Created" },
+    ];
+    expect(
+      findInvNumberSibling({ id: "row-1", tabName: "July", invNumber: "73801" }, ["Deposit Created"], siblings)
+    ).toBeNull();
+  });
+
+  it("does not flag across different tabs (same INV# can legitimately repeat by month)", () => {
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-june", tabName: "June", invNumber: "73801", status: "Deposit Created" },
+    ];
+    expect(
+      findInvNumberSibling({ id: "row-july", tabName: "July", invNumber: "73801" }, ["Deposit Created"], siblings)
+    ).toBeNull();
+  });
+
+  it("does not flag when the sibling isn't in a resolved status yet", () => {
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-1", tabName: "July", invNumber: "73801", status: "Ready To Post" },
+    ];
+    expect(
+      findInvNumberSibling({ id: "row-2", tabName: "July", invNumber: "73801" }, ["Deposit Created"], siblings)
+    ).toBeNull();
+  });
+
+  it("a row with no INV# is never matched (nothing to key off of)", () => {
+    const siblings: InvNumberRowRef[] = [
+      { id: "row-1", tabName: "July", invNumber: null, status: "Deposit Created" },
+    ];
+    expect(
+      findInvNumberSibling({ id: "row-2", tabName: "July", invNumber: null }, ["Deposit Created"], siblings)
+    ).toBeNull();
   });
 });

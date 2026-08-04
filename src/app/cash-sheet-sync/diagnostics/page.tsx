@@ -207,6 +207,84 @@ export default async function QboDiagnosticsPage() {
           <Link href="/cash-sheet-sync/settings">← Back to Settings &amp; rollout</Link>
         </p>
       </div>
+
+      <SheetSyncRunsCard />
     </>
+  );
+}
+
+/**
+ * Recent sync runs and their tab-level events (§4, §13). Sheet write-back
+ * failures (a tab whose managed columns never got stamped — e.g. a protected
+ * range blocking the service account) are logged as `writeback_error` events
+ * with `sheetRowId: null`, so they never show up on any row's own event list
+ * and were otherwise invisible anywhere in the hub. This surfaces them.
+ */
+async function SheetSyncRunsCard() {
+  const recentRuns = await prisma.syncRun.findMany({
+    orderBy: { startedAt: "desc" },
+    take: 10,
+  });
+  const runIds = recentRuns.map((r) => r.id);
+  const syncEvents = runIds.length
+    ? await prisma.rowEvent.findMany({
+        where: {
+          syncRunId: { in: runIds },
+          sheetRowId: null,
+          eventType: { in: ["tabs_discovered", "tab_error", "writeback_error"] },
+        },
+        orderBy: { createdAt: "asc" },
+      })
+    : [];
+  const eventsByRun = new Map<string, typeof syncEvents>();
+  for (const e of syncEvents) {
+    if (!e.syncRunId) continue;
+    const list = eventsByRun.get(e.syncRunId) ?? [];
+    list.push(e);
+    eventsByRun.set(e.syncRunId, list);
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3 className="card-title" style={{ marginTop: 0 }}>Recent sync runs</h3>
+      <p className="card-subtitle">
+        Tab-level events per run — which tabs were scanned, and any tab read or sheet write-back failure. A tab
+        missing its <code>GCD_QBO_Row_ID</code> columns in the workbook will show a <code>writeback_error</code>{" "}
+        here with the exact reason (e.g. a protected range blocking the service account).
+      </p>
+      <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
+        {recentRuns.map((run) => {
+          const events = eventsByRun.get(run.id) ?? [];
+          const hasError = events.some((e) => e.eventType === "tab_error" || e.eventType === "writeback_error");
+          return (
+            <div
+              key={run.id}
+              style={{ borderLeft: `3px solid ${hasError ? "var(--danger, #c0392b)" : "var(--border-subtle)"}`, paddingLeft: 12 }}
+            >
+              <p className="card-subtitle" style={{ margin: "0 0 4px" }}>
+                {run.startedAt.toISOString().slice(0, 16).replace("T", " ")} · <strong>{run.mode}</strong> ·{" "}
+                {run.rolloutStage} · {run.status} · scanned {run.rowsScanned}, posted {run.rowsPosted}, errors{" "}
+                {run.rowsError}
+              </p>
+              {events.length === 0 ? (
+                <p className="card-subtitle" style={{ margin: 0 }}>No tab-level events recorded.</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {events.map((e) => (
+                    <li
+                      key={e.id}
+                      style={{ fontSize: 13, color: e.eventType === "tabs_discovered" ? "inherit" : "var(--danger, #c0392b)" }}
+                    >
+                      <strong>{e.eventType}</strong>: {e.eventMessage}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+        {recentRuns.length === 0 && <p className="card-subtitle">No sync runs yet.</p>}
+      </div>
+    </div>
   );
 }

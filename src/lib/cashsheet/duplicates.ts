@@ -66,3 +66,60 @@ export function findPossibleDuplicate(
 export function isAlreadyPosted(qboTransactionId: string | null | undefined): boolean {
   return typeof qboTransactionId === "string" && qboTransactionId.trim() !== "";
 }
+
+/**
+ * Fourth duplicate signal: re-identification after an edit (§4, §11).
+ *
+ * Row identity is the hidden GCD_QBO_Row_ID when write-back has captured one;
+ * until then (or if that cell is ever cleared — e.g. a whole-row paste/clear
+ * that overwrites an unprotected hidden column) it falls back to a content
+ * fingerprint. That fingerprint includes fields like name and date, so a
+ * routine correction (a typo fix, a date fix) on a row that hasn't yet picked
+ * up a stable UUID changes the fingerprint entirely — the engine then sees
+ * what looks like a brand-new row, and the existing fingerprint-based
+ * `findPossibleDuplicate` check above can't catch it because the fingerprint
+ * genuinely differs. Left alone, a row in this state gets reprocessed as new
+ * and can attempt to post the same transaction to QBO a second time.
+ *
+ * INV#/RO number is stable across exactly that class of edit (the invoice
+ * number itself is essentially never the thing being corrected), so keying
+ * off it — instead of the fingerprint — closes the gap. A row with no INV#
+ * has no key to compare on and is never matched here.
+ */
+export interface InvNumberRowRef {
+  id: string;
+  tabName: string;
+  invNumber: string | null;
+  status: string;
+}
+
+/** Leading whitespace-delimited token of an INV#/RO value, upper-cased. */
+export function normalizeInvNumber(v: string | null | undefined): string {
+  const s = (v ?? "").trim();
+  if (!s) return "";
+  return (s.split(/\s+/)[0] ?? "").toUpperCase();
+}
+
+/**
+ * Find another row in the same tab, sharing the same normalized INV#, whose
+ * status is already one of `resolvedStatuses` (i.e. it already has a QBO
+ * outcome) — meaning `candidate` is very likely that same transaction
+ * reappearing under a new identity, not a genuinely new one. Excludes
+ * `candidate.id` itself so an existing row is never flagged against its own
+ * prior state.
+ */
+export function findInvNumberSibling(
+  candidate: { id: string; tabName: string; invNumber: string | null },
+  resolvedStatuses: readonly string[],
+  siblings: InvNumberRowRef[]
+): InvNumberRowRef | null {
+  const key = normalizeInvNumber(candidate.invNumber);
+  if (!key) return null;
+  for (const sib of siblings) {
+    if (sib.id === candidate.id) continue;
+    if (sib.tabName !== candidate.tabName) continue;
+    if (normalizeInvNumber(sib.invNumber) !== key) continue;
+    if (resolvedStatuses.includes(sib.status)) return sib;
+  }
+  return null;
+}
