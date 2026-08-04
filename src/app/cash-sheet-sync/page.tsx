@@ -17,11 +17,32 @@ async function statusCounts(): Promise<Record<string, number>> {
   return out;
 }
 
+/**
+ * Unreviewed count for a set of statuses (§10). A "Possible Duplicate" row is
+ * often a correct, permanent signal rather than something with a further
+ * action to take — e.g. a name/date correction whose original already has a
+ * real QBO deposit (see duplicates.ts's findInvNumberSibling): there's
+ * nothing to DO, just something to acknowledge. Once a reviewer marks it
+ * reviewed, it should stop nagging on the Overview's "needs attention" tiles
+ * even though the row (correctly) keeps its status and stays out of the
+ * posting path forever.
+ */
+async function unreviewedCounts(statuses: string[]): Promise<Record<string, number>> {
+  const grouped = await prisma.sheetRow.groupBy({
+    by: ["status"],
+    where: { status: { in: statuses }, reviewedAt: null },
+    _count: { _all: true },
+  });
+  const out: Record<string, number> = {};
+  for (const g of grouped) out[g.status] = g._count._all;
+  return out;
+}
+
 export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment, recentChanges] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges, dupCounts] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
@@ -34,6 +55,7 @@ export default async function OverviewPage() {
       take: 12,
       include: { sheetRow: { select: { id: true, tabName: true, rowNumberLastSeen: true } } },
     }),
+    unreviewedCounts([RowStatus.PossibleDuplicate, RowStatus.DuplicateRowId]),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const changedSinceLastSync =
@@ -96,8 +118,8 @@ export default async function OverviewPage() {
 
       <h2 style={{ fontSize: 18, margin: "8px 0 12px" }}>Attention</h2>
       <div className="kpi-grid">
-        <StatCard label="Possible dupes" n={counts[RowStatus.PossibleDuplicate] ?? 0} sev="warn" />
-        <StatCard label="Duplicate row IDs" n={counts[RowStatus.DuplicateRowId] ?? 0} sev="warn" />
+        <StatCard label="Possible dupes" n={dupCounts[RowStatus.PossibleDuplicate] ?? 0} sev="warn" />
+        <StatCard label="Duplicate row IDs" n={dupCounts[RowStatus.DuplicateRowId] ?? 0} sev="warn" />
         <StatCard label="Unknown purpose" n={counts[RowStatus.UnknownPurpose] ?? 0} sev="warn" />
         <StatCard label="Missing account map" n={counts[RowStatus.MissingAccountMapping] ?? 0} sev="warn" />
         <StatCard label="Changed after posting" n={counts[RowStatus.ChangedAfterPosting] ?? 0} sev="danger" />
