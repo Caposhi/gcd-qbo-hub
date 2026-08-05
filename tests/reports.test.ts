@@ -24,6 +24,7 @@ import {
   CUSTOMER_SALES,
   ITEM_SALES,
   ITEM_SALES_UNTITLED_AMOUNT,
+  ITEM_SALES_QTY_TRAP,
   ITEM_SALES_AVG_PRICE_TRAP,
 } from "./report-fixtures";
 
@@ -219,6 +220,23 @@ describe("normalizeSales", () => {
     expect(item.total).toBe(75000); // not 1483.79
     // And the charted rows tie out to the report's own total.
     expect(item.rows.reduce((a, r) => a + r.amount, 0)).toBe(item.total);
+  });
+
+  it("charts sales dollars, not Qty, on the real GCD Jul-2026 report", () => {
+    // Verified against live QuickBooks. Qty is additive too and comes first, so
+    // additivity alone picks it; the "% of Sales" column is what identifies the
+    // dollar column. The bug charted parts at 1,483.79 (its quantity).
+    const item = normalizeSales(parseQboReport(ITEM_SALES_QTY_TRAP));
+
+    // Labor is the top seller at $132,117.46 — the bug ranked parts first.
+    expect(item.rows[0].name).toBe("TEK Sales-Labor Sales");
+    expect(item.rows[0].amount).toBeCloseTo(132117.46, 2);
+    expect(item.rows[1].name).toBe("TEK Sales-Parts Sales");
+    expect(item.rows[1].amount).toBeCloseTo(98938.69, 2); // not 1483.79 (Qty)
+
+    // Ties out to QBO's stated total sales for the month.
+    expect(item.total).toBeCloseTo(233913.96, 2);
+    expect(item.rows.reduce((a, r) => a + r.amount, 0)).toBeCloseTo(233913.96, 2);
   });
 });
 

@@ -332,23 +332,28 @@ function pickMoneyColumnIndex(report: QboReport): number {
 }
 
 /**
- * Pick the sales-dollar column by RECONCILIATION rather than by column title.
+ * Pick the sales-dollar column from the report's OWN arithmetic, not its column
+ * titles.
  *
- * Title heuristics are brittle: QBO labels this column differently across report
- * variants ("Amount", "Sales", "Total", sometimes untitled), so a picker that
- * pattern-matches names can silently land on a per-unit column (Avg Price) and
- * chart numbers that are orders of magnitude too small — the "Revenue by
- * Service/Product" bug.
+ * Title heuristics are brittle — QBO titles this column inconsistently across
+ * report variants — and a mis-pick silently charts the wrong series. On the live
+ * ItemSales report the picker landed on **Qty**: parts showed "1,483.79", which
+ * is the quantity, not the $98,938.69 of parts sales.
  *
- * The report tells us the answer, though: only the additive dollar column sums
- * across the item rows to the value shown on the report's own Total row. An
- * average column doesn't (the average of averages ≠ the total), and a Qty column
- * is not money. So we score every candidate column by how closely
- * sum(item rows) matches the Total row for that same column, and take the best
- * match within tolerance. This self-corrects for any column layout.
+ * Two report-internal facts identify the right column without trusting names:
  *
- * Returns -1 when there's no total row to reconcile against (caller falls back
- * to the title heuristics).
+ *  1. ADDITIVITY — the column's item rows must sum to that column's own Total
+ *     row. This eliminates per-unit columns (an average of averages never sums
+ *     to the overall average) but NOT Qty, which is also additive.
+ *
+ *  2. THE "% of Sales" COLUMN — QBO computes those percentages from the dollar
+ *     column, so for the right column each row's share of the total matches its
+ *     stated percentage. Parts is 42.3% of sales: 98,938.69 / 233,913.96 = 42.3%
+ *     ✓, while 1,483.79 / 2,197.92 = 67.5% ✗. This is what separates dollars
+ *     from quantity.
+ *
+ * Returns -1 when the report gives us nothing to check against, so the caller
+ * falls back to the title heuristics.
  */
 function pickColumnByTotalReconciliation(
   report: QboReport,
@@ -356,32 +361,59 @@ function pickColumnByTotalReconciliation(
   totalRow: QboFlatRow
 ): number {
   const cols = report.columns;
-  const isMoney = (t: string) => /money/i.test(t);
-  const excluded = (t: string) => /qty|quantity|units|avg|average|price|%|percent|margin|\bcost\b/i.test(t);
+  const val = (r: QboFlatRow, i: number) => ZERO_IF_NULL(r.values[i]);
+  const idxs = cols.map((_, i) => i);
+  if (dataRows.length === 0) return -1;
 
-  // Prefer money-typed, non-excluded columns; if QBO omitted types, consider all.
-  let candidates = cols.map((c, i) => ({ c, i })).filter(({ c }) => isMoney(c.type) && !excluded(c.title));
-  if (candidates.length === 0) {
-    candidates = cols.map((c, i) => ({ c, i })).filter(({ c }) => !excluded(c.title));
-  }
-  if (candidates.length === 0) return -1;
+  // The "% of Sales" column: titled as a percentage, or whose rows sum to ~100.
+  const pctIdx = idxs.find((i) => {
+    if (/%|percent/i.test(cols[i].title)) return true;
+    if (/money/i.test(cols[i].type)) return false;
+    const s = dataRows.reduce((a, r) => a + val(r, i), 0);
+    return dataRows.length > 1 && Math.abs(s - 100) < 1.5;
+  });
 
-  let best = -1;
-  let bestErr = Infinity;
-  for (const { i } of candidates) {
-    const total = ZERO_IF_NULL(totalRow.values[i]);
-    if (total === 0) continue; // nothing to reconcile against on this column
-    const sum = dataRows.reduce((a, r) => a + ZERO_IF_NULL(r.values[i]), 0);
-    // Relative error, so it works at any magnitude.
-    const err = Math.abs(sum - total) / Math.abs(total);
-    if (err < bestErr) {
-      bestErr = err;
-      best = i;
+  // Columns whose rows sum to their own Total (within 1% for rounding).
+  const additive = idxs.filter((i) => {
+    if (i === pctIdx) return false;
+    const total = val(totalRow, i);
+    if (total === 0) return false;
+    const sum = dataRows.reduce((a, r) => a + val(r, i), 0);
+    return Math.abs(sum - total) / Math.abs(total) <= 0.01;
+  });
+
+  if (additive.length === 0) return -1;
+  if (additive.length === 1) return additive[0];
+
+  // More than one additive column (classic ItemSales: Qty AND Amount). Ask the
+  // percentages which one they were derived from.
+  if (pctIdx !== undefined) {
+    let best = -1;
+    let bestErr = Infinity;
+    for (const i of additive) {
+      const total = val(totalRow, i);
+      const err = dataRows.reduce(
+        (a, r) => a + Math.abs((val(r, i) / total) * 100 - val(r, pctIdx)),
+        0
+      );
+      if (err < bestErr) {
+        bestErr = err;
+        best = i;
+      }
     }
+    // Average deviation under a point per row means these percentages really
+    // came from this column.
+    if (best >= 0 && bestErr / dataRows.length <= 1) return best;
   }
-  // 1% tolerance absorbs rounding/hidden rows without accepting a wrong column
-  // (an average column is off by orders of magnitude, never by 1%).
-  return bestErr <= 0.01 ? best : -1;
+
+  // No percentages to arbitrate: fall back to names, but never a quantity column.
+  const isQty = (t: string) => /qty|quantity|units/i.test(t);
+  const titled = additive.find((i) => /amount|sales|total/i.test(cols[i].title) && !isQty(cols[i].title));
+  if (titled !== undefined) return titled;
+  const money = additive.find((i) => /money/i.test(cols[i].type) && !isQty(cols[i].title));
+  if (money !== undefined) return money;
+  const notQty = additive.find((i) => !isQty(cols[i].title));
+  return notQty !== undefined ? notQty : additive[additive.length - 1];
 }
 
 export function normalizeSales(report: QboReport): SalesNormalized {
