@@ -245,6 +245,33 @@ export async function readOperationsSnapshot(
   return { data: parseOperationsData(row.payloadJson, period), fetchedAt: row.fetchedAt };
 }
 
+/**
+ * Read a period's cached snapshot under WHATEVER comparison mode it was last
+ * refreshed with (freshest row wins if more than one exists), ignoring the
+ * comparison key entirely. For a caller that only wants that period's
+ * absolute figures (roCount, techUtilization, etc.) — never a row's own
+ * stored deltas, which genuinely do depend on which comparison it was
+ * refreshed against — this is more robust than `readOperationsSnapshot`:
+ * a calendar month is systematically cached under "prior_period" by the
+ * backfill script and the AI council's monthly refresh, but an owner's
+ * manual refresh from the page can pick any comparison mode, and that would
+ * otherwise look like a missing month to a caller hardcoded to one
+ * comparison string. Used by compose.ts, which recomputes every delta itself
+ * from the composed range vs. the composed comparison range.
+ */
+export async function readOperationsSnapshotAnyComparison(period: TekPeriod): Promise<SnapshotResult> {
+  const row = await prisma.tekSnapshot.findFirst({
+    where: {
+      entity: DERIVED_ENTITY,
+      periodStart: new Date(period.start),
+      periodEnd: new Date(period.end),
+    },
+    orderBy: { fetchedAt: "desc" },
+  });
+  if (!row) return { data: null, fetchedAt: null };
+  return { data: parseOperationsData(row.payloadJson, period), fetchedAt: row.fetchedAt };
+}
+
 /** The five headline KPI values for a period, without the heavy entity arrays. */
 export interface OpsKpiValues {
   carCount: number;

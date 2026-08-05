@@ -451,42 +451,55 @@ export interface TekRepeatVisit {
 }
 
 /**
- * Vehicles with 2+ ROs in the same period — distinct from carCount (unique
- * vehicles), this is the drill-down for "which cars came back" so a repeat
- * visit isn't just a hidden gap between RO count and car count. Identifies a
- * vehicle by VIN when Tekmetric has one on file (authoritative — a vehicleId
- * can end up duplicated for the same physical car), else falls back to
- * vehicleId. Operates on the NORMALIZED shapes (already in a cached
- * TekOperationsData), not raw Tekmetric JSON.
+ * Per-vehicle RO tally — the shared building block behind both
+ * `findRepeatVehicleVisits` (one period) and compose.ts's multi-month
+ * composition. Identifies a vehicle by VIN when Tekmetric has one on file
+ * (authoritative — a vehicleId can end up duplicated for the same physical
+ * car), else falls back to vehicleId. Operates on the NORMALIZED shapes
+ * (already in a cached TekOperationsData), not raw Tekmetric JSON.
+ *
+ * Deliberately keeps only ids/counts per vehicle, never the RO objects
+ * themselves — compose.ts merges these tallies across many months' worth of
+ * cached snapshots, and a vehicle's full RO history (with jobs/totals) would
+ * defeat the whole point of composing from small, already-summarized data.
  */
-export function findRepeatVehicleVisits(ros: TekRepairOrder[], vehicles: TekVehicle[]): TekRepeatVisit[] {
+export function tallyRepairOrdersByVehicle(ros: TekRepairOrder[], vehicles: TekVehicle[]): Map<string, TekRepeatVisit> {
   const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
-  const groups = new Map<string, TekRepairOrder[]>();
+  const out = new Map<string, TekRepeatVisit>();
   for (const ro of ros) {
     if (!ro.vehicleId) continue;
-    const vin = vehicleById.get(ro.vehicleId)?.vin ?? null;
+    const v = vehicleById.get(ro.vehicleId);
+    const vin = v?.vin ?? null;
     const key = vin ? `vin:${vin}` : `veh:${ro.vehicleId}`;
-    const g = groups.get(key);
-    if (g) g.push(ro);
-    else groups.set(key, [ro]);
+    let acc = out.get(key);
+    if (!acc) {
+      acc = {
+        vehicleKey: key,
+        vin,
+        year: v?.year ?? null,
+        make: v?.make ?? null,
+        model: v?.model ?? null,
+        customerId: ro.customerId,
+        roCount: 0,
+        roIds: [],
+      };
+      out.set(key, acc);
+    }
+    acc.roCount += 1;
+    acc.roIds.push(ro.id);
   }
+  return out;
+}
 
-  const out: TekRepeatVisit[] = [];
-  for (const [key, group] of groups) {
-    if (group.length < 2) continue;
-    const v = group[0].vehicleId ? vehicleById.get(group[0].vehicleId) : undefined;
-    out.push({
-      vehicleKey: key,
-      vin: v?.vin ?? null,
-      year: v?.year ?? null,
-      make: v?.make ?? null,
-      model: v?.model ?? null,
-      customerId: group[0].customerId,
-      roCount: group.length,
-      roIds: group.map((r) => r.id),
-    });
-  }
-  return out.sort((a, b) => b.roCount - a.roCount);
+/**
+ * Vehicles with 2+ ROs in the same period — distinct from carCount (unique
+ * vehicles), this is the drill-down for "which cars came back" so a repeat
+ * visit isn't just a hidden gap between RO count and car count.
+ */
+export function findRepeatVehicleVisits(ros: TekRepairOrder[], vehicles: TekVehicle[]): TekRepeatVisit[] {
+  return [...tallyRepairOrdersByVehicle(ros, vehicles).values()]
+    .filter((v) => v.roCount >= 2)
+    .sort((a, b) => b.roCount - a.roCount);
 }
 
 export function computeAdvisorPerformance(

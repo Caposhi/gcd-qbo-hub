@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { presetRange, comparisonRange, monthRangesBack } from "@/lib/tekmetric/periods";
+import { presetRange, comparisonRange, monthRangesBack, monthsInRange } from "@/lib/tekmetric/periods";
 import { toStartOfDay, toEndOfDay } from "@/lib/tekmetric/client";
 
 // Fixed "today" = Mon 2026-07-13 (UTC) so ranges are deterministic.
@@ -65,6 +65,41 @@ describe("monthRangesBack (history backfill)", () => {
       { start: "2024-01-01", end: "2024-01-31", label: "Jan 2024" },
       { start: "2024-02-01", end: "2024-02-29", label: "Feb 2024" }, // leap
     ]);
+  });
+});
+
+describe("monthsInRange (composed multi-month view — see compose.ts)", () => {
+  it("decomposes a whole calendar year into its 12 months, oldest first", () => {
+    const r = monthsInRange({ start: "2025-01-01", end: "2025-12-31" });
+    expect(r).not.toBeNull();
+    expect(r).toHaveLength(12);
+    expect(r?.[0]).toEqual({ start: "2025-01-01", end: "2025-01-31", label: "Jan 2025" });
+    expect(r?.[11]).toEqual({ start: "2025-12-01", end: "2025-12-31", label: "Dec 2025" });
+  });
+
+  it("decomposes a single whole calendar month into itself", () => {
+    expect(monthsInRange({ start: "2026-02-01", end: "2026-02-28" })).toEqual([
+      { start: "2026-02-01", end: "2026-02-28", label: "Feb 2026" },
+    ]);
+  });
+
+  it("decomposes a multi-month span crossing a year boundary", () => {
+    const r = monthsInRange({ start: "2025-11-01", end: "2026-02-28" });
+    expect(r).toEqual([
+      { start: "2025-11-01", end: "2025-11-30", label: "Nov 2025" },
+      { start: "2025-12-01", end: "2025-12-31", label: "Dec 2025" },
+      { start: "2026-01-01", end: "2026-01-31", label: "Jan 2026" },
+      { start: "2026-02-01", end: "2026-02-28", label: "Feb 2026" },
+    ]);
+  });
+
+  it("refuses (returns null) a range that isn't whole-month-aligned", () => {
+    // "Last 90 days"-style range: arbitrary day boundaries, not month-aligned.
+    expect(monthsInRange({ start: "2026-05-15", end: "2026-08-12" })).toBeNull();
+    // "YTD" mid-year: the trailing end isn't a month's last day.
+    expect(monthsInRange({ start: "2026-01-01", end: "2026-07-13" })).toBeNull();
+    // Starts mid-month even though it ends cleanly.
+    expect(monthsInRange({ start: "2026-01-15", end: "2026-02-28" })).toBeNull();
   });
 });
 
