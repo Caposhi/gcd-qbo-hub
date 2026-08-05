@@ -179,13 +179,23 @@ export default async function TekmetricPage({
       )}
 
       {canRefresh && configured && (
-        <form action={refreshTekmetricAction} className="row-actions">
-          <input type="hidden" name="preset" value={preset} />
-          <input type="hidden" name="comparison" value={comparison} />
-          <button className="btn secondary" type="submit">
-            ↻ Refresh from Tekmetric
-          </button>
-        </form>
+        <>
+          <form action={refreshTekmetricAction} className="row-actions">
+            <input type="hidden" name="preset" value={preset} />
+            <input type="hidden" name="comparison" value={comparison} />
+            <button className="btn secondary" type="submit">
+              ↻ Refresh from Tekmetric
+            </button>
+          </form>
+          {(preset === "last_year" || preset === "ytd" || preset === "last_90_days") && (
+            <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
+              Refresh pulls full repair-order detail live, so it&apos;s capped to a ~100-day window (period and
+              comparison each) — a wide preset like this may refuse depending on the comparison chosen. For
+              multi-month trends, see Ops History / the Ops forecast on the Projections page instead, which read
+              from the existing monthly cache.
+            </p>
+          )}
+        </>
       )}
 
       {data && (

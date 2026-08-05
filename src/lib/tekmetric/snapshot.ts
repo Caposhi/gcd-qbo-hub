@@ -23,6 +23,7 @@ import {
   resolveShopIds,
   type TekDateRange,
 } from "./client";
+import { rangeLengthDays } from "./periods";
 import { buildOperationsData } from "./normalize";
 import { looksLikePartialMonth } from "./forecast";
 import { readMonthOverride } from "./overrides";
@@ -320,6 +321,37 @@ export async function readOperationsKpis(period: TekPeriod, comparison: string):
 // Refresh path (network) — used by the gated refresh action
 // ===========================================================================
 
+/**
+ * Hard ceiling on how many days of full repair-order detail a single live
+ * refresh may pull. Every RO carries its full job/parts detail, and a
+ * refresh holds BOTH the requested period AND its comparison period fully
+ * in memory at once — for "Last year" vs "prior period" that's two whole
+ * calendar years of nested RO/job data, materialized, normalized, and then
+ * JSON-serialized into a single Postgres write, inside the same process
+ * serving every other hub request.
+ *
+ * That is not a hypothetical: `loadOpsHistory` below already documents this
+ * exact instance (512MB) genuinely running out of memory pulling ~24 months
+ * of cached snapshot data at once, and a "Last year" refresh is the same
+ * order of magnitude done live, in one request — it took the whole hub down
+ * with an OOM restart. Multi-month TRENDS are already served safely by the
+ * per-month-cached history in history-service.ts (sequential, KPIs only);
+ * this manual refresh is for a live, full-detail pull of a SHORT window, not
+ * a substitute for that.
+ */
+const MAX_REFRESH_RANGE_DAYS = 100;
+
+export class TekRefreshRangeTooLargeError extends Error {
+  constructor(days: number) {
+    super(
+      `That period spans ${days} days of RO detail — too much to pull live at once (max ${MAX_REFRESH_RANGE_DAYS} ` +
+        `days). Pick a shorter period (This month, Last month, Last 30/90 days), or use Ops History / the Ops ` +
+        `forecast on the Projections page for multi-month trends — those read the existing monthly cache instead`
+    );
+    this.name = "TekRefreshRangeTooLargeError";
+  }
+}
+
 async function fetchRosForRange(shopIds: string[], range: TekDateRange) {
   const all = [];
   for (const shopId of shopIds) {
@@ -368,6 +400,13 @@ export async function refreshOperations(
   comparison: TekPeriod | null,
   roster?: TekRosterCache
 ): Promise<TekOperationsData> {
+  const periodDays = rangeLengthDays(period);
+  const comparisonDays = comparison ? rangeLengthDays(comparison) : 0;
+  const worstDays = Math.max(periodDays, comparisonDays);
+  if (worstDays > MAX_REFRESH_RANGE_DAYS) {
+    throw new TekRefreshRangeTooLargeError(worstDays);
+  }
+
   const shopIds = await resolveShopIds();
   const range: TekDateRange = { start: period.start, end: period.end };
 
