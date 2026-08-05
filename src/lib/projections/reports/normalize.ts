@@ -400,24 +400,117 @@ function pickMoneyColumnIndex(report: QboReport): number {
   return report.totalColumnIndex >= 0 ? report.totalColumnIndex : cols.length - 1;
 }
 
-export function normalizeSales(report: QboReport): SalesNormalized {
-  const moneyIdx = pickMoneyColumnIndex(report);
+/**
+ * Pick the sales-dollar column from the report's OWN arithmetic, not its column
+ * titles.
+ *
+ * Title heuristics are brittle — QBO titles this column inconsistently across
+ * report variants — and a mis-pick silently charts the wrong series. On the live
+ * ItemSales report the picker landed on **Qty**: parts showed "1,483.79", which
+ * is the quantity, not the $98,938.69 of parts sales.
+ *
+ * Two report-internal facts identify the right column without trusting names:
+ *
+ *  1. ADDITIVITY — the column's item rows must sum to that column's own Total
+ *     row. This eliminates per-unit columns (an average of averages never sums
+ *     to the overall average) but NOT Qty, which is also additive.
+ *
+ *  2. THE "% of Sales" COLUMN — QBO computes those percentages from the dollar
+ *     column, so for the right column each row's share of the total matches its
+ *     stated percentage. Parts is 42.3% of sales: 98,938.69 / 233,913.96 = 42.3%
+ *     ✓, while 1,483.79 / 2,197.92 = 67.5% ✗. This is what separates dollars
+ *     from quantity.
+ *
+ * Returns -1 when the report gives us nothing to check against, so the caller
+ * falls back to the title heuristics.
+ */
+function pickColumnByTotalReconciliation(
+  report: QboReport,
+  dataRows: QboFlatRow[],
+  totalRow: QboFlatRow
+): number {
+  const cols = report.columns;
+  const val = (r: QboFlatRow, i: number) => ZERO_IF_NULL(r.values[i]);
+  const idxs = cols.map((_, i) => i);
+  if (dataRows.length === 0) return -1;
 
-  const rows: SalesRow[] = report.rows
-    .filter(
-      (r) =>
-        r.kind === "data" &&
-        r.label.trim() !== "" &&
-        !/^total\b/i.test(r.label) &&
-        !/not specified/i.test(r.label)
-    )
-    .map((r) => ({ name: r.label, id: r.id, amount: ZERO_IF_NULL(r.values[moneyIdx]) }))
-    .filter((r) => r.amount !== 0)
-    .sort((a, b) => b.amount - a.amount);
+  // The "% of Sales" column: titled as a percentage, or whose rows sum to ~100.
+  const pctIdx = idxs.find((i) => {
+    if (/%|percent/i.test(cols[i].title)) return true;
+    if (/money/i.test(cols[i].type)) return false;
+    const s = dataRows.reduce((a, r) => a + val(r, i), 0);
+    return dataRows.length > 1 && Math.abs(s - 100) < 1.5;
+  });
+
+  // Columns whose rows sum to their own Total (within 1% for rounding).
+  const additive = idxs.filter((i) => {
+    if (i === pctIdx) return false;
+    const total = val(totalRow, i);
+    if (total === 0) return false;
+    const sum = dataRows.reduce((a, r) => a + val(r, i), 0);
+    return Math.abs(sum - total) / Math.abs(total) <= 0.01;
+  });
+
+  if (additive.length === 0) return -1;
+  if (additive.length === 1) return additive[0];
+
+  // More than one additive column (classic ItemSales: Qty AND Amount). Ask the
+  // percentages which one they were derived from.
+  if (pctIdx !== undefined) {
+    let best = -1;
+    let bestErr = Infinity;
+    for (const i of additive) {
+      const total = val(totalRow, i);
+      const err = dataRows.reduce(
+        (a, r) => a + Math.abs((val(r, i) / total) * 100 - val(r, pctIdx)),
+        0
+      );
+      if (err < bestErr) {
+        bestErr = err;
+        best = i;
+      }
+    }
+    // Average deviation under a point per row means these percentages really
+    // came from this column.
+    if (best >= 0 && bestErr / dataRows.length <= 1) return best;
+  }
+
+  // No percentages to arbitrate: fall back to names, but never a quantity column.
+  const isQty = (t: string) => /qty|quantity|units/i.test(t);
+  const titled = additive.find((i) => /amount|sales|total/i.test(cols[i].title) && !isQty(cols[i].title));
+  if (titled !== undefined) return titled;
+  const money = additive.find((i) => /money/i.test(cols[i].type) && !isQty(cols[i].title));
+  if (money !== undefined) return money;
+  const notQty = additive.find((i) => !isQty(cols[i].title));
+  return notQty !== undefined ? notQty : additive[additive.length - 1];
+}
+
+export function normalizeSales(report: QboReport): SalesNormalized {
+  const dataRows = report.rows.filter(
+    (r) =>
+      r.kind === "data" &&
+      r.label.trim() !== "" &&
+      !/^total\b/i.test(r.label) &&
+      !/not specified/i.test(r.label)
+  );
 
   const summaryRow =
     report.rows.find((r) => r.kind === "section_summary") ??
     report.rows.find((r) => /^total\b/i.test(r.label));
+
+  // Prefer the column that actually reconciles to the report's own Total row;
+  // only fall back to title heuristics when there's no total to check against.
+  const reconciled =
+    summaryRow && report.totalColumnIndex < 0
+      ? pickColumnByTotalReconciliation(report, dataRows, summaryRow)
+      : -1;
+  const moneyIdx = reconciled >= 0 ? reconciled : pickMoneyColumnIndex(report);
+
+  const rows: SalesRow[] = dataRows
+    .map((r) => ({ name: r.label, id: r.id, amount: ZERO_IF_NULL(r.values[moneyIdx]) }))
+    .filter((r) => r.amount !== 0)
+    .sort((a, b) => b.amount - a.amount);
+
   const total = summaryRow
     ? ZERO_IF_NULL(summaryRow.values[moneyIdx])
     : rows.reduce((a, r) => a + r.amount, 0);

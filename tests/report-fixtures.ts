@@ -270,6 +270,84 @@ export const ITEM_SALES_AVG_PRICE_TRAP = {
   },
 };
 
+/**
+ * The live "Revenue by Service/Product" shape that defeated the title-based
+ * picker: the real sales-dollar column carries NO usable title, while a
+ * per-invoice average column IS titled. Title heuristics skip the untitled
+ * column and land on the average, charting ~$1.5K bars against $234K of revenue.
+ *
+ * Only the dollar column reconciles with the report's own Total row
+ * (45,000 + 30,000 = 75,000), which is how the normalizer now identifies it —
+ * the averages sum to 1,650, nowhere near their stated 1,483.79.
+ */
+export const ITEM_SALES_UNTITLED_AMOUNT = {
+  Header: { ReportName: "ItemSales", StartPeriod: "2026-07-01", EndPeriod: "2026-07-31", Currency: "USD" },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "", ColType: "Money" },
+      { ColTitle: "Avg Price", ColType: "Money" },
+    ],
+  },
+  Rows: {
+    Row: [
+      { ColData: [{ value: "TEK Sales-Parts Sales", id: "80" }, { value: "45000.00" }, { value: "900.00" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Labor Sales", id: "79" }, { value: "30000.00" }, { value: "750.00" }], type: "Data" },
+      {
+        Summary: { ColData: [{ value: "Total" }, { value: "75000.00" }, { value: "1483.79" }] },
+        type: "Section",
+      },
+    ],
+  },
+};
+
+/**
+ * The REAL GCD ItemSales shape for Jul 2026, verified against QuickBooks — the
+ * live "Revenue by Service/Product" bug.
+ *
+ * Both Qty and Amount are additive (each sums to its own Total), so additivity
+ * alone can't tell them apart, and Qty comes FIRST. The chart showed parts at
+ * "1,483.79" — the quantity — instead of $98,938.69, which also made parts
+ * out-rank labor even though labor sold $33K more.
+ *
+ * The "% of Sales" column settles it: parts is 42.3% of sales, which matches
+ * 98,938.69 / 233,913.96 but not 1,483.79 / 2,197.92 (67.5%).
+ */
+export const ITEM_SALES_QTY_TRAP = {
+  Header: { ReportName: "ItemSales", StartPeriod: "2026-07-01", EndPeriod: "2026-07-31", Currency: "USD" },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "", ColType: "Money" }, // Qty — untitled, so name-matching can't skip it
+      { ColTitle: "", ColType: "Money" }, // Amount
+      { ColTitle: "% of Sales", ColType: "Percent" },
+      { ColTitle: "Avg Price", ColType: "Money" },
+    ],
+  },
+  Rows: {
+    Row: [
+      { ColData: [{ value: "TEK Discounts" }, { value: "66" }, { value: "-4934.80" }, { value: "-2.11" }, { value: "-74.77" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Labor Sales" }, { value: "590.13" }, { value: "132117.46" }, { value: "56.48" }, { value: "223.88" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Other Sales" }, { value: "40" }, { value: "1126.61" }, { value: "0.48" }, { value: "28.17" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Parts Sales" }, { value: "1483.79" }, { value: "98938.69" }, { value: "42.30" }, { value: "66.68" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Sublet Sales" }, { value: "12" }, { value: "6653.00" }, { value: "2.84" }, { value: "554.42" }], type: "Data" },
+      { ColData: [{ value: "TEK Taxes & Licenses-Battery/Tire Tax Expense" }, { value: "6" }, { value: "13.00" }, { value: "0.01" }, { value: "2.17" }], type: "Data" },
+      {
+        Summary: {
+          ColData: [
+            { value: "TOTAL" },
+            { value: "2197.92" },
+            { value: "233913.96" },
+            { value: "100.00" },
+            { value: "106.42" },
+          ],
+        },
+        type: "Section",
+      },
+    ],
+  },
+};
+
 /** Sales by Item (no grand-total column; an "Amount" money column). */
 export const ITEM_SALES = {
   Header: { ReportName: "ItemSales", StartPeriod: "2026-05-01", EndPeriod: "2026-06-30", Currency: "USD" },
