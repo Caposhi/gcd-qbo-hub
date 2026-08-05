@@ -72,8 +72,10 @@ export function presetRange(preset: DatePreset, today: Date): TekPeriod {
   }
 }
 
-/** Days in an inclusive range (used to shift the prior-period comparison). */
-function rangeLengthDays(range: TekPeriod): number {
+/** Days in an inclusive range (used to shift the prior-period comparison, and
+ *  by the live-refresh size guard in snapshot.ts to cap how much repair-order
+ *  detail a single request may pull). */
+export function rangeLengthDays(range: TekPeriod): number {
   const start = new Date(range.start);
   const end = new Date(range.end);
   return Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
