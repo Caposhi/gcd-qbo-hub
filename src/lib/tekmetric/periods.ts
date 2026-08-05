@@ -212,6 +212,29 @@ export function monthsInRange(range: TekPeriod): Array<{ start: string; end: str
   return out;
 }
 
+/** Zero-padded "YYYY-MM" key for one calendar month — a compact, unambiguous
+ *  way to name a month across a form post (see `monthKeyToRange` below),
+ *  rather than trusting a client-supplied start/end date pair directly. */
+export function monthRangeToKey(month: { start: string }): string {
+  return month.start.slice(0, 7);
+}
+
+/**
+ * Inverse of `monthRangeToKey`: turn a "YYYY-MM" key back into its whole
+ * calendar month range, or null for anything malformed. Used by the "fill
+ * missing months" action to validate a client-supplied list server-side —
+ * a key parses into a real, well-formed month or it's rejected outright,
+ * never trusted as a raw start/end pair from the client.
+ */
+export function monthKeyToRange(key: string): { start: string; end: string; label: string } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(key);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mm = Number(m[2]) - 1;
+  if (mm < 0 || mm > 11) return null;
+  return { start: iso(utc(y, mm, 1)), end: iso(utc(y, mm, daysInMonth(y, mm))), label: `${MONTH_ABBR[mm]} ${y}` };
+}
+
 /**
  * The one clock-reading helper: "today" as a UTC date whose Y/M/D equal the
  * calendar date in the shop's timezone (SYNC_TZ, default America/New_York).
