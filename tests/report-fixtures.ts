@@ -270,6 +270,37 @@ export const ITEM_SALES_AVG_PRICE_TRAP = {
   },
 };
 
+/**
+ * The live "Revenue by Service/Product" shape that defeated the title-based
+ * picker: the real sales-dollar column carries NO usable title, while a
+ * per-invoice average column IS titled. Title heuristics skip the untitled
+ * column and land on the average, charting ~$1.5K bars against $234K of revenue.
+ *
+ * Only the dollar column reconciles with the report's own Total row
+ * (45,000 + 30,000 = 75,000), which is how the normalizer now identifies it —
+ * the averages sum to 1,650, nowhere near their stated 1,483.79.
+ */
+export const ITEM_SALES_UNTITLED_AMOUNT = {
+  Header: { ReportName: "ItemSales", StartPeriod: "2026-07-01", EndPeriod: "2026-07-31", Currency: "USD" },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "", ColType: "Money" },
+      { ColTitle: "Avg Price", ColType: "Money" },
+    ],
+  },
+  Rows: {
+    Row: [
+      { ColData: [{ value: "TEK Sales-Parts Sales", id: "80" }, { value: "45000.00" }, { value: "900.00" }], type: "Data" },
+      { ColData: [{ value: "TEK Sales-Labor Sales", id: "79" }, { value: "30000.00" }, { value: "750.00" }], type: "Data" },
+      {
+        Summary: { ColData: [{ value: "Total" }, { value: "75000.00" }, { value: "1483.79" }] },
+        type: "Section",
+      },
+    ],
+  },
+};
+
 /** Sales by Item (no grand-total column; an "Amount" money column). */
 export const ITEM_SALES = {
   Header: { ReportName: "ItemSales", StartPeriod: "2026-05-01", EndPeriod: "2026-06-30", Currency: "USD" },

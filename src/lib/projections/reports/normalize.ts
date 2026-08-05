@@ -331,24 +331,85 @@ function pickMoneyColumnIndex(report: QboReport): number {
   return lastMoney ? lastMoney.i : cols.length - 1;
 }
 
-export function normalizeSales(report: QboReport): SalesNormalized {
-  const moneyIdx = pickMoneyColumnIndex(report);
+/**
+ * Pick the sales-dollar column by RECONCILIATION rather than by column title.
+ *
+ * Title heuristics are brittle: QBO labels this column differently across report
+ * variants ("Amount", "Sales", "Total", sometimes untitled), so a picker that
+ * pattern-matches names can silently land on a per-unit column (Avg Price) and
+ * chart numbers that are orders of magnitude too small — the "Revenue by
+ * Service/Product" bug.
+ *
+ * The report tells us the answer, though: only the additive dollar column sums
+ * across the item rows to the value shown on the report's own Total row. An
+ * average column doesn't (the average of averages ≠ the total), and a Qty column
+ * is not money. So we score every candidate column by how closely
+ * sum(item rows) matches the Total row for that same column, and take the best
+ * match within tolerance. This self-corrects for any column layout.
+ *
+ * Returns -1 when there's no total row to reconcile against (caller falls back
+ * to the title heuristics).
+ */
+function pickColumnByTotalReconciliation(
+  report: QboReport,
+  dataRows: QboFlatRow[],
+  totalRow: QboFlatRow
+): number {
+  const cols = report.columns;
+  const isMoney = (t: string) => /money/i.test(t);
+  const excluded = (t: string) => /qty|quantity|units|avg|average|price|%|percent|margin|\bcost\b/i.test(t);
 
-  const rows: SalesRow[] = report.rows
-    .filter(
-      (r) =>
-        r.kind === "data" &&
-        r.label.trim() !== "" &&
-        !/^total\b/i.test(r.label) &&
-        !/not specified/i.test(r.label)
-    )
-    .map((r) => ({ name: r.label, id: r.id, amount: ZERO_IF_NULL(r.values[moneyIdx]) }))
-    .filter((r) => r.amount !== 0)
-    .sort((a, b) => b.amount - a.amount);
+  // Prefer money-typed, non-excluded columns; if QBO omitted types, consider all.
+  let candidates = cols.map((c, i) => ({ c, i })).filter(({ c }) => isMoney(c.type) && !excluded(c.title));
+  if (candidates.length === 0) {
+    candidates = cols.map((c, i) => ({ c, i })).filter(({ c }) => !excluded(c.title));
+  }
+  if (candidates.length === 0) return -1;
+
+  let best = -1;
+  let bestErr = Infinity;
+  for (const { i } of candidates) {
+    const total = ZERO_IF_NULL(totalRow.values[i]);
+    if (total === 0) continue; // nothing to reconcile against on this column
+    const sum = dataRows.reduce((a, r) => a + ZERO_IF_NULL(r.values[i]), 0);
+    // Relative error, so it works at any magnitude.
+    const err = Math.abs(sum - total) / Math.abs(total);
+    if (err < bestErr) {
+      bestErr = err;
+      best = i;
+    }
+  }
+  // 1% tolerance absorbs rounding/hidden rows without accepting a wrong column
+  // (an average column is off by orders of magnitude, never by 1%).
+  return bestErr <= 0.01 ? best : -1;
+}
+
+export function normalizeSales(report: QboReport): SalesNormalized {
+  const dataRows = report.rows.filter(
+    (r) =>
+      r.kind === "data" &&
+      r.label.trim() !== "" &&
+      !/^total\b/i.test(r.label) &&
+      !/not specified/i.test(r.label)
+  );
 
   const summaryRow =
     report.rows.find((r) => r.kind === "section_summary") ??
     report.rows.find((r) => /^total\b/i.test(r.label));
+
+  // Prefer the column that actually reconciles to the report's own Total row;
+  // only fall back to title heuristics when there's no total to check against.
+  const reconciled =
+    summaryRow && report.totalColumnIndex < 0
+      ? pickColumnByTotalReconciliation(report, dataRows, summaryRow)
+      : -1;
+  const moneyIdx = reconciled >= 0 ? reconciled : pickMoneyColumnIndex(report);
+
+  const rows: SalesRow[] = dataRows
+    .map((r) => ({ name: r.label, id: r.id, amount: ZERO_IF_NULL(r.values[moneyIdx]) }))
+    .filter((r) => r.amount !== 0)
+    .sort((a, b) => b.amount - a.amount);
+
   const total = summaryRow
     ? ZERO_IF_NULL(summaryRow.values[moneyIdx])
     : rows.reduce((a, r) => a + r.amount, 0);

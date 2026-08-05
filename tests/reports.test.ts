@@ -23,6 +23,7 @@ import {
   AR_AGING,
   CUSTOMER_SALES,
   ITEM_SALES,
+  ITEM_SALES_UNTITLED_AMOUNT,
   ITEM_SALES_AVG_PRICE_TRAP,
 } from "./report-fixtures";
 
@@ -206,6 +207,18 @@ describe("normalizeSales", () => {
     ]);
     expect(item.rows[0].amount).toBe(45000); // Sales column, not 150 (Avg Price) or 300 (Qty)
     expect(item.total).toBe(75000);
+  });
+
+  it("reconciles against the Total row when the dollar column has no title", () => {
+    // The live shape: the sales-dollar column is UNTITLED while "Avg Price" is
+    // titled, so title heuristics land on the average and chart ~$1.5K bars
+    // against $234K of revenue. Only the dollar column sums to the Total row.
+    const item = normalizeSales(parseQboReport(ITEM_SALES_UNTITLED_AMOUNT));
+    expect(item.rows[0].amount).toBe(45000); // not 900 (Avg Price)
+    expect(item.rows[1].amount).toBe(30000); // not 750
+    expect(item.total).toBe(75000); // not 1483.79
+    // And the charted rows tie out to the report's own total.
+    expect(item.rows.reduce((a, r) => a + r.amount, 0)).toBe(item.total);
   });
 });
 

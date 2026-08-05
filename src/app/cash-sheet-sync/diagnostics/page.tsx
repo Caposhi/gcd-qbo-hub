@@ -15,6 +15,8 @@ import { currentEnvironment, QboAuthError } from "@/lib/qbo/oauth";
 import { getQboEnvironment } from "@/lib/config-store";
 import { getContext, query, listAccounts, QboApiError, QboNotConnectedError } from "@/lib/qbo/client";
 import { askMyClientAccountName } from "@/lib/coworker/qbo";
+import { fetchReport } from "@/lib/qbo/reports";
+import { parseQboReport, normalizeSales } from "@/lib/projections/reports";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +95,55 @@ async function probe(): Promise<ProbeResult> {
   }
 }
 
+interface ItemSalesProbe {
+  ok: boolean;
+  error?: string;
+  reportName?: string;
+  /** Every value column QBO returned, so a mis-picked column is obvious. */
+  columns?: Array<{ index: number; title: string; type: string; colKey?: string }>;
+  totalColumnIndex?: number;
+  /** What the normalizer chose, and whether the rows tie out to the total. */
+  chosenTotal?: number;
+  rowsSum?: number;
+  topRows?: Array<{ name: string; amount: number }>;
+}
+
+/**
+ * Read last month's ItemSales report and report its COLUMN LAYOUT plus what the
+ * normalizer made of it. This is the ground truth for the "Revenue by
+ * Service/Product" figures: if the charted rows don't sum to the report's own
+ * total, the wrong dollar column was picked and these columns say why.
+ */
+async function probeItemSales(): Promise<ItemSalesProbe> {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  try {
+    const raw = await fetchReport("item_sales", {
+      startDate: iso(start),
+      endDate: iso(end),
+      method: "accrual",
+    });
+    const parsed = parseQboReport(raw);
+    const norm = normalizeSales(parsed);
+    return {
+      ok: true,
+      reportName: parsed.reportName,
+      columns: parsed.columns.map((c, i) => ({ index: i, title: c.title, type: c.type, colKey: c.colKey })),
+      totalColumnIndex: parsed.totalColumnIndex,
+      chosenTotal: norm.total,
+      rowsSum: norm.rows.reduce((a, r) => a + r.amount, 0),
+      topRows: norm.rows.slice(0, 5).map((r) => ({ name: r.name, amount: r.amount })),
+    };
+  } catch (err) {
+    const d = describe(err);
+    return { ok: false, error: `${d.kind}: ${d.detail}` };
+  }
+}
+
+const usd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 export default async function QboDiagnosticsPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -113,6 +164,7 @@ export default async function QboDiagnosticsPage() {
     .findMany({ orderBy: [{ environment: "asc" }, { updatedAt: "desc" }] })
     .catch(() => []);
   const result = await probe();
+  const itemSales = result.ok ? await probeItemSales() : null;
   const now = Date.now();
 
   return (
@@ -207,6 +259,61 @@ export default async function QboDiagnosticsPage() {
           <Link href="/cash-sheet-sync/settings">← Back to Settings &amp; rollout</Link>
         </p>
       </div>
+
+      {itemSales && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h3 className="card-title" style={{ marginTop: 0 }}>
+            Revenue by Service / Product — column check (last month)
+          </h3>
+          <p className="card-subtitle">
+            Ground truth for that chart. The charted rows must sum to the report&apos;s own total; if they
+            don&apos;t, the wrong dollar column was picked and the column list below shows why.
+          </p>
+          {!itemSales.ok ? (
+            <div className="notice danger" style={{ marginTop: 12 }}>✗ {itemSales.error}</div>
+          ) : (
+            <>
+              {(() => {
+                const total = itemSales.chosenTotal ?? 0;
+                const sum = itemSales.rowsSum ?? 0;
+                const ties = Math.abs(sum - total) <= Math.max(1, Math.abs(total) * 0.01);
+                return (
+                  <div className={`notice ${ties ? "info" : "danger"}`} style={{ marginTop: 12 }}>
+                    {ties ? "✓" : "✗"} Rows sum to {usd(sum)} vs report total {usd(total)}
+                    {ties ? " — ties out." : " — MISMATCH, the charted column is wrong."}
+                  </div>
+                );
+              })()}
+              <div className="table-wrap" style={{ marginTop: 12 }}>
+                <table className="gcd">
+                  <thead>
+                    <tr>
+                      <th className="num">#</th>
+                      <th>Column title</th>
+                      <th>ColType</th>
+                      <th>ColKey</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(itemSales.columns ?? []).map((c) => (
+                      <tr key={c.index}>
+                        <td className="num">{c.index}</td>
+                        <td>{c.title || <span className="muted">(untitled)</span>}</td>
+                        <td>{c.type || <span className="muted">—</span>}</td>
+                        <td>{c.colKey ? <code>{c.colKey}</code> : <span className="muted">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="card-subtitle" style={{ marginTop: 10 }}>
+                Grand-total column index: <code>{itemSales.totalColumnIndex}</code> (−1 = none).
+                {" "}Top rows as charted: {(itemSales.topRows ?? []).map((r) => `${r.name} ${usd(r.amount)}`).join(" · ") || "none"}
+              </p>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
