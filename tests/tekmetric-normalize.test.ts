@@ -250,7 +250,7 @@ describe("computeTechUtilization", () => {
 
 describe("computeRevenueByMake", () => {
   it("rolls up revenue and GP by make, sorted by revenue desc", () => {
-    const vehicles = VEHICLES.map((v) => ({ id: String(v.id), year: v.year, make: v.make, model: v.model, mileage: null }));
+    const vehicles = VEHICLES.map((v) => ({ id: String(v.id), year: v.year, make: v.make, model: v.model, mileage: null, vin: null }));
     const byMake = computeRevenueByMake([RO_A, RO_B, RO_DELETED], vehicles);
     expect(byMake.map((m) => m.make)).toEqual(["Lexus", "Ford"]);
     const ford = byMake.find((m) => m.make === "Ford")!;

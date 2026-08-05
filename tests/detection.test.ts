@@ -30,6 +30,32 @@ describe("changed-after-posting detection (§11)", () => {
   });
 });
 
+describe("per-sync change tracking (§11)", () => {
+  // The engine flags a row as edited-since-last-sync whenever diffSnapshots of
+  // the previous vs current snapshot is non-empty — deliberately snapshot-based,
+  // not hash-based, so cells that are NOT part of the posting fingerprint (e.g.
+  // cashBalanceEnvelope, amountType) are still tracked.
+  it("detects a change in a non-fingerprint cell (cashBalanceEnvelope)", () => {
+    const prev = { amtCollected: 500, cashBalanceEnvelope: 1200 };
+    const curr = { amtCollected: 500, cashBalanceEnvelope: 1350 };
+    const diffs = diffSnapshots(prev, curr);
+    expect(diffs).toHaveLength(1);
+    expect(diffs[0]).toMatchObject({ field: "cashBalanceEnvelope", oldValue: 1200, newValue: 1350 });
+  });
+
+  it("an unchanged row across syncs yields no diff (no false edit)", () => {
+    const snap = { date: "2026-07-10", name: "Fusion", amtCollected: 500, cashBalanceEnvelope: 1200 };
+    expect(diffSnapshots(snap, { ...snap })).toHaveLength(0);
+  });
+
+  it("reports every changed field in a multi-cell edit", () => {
+    const prev = { name: "Fusion", purpose: "PART", amountPaidOut: 100 };
+    const curr = { name: "Explorer", purpose: "PART", amountPaidOut: 250 };
+    const diffs = diffSnapshots(prev, curr).map((d) => d.field).sort();
+    expect(diffs).toEqual(["amountPaidOut", "name"]);
+  });
+});
+
 describe("removed-after-posting detection (§11)", () => {
   it("flags posted uuids that vanished from a full tab scan", () => {
     const posted = ["gcdqbo-1", "gcdqbo-2", "gcdqbo-3"];

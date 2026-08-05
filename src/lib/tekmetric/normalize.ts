@@ -121,8 +121,13 @@ export function mapAppointmentStatus(code: string | null | undefined): TekAppoin
 // Cost / revenue primitives on RAW repair orders (cents in, cents out)
 // ===========================================================================
 
-/** Parts cost across all of an RO's jobs, in cents. */
-function roPartsCostCents(ro: TekRawRepairOrder): number {
+/**
+ * Parts cost across all of an RO's jobs, in cents. Exported (alongside the
+ * other cost/revenue primitives below) so a diagnostic script can print the
+ * exact same per-RO breakdown production computes, rather than a
+ * reimplementation that could subtly drift from it.
+ */
+export function roPartsCostCents(ro: TekRawRepairOrder): number {
   let c = 0;
   for (const job of ro.jobs ?? []) {
     for (const p of job.parts ?? []) {
@@ -133,7 +138,7 @@ function roPartsCostCents(ro: TekRawRepairOrder): number {
 }
 
 /** Sublet cost for an RO, in cents. */
-function roSubletCostCents(ro: TekRawRepairOrder): number {
+export function roSubletCostCents(ro: TekRawRepairOrder): number {
   return (ro.sublets ?? []).reduce((s, sub) => s + num(sub.cost), 0);
 }
 
@@ -143,12 +148,20 @@ function jobPartsCostCents(job: TekRawJob): number {
 }
 
 /** Pre-tax revenue for an RO, in cents (grand total minus tax). */
-function roRevenuePreTaxCents(ro: TekRawRepairOrder): number {
+export function roRevenuePreTaxCents(ro: TekRawRepairOrder): number {
   return num(ro.totalSales) - num(ro.taxes);
 }
 
-/** Gross profit for an RO, in cents (pre-tax revenue − parts & sublet cost). */
-function roGrossProfitCents(ro: TekRawRepairOrder): number {
+/**
+ * Gross profit for an RO, in cents (pre-tax revenue − parts & sublet cost).
+ * Labor still carries no COGS HERE — Tekmetric has no per-RO labor cost to
+ * subtract. The headline monthly `kpis.grossProfit` (computeKpis) ALSO
+ * subtracts a real, QBO-sourced labor cost as a period-level lump sum (see
+ * labor-cost.ts), so don't expect per-RO/job/tech/advisor gross profit to sum
+ * to that headline number anymore — payroll has no honest way to attribute
+ * back to individual ROs.
+ */
+export function roGrossProfitCents(ro: TekRawRepairOrder): number {
   return roRevenuePreTaxCents(ro) - roPartsCostCents(ro) - roSubletCostCents(ro);
 }
 
@@ -158,7 +171,7 @@ function jobGrossProfitCents(job: TekRawJob): number {
 }
 
 /** True when an RO should be excluded from metrics (deleted/void). */
-function isDeleted(ro: TekRawRepairOrder): boolean {
+export function isDeleted(ro: TekRawRepairOrder): boolean {
   return Boolean(ro.deletedDate) || mapRoStatus(ro.repairOrderStatus?.id) === "void";
 }
 
@@ -243,7 +256,26 @@ export function normalizeVehicle(v: TekRawVehicle): TekVehicle {
     make: v.make ?? null,
     model: v.model ?? null,
     mileage: null, // Vehicle endpoint carries no odometer; RO milesOut holds it.
+    vin: v.vin?.trim() || null,
   };
+}
+
+/** vehicleId → VIN (trimmed, uppercased) when Tekmetric has one on file for that vehicle. */
+function vinByVehicleId(vehicles: TekRawVehicle[]): Map<string, string | null> {
+  return new Map(vehicles.map((v) => [String(v.id), v.vin?.trim() ? v.vin.trim().toUpperCase() : null]));
+}
+
+/**
+ * The identity key for "one physical car" — VIN when Tekmetric has one on
+ * file for the vehicle, else the internal vehicleId. VIN is the more
+ * authoritative identity: an internal vehicleId can end up duplicated if the
+ * same physical car gets re-added as a new vehicle record, which would
+ * silently inflate a vehicleId-only car count.
+ */
+function vehicleIdentityKey(vehicleId: number | null, vinLookup: Map<string, string | null>): string | null {
+  if (vehicleId == null) return null;
+  const vin = vinLookup.get(String(vehicleId));
+  return vin ? `vin:${vin}` : `veh:${vehicleId}`;
 }
 
 export function normalizeAppointment(a: TekRawAppointment): TekAppointment {
@@ -406,6 +438,57 @@ export function computeRevenueByMake(
   return out.sort((x, y) => y.revenue - x.revenue);
 }
 
+export interface TekRepeatVisit {
+  /** VIN when known, else the internal vehicleId. */
+  vehicleKey: string;
+  vin: string | null;
+  year: number | null;
+  make: string | null;
+  model: string | null;
+  customerId: string | null;
+  roCount: number;
+  roIds: string[];
+}
+
+/**
+ * Vehicles with 2+ ROs in the same period — distinct from carCount (unique
+ * vehicles), this is the drill-down for "which cars came back" so a repeat
+ * visit isn't just a hidden gap between RO count and car count. Identifies a
+ * vehicle by VIN when Tekmetric has one on file (authoritative — a vehicleId
+ * can end up duplicated for the same physical car), else falls back to
+ * vehicleId. Operates on the NORMALIZED shapes (already in a cached
+ * TekOperationsData), not raw Tekmetric JSON.
+ */
+export function findRepeatVehicleVisits(ros: TekRepairOrder[], vehicles: TekVehicle[]): TekRepeatVisit[] {
+  const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+  const groups = new Map<string, TekRepairOrder[]>();
+  for (const ro of ros) {
+    if (!ro.vehicleId) continue;
+    const vin = vehicleById.get(ro.vehicleId)?.vin ?? null;
+    const key = vin ? `vin:${vin}` : `veh:${ro.vehicleId}`;
+    const g = groups.get(key);
+    if (g) g.push(ro);
+    else groups.set(key, [ro]);
+  }
+
+  const out: TekRepeatVisit[] = [];
+  for (const [key, group] of groups) {
+    if (group.length < 2) continue;
+    const v = group[0].vehicleId ? vehicleById.get(group[0].vehicleId) : undefined;
+    out.push({
+      vehicleKey: key,
+      vin: v?.vin ?? null,
+      year: v?.year ?? null,
+      make: v?.make ?? null,
+      model: v?.model ?? null,
+      customerId: group[0].customerId,
+      roCount: group.length,
+      roIds: group.map((r) => r.id),
+    });
+  }
+  return out.sort((a, b) => b.roCount - a.roCount);
+}
+
 export function computeAdvisorPerformance(
   ros: TekRawRepairOrder[],
   advisors: TekServiceAdvisor[],
@@ -464,23 +547,35 @@ interface KpiRaw {
   carCount: number;
 }
 
-function rollupKpis(ros: TekRawRepairOrder[]): KpiRaw {
+/**
+ * `laborCostDollars` is the real, QBO-sourced labor cost for this same
+ * period (see labor-cost.ts) — subtracted once from the period's aggregate
+ * gross profit, NOT per-RO (Tekmetric carries no per-RO labor cost to
+ * subtract from, and payroll has no honest way to attribute back to
+ * individual ROs). 0 when unavailable (today's zero-labor-cost fallback).
+ */
+function rollupKpis(
+  ros: TekRawRepairOrder[],
+  vinLookup: Map<string, string | null>,
+  laborCostDollars: number
+): KpiRaw {
   let roCount = 0;
   let revenueCents = 0;
   let grossProfitCents = 0;
-  const vehicles = new Set<string>();
+  const cars = new Set<string>();
   for (const ro of ros) {
     if (isDeleted(ro)) continue;
     roCount += 1;
     revenueCents += roRevenuePreTaxCents(ro);
     grossProfitCents += roGrossProfitCents(ro);
-    if (ro.vehicleId != null) vehicles.add(String(ro.vehicleId));
+    const key = vehicleIdentityKey(ro.vehicleId, vinLookup);
+    if (key) cars.add(key);
   }
   return {
     roCount,
     revenue: centsToDollars(revenueCents),
-    grossProfit: centsToDollars(grossProfitCents),
-    carCount: vehicles.size,
+    grossProfit: round2(centsToDollars(grossProfitCents) - laborCostDollars),
+    carCount: cars.size,
   };
 }
 
@@ -494,12 +589,21 @@ export function buildKpi(value: number, priorValue: number | null): TekKpi {
   return { value: round2(value), priorValue: round2(priorValue), deltaAbs, deltaPct };
 }
 
+/** Real QBO labor cost (dollars) for the current and comparison periods — null when unavailable for that period. */
+export interface TekLaborCost {
+  current: number | null;
+  prior: number | null;
+}
+
 export function computeKpis(
   currentRos: TekRawRepairOrder[],
-  priorRos: TekRawRepairOrder[] | null
+  priorRos: TekRawRepairOrder[] | null,
+  vehicles: TekRawVehicle[],
+  laborCost?: TekLaborCost
 ): TekKpiSummary {
-  const cur = rollupKpis(currentRos);
-  const prior = priorRos ? rollupKpis(priorRos) : null;
+  const vinLookup = vinByVehicleId(vehicles);
+  const cur = rollupKpis(currentRos, vinLookup, laborCost?.current ?? 0);
+  const prior = priorRos ? rollupKpis(priorRos, vinLookup, laborCost?.prior ?? 0) : null;
   const aro = (k: KpiRaw): number => (k.roCount > 0 ? round2(k.revenue / k.roCount) : 0);
   const margin = (k: KpiRaw): number => (k.revenue > 0 ? round2((k.grossProfit / k.revenue) * 100) : 0);
   return {
@@ -524,6 +628,8 @@ export interface BuildOperationsInput {
   appointments: TekRawAppointment[];
   employees: TekRawEmployee[];
   utilization?: TechUtilizationOptions;
+  /** Real QBO labor cost for period/priorPeriod — omitted falls back to 0 (today's zero-labor-cost definition). */
+  laborCost?: TekLaborCost;
 }
 
 /**
@@ -544,7 +650,7 @@ export function buildOperationsData(input: BuildOperationsInput): TekOperationsD
     serviceAdvisors,
     vehicles,
     appointments: input.appointments.map(normalizeAppointment),
-    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null),
+    kpis: computeKpis(input.repairOrders, input.priorRepairOrders ?? null, input.vehicles, input.laborCost),
     techUtilization: computeTechUtilization(input.repairOrders, technicians, input.period, input.utilization, nameById),
     revenueByMake: computeRevenueByMake(input.repairOrders, vehicles),
     advisorPerformance: computeAdvisorPerformance(input.repairOrders, serviceAdvisors, nameById),

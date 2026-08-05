@@ -10,7 +10,11 @@ import { prisma } from "@/lib/db";
 import type { QboContext } from "@/lib/qbo/client";
 import { findPaymentsInWindow } from "@/lib/qbo/deposits";
 import { matchPaymentByRo, planCashDeposit, type CashDepositPlan, type PaymentLike } from "./cash-deposit";
+import { findInvNumberSibling } from "./duplicates";
 import { RowStatus } from "./status";
+
+/** Statuses meaning a row's INV#/RO already has a QBO outcome (§10). */
+const RESOLVED_INV_STATUSES: string[] = [RowStatus.Posted, RowStatus.PostedWithWarning, RowStatus.DepositCreated];
 
 // Customer invoice cash clears from Undeposited Funds INTO Cash on hand (the
 // physical envelope), NOT the bank. The QBO register confirms this: e.g.
@@ -32,14 +36,43 @@ export async function findCashDepositCandidates() {
     where: {
       invNumber: { not: null },
       amtCollected: { not: null },
-      // Exclude rows we've already turned into a deposit. Filter on status
-      // (always non-null) rather than `NOT qboTransactionType = "Deposit"`,
-      // which — because qboTransactionType is NULL on undeposited rows — would
-      // evaluate to NULL and silently drop every candidate (SQL 3-valued logic).
-      status: { not: RowStatus.DepositCreated },
+      // Exclude rows we've already turned into a deposit, AND rows the sync
+      // engine has already flagged as re-identified duplicates (§10 — its
+      // INV#-based sibling check runs on every sync and catches this earlier
+      // than Locate does). Filter on status (always non-null) rather than
+      // `NOT qboTransactionType = "Deposit"`, which — because
+      // qboTransactionType is NULL on undeposited rows — would evaluate to
+      // NULL and silently drop every candidate (SQL 3-valued logic).
+      status: { notIn: [RowStatus.DepositCreated, RowStatus.PossibleDuplicate] },
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
   });
+}
+
+/**
+ * Write-time guard, independent of the row's current status (§10): does this
+ * row's INV# already have a QBO outcome under a DIFFERENT row? This is the
+ * same re-identification check the sync engine runs on every sync, repeated
+ * here because deposit creation can be triggered directly on a single row
+ * (the row-level "Create deposit" button) without going through
+ * findCashDepositCandidates's status filter first. Read-only.
+ */
+export async function findAlreadyResolvedInvSibling(row: {
+  id: string;
+  tabName: string;
+  invNumber: string | null;
+}) {
+  if (!row.invNumber) return null;
+  const siblings = await prisma.sheetRow.findMany({
+    where: {
+      tabName: row.tabName,
+      invNumber: { not: null },
+      status: { in: RESOLVED_INV_STATUSES },
+      id: { not: row.id },
+    },
+    select: { id: true, tabName: true, invNumber: true, status: true },
+  });
+  return findInvNumberSibling(row, RESOLVED_INV_STATUSES, siblings);
 }
 
 export interface ResolvedAccounts {

@@ -23,7 +23,14 @@ import { computeFingerprint, computeRowHash, rowSnapshot } from "./fingerprint";
 import { extractRowUuid, generateRowUuid, CONTROL_KEYS, isValidRowUuid } from "./uuid";
 import { buildPostingPlan, type AccountMappingLike } from "./classify";
 import type { MappingLike } from "./purpose";
-import { findDuplicateRowIds, findPossibleDuplicate, isAlreadyPosted, type PostedRowRef } from "./duplicates";
+import {
+  findDuplicateRowIds,
+  findPossibleDuplicate,
+  findInvNumberSibling,
+  isAlreadyPosted,
+  type PostedRowRef,
+  type InvNumberRowRef,
+} from "./duplicates";
 import { isChangedAfterPosting, diffSnapshots, findRemovedAfterPosting } from "./detection";
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
@@ -61,6 +68,8 @@ export interface RunSummary {
   duplicateRowIds: number;
   changedAfterPosting: number;
   removedAfterPosting: number;
+  /** Rows whose cell values differ from the previous daily sync (§11). */
+  rowsChangedSinceLastSync: number;
   tabsScanned: string[];
 }
 
@@ -112,6 +121,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     duplicateRowIds: 0,
     changedAfterPosting: 0,
     removedAfterPosting: 0,
+    rowsChangedSinceLastSync: 0,
     tabsScanned: [],
   };
 
@@ -271,6 +281,15 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     qboTransactionId: p.qboTransactionId ?? "",
   }));
 
+  // Rows whose INV#/RO already has a QBO outcome — the re-identification guard
+  // (§4, §10, §11) checks new/still-unresolved rows against this list instead
+  // of the fingerprint, so a name/date correction can't slip a re-post past
+  // duplicate detection. See duplicates.ts for why.
+  const invResolvedRows: InvNumberRowRef[] = await prisma.sheetRow.findMany({
+    where: { spreadsheetId, invNumber: { not: null }, status: { in: RESOLVED_INV_STATUSES } },
+    select: { id: true, tabName: true, invNumber: true, status: true },
+  });
+
   // ---- 3. Per-row upsert + classify + gate + post ------------------------
   for (const s of scanned) {
     try {
@@ -286,6 +305,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
         accounts,
         dupRowIds,
         postedRefs,
+        invResolvedRows,
         summary,
       });
     } catch (err) {
@@ -369,6 +389,9 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
   return summary;
 }
 
+/** Statuses meaning a row's INV#/RO already has a QBO outcome (§10). */
+const RESOLVED_INV_STATUSES: string[] = [RowStatus.Posted, RowStatus.PostedWithWarning, RowStatus.DepositCreated];
+
 interface RowCtx {
   run: { id: string };
   stage: RolloutStage;
@@ -381,6 +404,7 @@ interface RowCtx {
   accounts: AccountMappingLike[];
   dupRowIds: Map<string, unknown>;
   postedRefs: PostedRowRef[];
+  invResolvedRows: InvNumberRowRef[];
   summary: RunSummary;
 }
 
@@ -395,6 +419,34 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   // Change-after-posting (§11): a posted row whose hash drifted.
   let status: string = existing?.status ?? RowStatus.New;
   const wasPosted = existing ? isAlreadyPosted(existing.qboTransactionId) : false;
+
+  // Universal per-sync change tracking (§11). Independent of posting state:
+  // compare this row's cells against the snapshot captured on the LAST sync and,
+  // if any cell differs, record a durable `row_changed` event with the full
+  // before/after snapshot and per-field diff. This is edge-triggered — it fires
+  // once per actual edit (next sync's baseline is the new value), so a row that
+  // is edited and then left alone is logged exactly once. It gives every tracked
+  // row an auditable change history in the hub, whether or not it has been posted
+  // to QBO. (Posted rows additionally raise the higher-severity, emailed
+  // changed_after_posting alert below, which compares against the frozen posted
+  // snapshot rather than the previous sync.)
+  if (existing?.currentSnapshotJson) {
+    const changeDiffs = diffSnapshots(
+      existing.currentSnapshotJson as Record<string, unknown>,
+      s.snapshot
+    );
+    if (changeDiffs.length > 0) {
+      await recordRowChange(
+        ctx.run.id,
+        existing.id,
+        `Row edited since last sync — ${changeDiffs.map((d) => d.field).join(", ")}`,
+        existing.currentSnapshotJson,
+        s.snapshot,
+        changeDiffs
+      );
+      ctx.summary.rowsChangedSinceLastSync++;
+    }
+  }
 
   const baseData = {
     spreadsheetId: s.snapshot.spreadsheetId as string,
@@ -476,6 +528,34 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   const dup = findPossibleDuplicate(s.synthetic ? null : s.rowUuid, s.fingerprint, ctx.postedRefs);
   if (dup) {
     await upsertRow(existing?.id, baseData, RowStatus.PossibleDuplicate, `Matches posted QBO txn ${dup.qboTransactionId}`);
+    ctx.summary.possibleDuplicates++;
+    return;
+  }
+
+  // Re-identification guard (§4, §10, §11): this row's INV# already has a QBO
+  // outcome under a DIFFERENT row identity — almost always a name/date/etc.
+  // correction made on a row before it had captured a stable UUID, which the
+  // fingerprint check above cannot catch (the fingerprint genuinely changed).
+  // Never auto-post/re-sweep here — route to review instead, exactly like the
+  // fingerprint duplicate case above.
+  const invSibling = findInvNumberSibling(
+    { id: existing?.id ?? "", tabName, invNumber: row.invNumber || null },
+    RESOLVED_INV_STATUSES,
+    ctx.invResolvedRows
+  );
+  if (invSibling) {
+    const saved = await upsertRow(
+      existing?.id,
+      baseData,
+      RowStatus.PossibleDuplicate,
+      `INV# ${row.invNumber} already resolved (${invSibling.status}) on another row — this row's identity likely changed after a sheet edit (e.g. a name or date correction); review before reprocessing.`
+    );
+    await recordEvent(
+      ctx.run.id,
+      saved.id,
+      "inv_reidentified_duplicate",
+      `INV# ${row.invNumber} already resolved as ${invSibling.status} on row ${invSibling.id}`
+    );
     ctx.summary.possibleDuplicates++;
     return;
   }
@@ -669,6 +749,33 @@ async function recordEvent(
   });
 }
 
+/**
+ * Append a `row_changed` audit event for a cell edit detected between two daily
+ * syncs (§11). Unlike recordEvent it fills the RowEvent before/after columns so
+ * the hub can render a full "was → now" per-field diff for the row's history.
+ * Append-only; never updated or deleted.
+ */
+async function recordRowChange(
+  syncRunId: string,
+  sheetRowId: string,
+  message: string,
+  before: unknown,
+  after: unknown,
+  diff: unknown
+) {
+  await prisma.rowEvent.create({
+    data: {
+      syncRunId,
+      sheetRowId,
+      eventType: "row_changed",
+      eventMessage: message,
+      beforeJson: (before ?? undefined) as Prisma.InputJsonValue | undefined,
+      afterJson: (after ?? undefined) as Prisma.InputJsonValue | undefined,
+      diffJson: (diff ?? undefined) as Prisma.InputJsonValue | undefined,
+    },
+  });
+}
+
 async function failRun(runId: string, message: string) {
   await prisma.syncRun.update({
     where: { id: runId },
@@ -720,6 +827,7 @@ async function sendDailySummary(summary: RunSummary) {
     `Duplicate row ids: ${summary.duplicateRowIds}`,
     `Changed after post:${summary.changedAfterPosting}`,
     `Removed after post:${summary.removedAfterPosting}`,
+    `Edited since last sync:${summary.rowsChangedSinceLastSync}`,
     "",
     appUrl ? `Dashboard: ${appUrl}/cash-sheet-sync` : "",
   ]

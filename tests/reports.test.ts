@@ -355,10 +355,36 @@ describe("resolveRange", () => {
 });
 
 describe("comparisonRange", () => {
-  it("prior_period is the equal-length span ending the day before start", () => {
+  it("prior_period on a whole calendar month is the prior CALENDAR month", () => {
     expect(comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "prior_period")).toEqual({
-      start: "2026-05-02",
+      start: "2026-05-01",
       end: "2026-05-31",
+    });
+    // Jul (31 days) → all of Jun, NOT May 31–Jun 30.
+    expect(comparisonRange({ start: "2026-07-01", end: "2026-07-31" }, "prior_period")).toEqual({
+      start: "2026-06-01",
+      end: "2026-06-30",
+    });
+    // Year boundary + multi-month (Q3 → Q2).
+    expect(comparisonRange({ start: "2026-01-01", end: "2026-01-31" }, "prior_period")).toEqual({
+      start: "2025-12-01",
+      end: "2025-12-31",
+    });
+    expect(comparisonRange({ start: "2026-07-01", end: "2026-09-30" }, "prior_period")).toEqual({
+      start: "2026-04-01",
+      end: "2026-06-30",
+    });
+  });
+
+  it("prior_period still uses an equal-length shift for partial ranges", () => {
+    // Month-to-date and rolling windows aren't whole months.
+    expect(comparisonRange({ start: "2026-08-01", end: "2026-08-04" }, "prior_period")).toEqual({
+      start: "2026-07-28",
+      end: "2026-07-31",
+    });
+    expect(comparisonRange({ start: "2026-07-05", end: "2026-08-03" }, "prior_period")).toEqual({
+      start: "2026-06-05",
+      end: "2026-07-04",
     });
   });
 
@@ -374,6 +400,25 @@ describe("comparisonRange", () => {
       start: "2023-02-01",
       end: "2023-02-28",
     });
+  });
+
+  it("custom uses the explicit comparison dates, independent of the main range", () => {
+    expect(
+      comparisonRange({ start: "2026-06-01", end: "2026-06-30" }, "custom", "2024-03-01", "2024-03-31")
+    ).toEqual({ start: "2024-03-01", end: "2024-03-31" });
+  });
+
+  it("custom falls back to the main range when no comparison dates are given", () => {
+    const range = { start: "2026-06-01", end: "2026-06-30" };
+    expect(comparisonRange(range, "custom")).toEqual(range);
+  });
+
+  it("prior_year works against an arbitrary custom range (e.g. a specific quarter vs. last year)", () => {
+    // Q2 2026 (Apr 1 - Jun 30) vs the same dates a year earlier — the "Q2 2026
+    // vs Q2 2025" case the AI assistant needs, using a custom main range with
+    // the existing prior_year comparison, no new comparison mode required.
+    const q2_2026 = resolveRange("custom", new Date(), "2026-04-01", "2026-06-30");
+    expect(comparisonRange(q2_2026, "prior_year")).toEqual({ start: "2025-04-01", end: "2025-06-30" });
   });
 });
 
@@ -422,5 +467,56 @@ describe("parseReportPayload (stored-JSON validation)", () => {
 
     const sales = parseReportPayload("customer_sales", null);
     expect(sales).toEqual({ total: 0, rows: [] });
+  });
+});
+
+describe("normalizeSales — picks the amount column, never quantity (§ItemSales)", () => {
+  it("selects the Amount column when a Sales-by-Item report leads with Qty", () => {
+    const payload = {
+      Header: { ReportName: "ItemSales" },
+      Columns: {
+        Column: [
+          { ColTitle: "Product/Service", ColType: "String" },
+          { ColTitle: "Qty", ColType: "Numeric" },
+          { ColTitle: "Amount", ColType: "Money" },
+          { ColTitle: "% of Sales", ColType: "Rate" },
+        ],
+      },
+      Rows: {
+        Row: [
+          { ColData: [{ value: "TEK Sales-Parts Sales" }, { value: "1483.79" }, { value: "98938.69" }, { value: "42.3" }] },
+          { ColData: [{ value: "TEK Sales-Labor Sales" }, { value: "590.13" }, { value: "132117.46" }, { value: "56.48" }] },
+        ],
+      },
+    };
+    const sales = normalizeSales(parseQboReport(payload));
+    // Sorted desc by AMOUNT → Labor ($132k) leads Parts ($99k), NOT by qty.
+    expect(sales.rows.map((r) => r.name)).toEqual(["TEK Sales-Labor Sales", "TEK Sales-Parts Sales"]);
+    expect(sales.rows[0].amount).toBeCloseTo(132117.46, 2);
+    expect(sales.rows[1].amount).toBeCloseTo(98938.69, 2);
+    expect(sales.total).toBeCloseTo(231056.15, 2);
+  });
+
+  it("falls back to the largest-magnitude column when titles/types are blank", () => {
+    // Ambiguous metadata (blank titles/types): qty column first, amount second.
+    const payload = {
+      Header: { ReportName: "ItemSales" },
+      Columns: {
+        Column: [
+          { ColTitle: "", ColType: "String" },
+          { ColTitle: "", ColType: "String" },
+          { ColTitle: "", ColType: "String" },
+        ],
+      },
+      Rows: {
+        Row: [
+          { ColData: [{ value: "Parts" }, { value: "1483.79" }, { value: "98938.69" }] },
+          { ColData: [{ value: "Labor" }, { value: "590.13" }, { value: "132117.46" }] },
+        ],
+      },
+    };
+    const sales = normalizeSales(parseQboReport(payload));
+    expect(sales.rows[0].amount).toBeCloseTo(132117.46, 2); // amount col, not qty (590.13)
+    expect(sales.total).toBeCloseTo(231056.15, 2);
   });
 });

@@ -46,6 +46,9 @@ export type Permission =
   // Tekmetric integration module (Build Phase 4 groundwork) — read-only
   | "view_tekmetric"
   | "refresh_tekmetric"
+  // Manually correct a month's Tekmetric top-line KPIs when a live pull is
+  // reproducibly wrong (see looksLikePartialMonth) — owner-only, financial data.
+  | "override_tekmetric_ops"
   // Call-transcript integration (Build Phase 4) — read-only aggregated insights
   | "view_transcripts"
   | "refresh_transcripts";
@@ -73,9 +76,11 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "import_coworker_questions",
     "view_ai_council",
     "run_ai_council",
-    // Tekmetric: owners can view the operations page and trigger a refresh.
+    // Tekmetric: owners can view the operations page, trigger a refresh, and
+    // manually correct a month's figures when a live pull is wrong.
     "view_tekmetric",
     "refresh_tekmetric",
+    "override_tekmetric_ops",
     // Transcripts: owners can view aggregated call insights and refresh them.
     "view_transcripts",
     "refresh_transcripts",

@@ -18,6 +18,11 @@ import { parseInsight, parseBoardReport, type AgentInsight } from "@/lib/ai/insi
 import { debatingOfficers, ceo, auditor } from "@/lib/ai/personas";
 import { runOnDemandAgentAction, runMonthlyCouncilAction } from "./actions";
 
+/** Same "YYYY-MM-DD HH:MM UTC" format already used for cached-data timestamps elsewhere (e.g. /tekmetric). */
+function formatRunTime(d: Date): string {
+  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
 function ConfidenceBadge({ c }: { c: AgentInsight["confidence"] }) {
   const cls = c === "high" ? "ok" : c === "low" ? "danger" : "warn";
   return <span className={`badge ${cls}`}>{c} confidence</span>;
@@ -140,7 +145,8 @@ export async function AiCouncilPanel({
         <p className="muted">You can read council output; only an owner_admin can run it.</p>
       )}
 
-      {/* Run history */}
+      {/* Run history — every monthly run for the same month shares the same
+          monthLabel, so the timestamp is what actually tells two runs apart. */}
       {runs.length > 0 && (
         <div className="row-actions" style={{ flexWrap: "wrap" }}>
           {runs.map((r) => (
@@ -148,9 +154,10 @@ export async function AiCouncilPanel({
               key={r.id}
               className={`btn ${selected && r.id === selected.id ? "" : "secondary"}`}
               href={`/projections?tab=council&run=${r.id}`}
-              title={`${r.kind} · ${r.status} · $${r.spentUsd.toFixed(2)}`}
+              title={`${r.kind} · ${r.status} · $${r.spentUsd.toFixed(2)} · started ${formatRunTime(r.startedAt)}${r.finishedAt ? ` · finished ${formatRunTime(r.finishedAt)}` : ""}`}
             >
-              {r.monthLabel} {r.status !== "complete" ? `· ${r.status}` : ""}
+              {r.monthLabel} · {formatRunTime(r.startedAt)}
+              {r.status !== "complete" ? ` · ${r.status}` : ""}
             </Link>
           ))}
         </div>
@@ -170,6 +177,10 @@ export async function AiCouncilPanel({
           <p className="card-subtitle">
             {selected.monthLabel} · {selected.kind} · {selected.method} · model {selected.model} · spend $
             {selected.spentUsd.toFixed(2)} / $15
+          </p>
+          <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.5rem" }}>
+            Run started {formatRunTime(selected.startedAt)}
+            {selected.finishedAt ? ` · finished ${formatRunTime(selected.finishedAt)}` : " · still running"}
           </p>
 
           {ceoReport && (

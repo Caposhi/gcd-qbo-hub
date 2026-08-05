@@ -25,8 +25,11 @@ import {
 } from "./client";
 import { buildOperationsData } from "./normalize";
 import { looksLikePartialMonth } from "./forecast";
+import { readMonthOverride } from "./overrides";
+import { qboLaborCostForPeriod } from "./labor-cost";
 import type { TekPeriod } from "./types";
 import type { TekOperationsData } from "./types";
+import type { TekRawEmployee, TekRawVehicle } from "./raw";
 
 const DERIVED_ENTITY = "derived_metrics";
 
@@ -148,6 +151,7 @@ export function parseOperationsData(json: unknown, period: TekPeriod): TekOperat
         make: typeof o.make === "string" ? o.make : null,
         model: typeof o.model === "string" ? o.model : null,
         mileage: nOrNull(o.mileage),
+        vin: typeof o.vin === "string" ? o.vin : null,
       };
     }),
     appointments: arr(src.appointments).map((a) => {
@@ -247,6 +251,8 @@ export interface OpsKpiValues {
   aro: number;
   grossProfit: number;
   grossMarginPct: number;
+  /** True when these values come from a manual override, not the raw Tekmetric pull. */
+  overridden?: boolean;
 }
 
 /**
@@ -257,8 +263,25 @@ export interface OpsKpiValues {
  * so fully parsing each (via `parseOperationsData`) blows memory. This pulls just
  * the five headline KPIs and lets the big blob be GC'd, so callers can loop over
  * many months cheaply. Returns null when the month isn't cached.
+ *
+ * A manual override (`tek_month_overrides`) for the month, if present, wins
+ * over the cached pull — this is the single choke point every caller (Ops
+ * History, the Ops forecast baseline) reads through, so a correction needs no
+ * separate "recalculate" step.
  */
 export async function readOperationsKpis(period: TekPeriod, comparison: string): Promise<OpsKpiValues | null> {
+  const override = await readMonthOverride(period.start);
+  if (override) {
+    return {
+      carCount: override.carCount,
+      roCount: override.roCount,
+      aro: override.aro,
+      grossProfit: override.grossProfit,
+      grossMarginPct: override.grossMarginPct,
+      overridden: true,
+    };
+  }
+
   const row = await prisma.tekSnapshot.findUnique({
     where: {
       entity_periodStart_periodEnd_comparison: {
@@ -305,16 +328,45 @@ async function fetchRosForRange(shopIds: string[], range: TekDateRange) {
   return all;
 }
 
+export interface TekRosterCache {
+  vehicles: TekRawVehicle[];
+  employees: TekRawEmployee[];
+}
+
+/**
+ * Fetch the account-wide vehicle + employee roster once, for callers (the
+ * 24-month backfill) that would otherwise re-pull the entire, barely-changing
+ * roster on every one of many `refreshOperations` calls — wasted request
+ * volume the Tekmetric API docs explicitly ask integrations to avoid
+ * ("Optimize Requests: cache responses and avoid redundant requests").
+ */
+export async function fetchTekmetricRoster(): Promise<TekRosterCache> {
+  const shopIds = await resolveShopIds();
+  const vehicles: TekRawVehicle[] = [];
+  const employees: TekRawEmployee[] = [];
+  for (const shopId of shopIds) {
+    vehicles.push(...(await fetchVehicles(shopId)));
+    employees.push(...(await fetchEmployees(shopId)));
+  }
+  return { vehicles, employees };
+}
+
 /**
  * Pull live Tekmetric data for the period (across all in-scope shops), build
  * the normalized dataset, and upsert it into `tek_snapshot`. Returns the freshly
  * built data. Callers MUST gate this with `requirePermission` — it is the only
  * mutation in this module.
+ *
+ * `roster` lets a caller doing many refreshes in a row (the backfill) reuse
+ * one shared vehicle/employee pull instead of re-fetching the full,
+ * barely-changing roster every time — appointments still come per-period since
+ * those genuinely differ month to month.
  */
 export async function refreshOperations(
   period: TekPeriod,
   comparisonMode: string,
-  comparison: TekPeriod | null
+  comparison: TekPeriod | null,
+  roster?: TekRosterCache
 ): Promise<TekOperationsData> {
   const shopIds = await resolveShopIds();
   const range: TekDateRange = { start: period.start, end: period.end };
@@ -324,14 +376,23 @@ export async function refreshOperations(
     ? await fetchRosForRange(shopIds, { start: comparison.start, end: comparison.end })
     : null;
 
-  const vehicles = [];
+  const vehicles: TekRawVehicle[] = roster ? roster.vehicles : [];
+  const employees: TekRawEmployee[] = roster ? roster.employees : [];
   const appointments = [];
-  const employees = [];
   for (const shopId of shopIds) {
-    vehicles.push(...(await fetchVehicles(shopId)));
+    if (!roster) vehicles.push(...(await fetchVehicles(shopId)));
     appointments.push(...(await fetchAppointments(shopId, range)));
-    employees.push(...(await fetchEmployees(shopId)));
+    if (!roster) employees.push(...(await fetchEmployees(shopId)));
   }
+
+  // Real, QBO-sourced labor cost for the same period(s) — see labor-cost.ts
+  // for why this replaces the old "labor is free" assumption. Degrades to
+  // null (→ 0 in computeKpis) when QBO isn't connected/reachable, so a
+  // Tekmetric refresh never fails just because QBO is unavailable.
+  const [currentLaborCost, priorLaborCost] = await Promise.all([
+    qboLaborCostForPeriod(period.start, period.end),
+    comparison ? qboLaborCostForPeriod(comparison.start, comparison.end) : Promise.resolve(null),
+  ]);
 
   const data = buildOperationsData({
     period,
@@ -340,6 +401,7 @@ export async function refreshOperations(
     vehicles,
     appointments,
     employees,
+    laborCost: { current: currentLaborCost, prior: priorLaborCost },
   });
 
   // Integrity guard: refuse to cache a month whose figures can only come from a

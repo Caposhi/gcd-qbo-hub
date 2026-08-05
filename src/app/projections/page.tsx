@@ -50,6 +50,17 @@ interface SP {
   aro?: string;
   ro?: string;
   margin?: string;
+  error?: string;
+  // Draft override values from an uploaded End of Day Report (see ops/actions.ts)
+  draftStart?: string;
+  draftEnd?: string;
+  draftRoCount?: string;
+  draftAro?: string;
+  draftGrossProfit?: string;
+  draftNetSales?: string;
+  draftReportProfit?: string;
+  draftLaborCost?: string;
+  draftQboLaborCost?: string;
 }
 
 function parseFilters(sp: SP): { filters: ReportFilters; state: FilterState } {
@@ -151,7 +162,27 @@ export default async function ProjectionsPage({ searchParams }: { searchParams: 
           }}
         />
       )}
-      {tab === "opshistory" && canViewOps && <OpsHistoryPanel />}
+      {tab === "opshistory" && canViewOps && (
+        <OpsHistoryPanel
+          canOverride={can(user.role, "override_tekmetric_ops")}
+          error={searchParams.error}
+          draft={
+            searchParams.draftStart
+              ? {
+                  start: searchParams.draftStart,
+                  end: searchParams.draftEnd ?? "",
+                  roCount: searchParams.draftRoCount ?? "",
+                  aro: searchParams.draftAro ?? "",
+                  grossProfit: searchParams.draftGrossProfit ?? "",
+                  netSales: searchParams.draftNetSales ?? "",
+                  reportProfit: searchParams.draftReportProfit ?? "",
+                  laborCost: searchParams.draftLaborCost ?? "",
+                  qboLaborCost: searchParams.draftQboLaborCost || null,
+                }
+              : undefined
+          }
+        />
+      )}
       {tab === "council" && canViewCouncil && (
         <AiCouncilPanel user={user} selectedRunId={searchParams.run} />
       )}

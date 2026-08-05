@@ -80,3 +80,54 @@ export async function fetchReport(
   const context = ctx ?? (await getContext(await getQboEnvironment()));
   return get<unknown>(context, buildPath(reportType, params));
 }
+
+// ===========================================================================
+// Financial Reports module — fetch any report entity by name
+// ===========================================================================
+
+/**
+ * Entities that are AS-OF a date rather than for a range: QBO wants a single
+ * `report_date` and rejects/ignores a start date.
+ */
+const POINT_IN_TIME = new Set(["BalanceSheet", "TrialBalance", "AgedReceivables", "AgedPayables", "InventoryValuationSummary"]);
+
+/** Entities that take no `accounting_method` at all. */
+const NO_METHOD = new Set(["AgedReceivables", "AgedPayables", "InventoryValuationSummary"]);
+
+export interface EntityReportParams {
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD (also the as-of date for point-in-time reports)
+  /** Omit for reports that take no basis (agings, inventory). */
+  method?: AccountingMethod | null;
+  summarizeColumnBy?: string;
+}
+
+/** Build a `reports/<Entity>?...` path for an arbitrary report entity. */
+export function buildEntityPath(entity: string, params: EntityReportParams): string {
+  const q = new URLSearchParams();
+  if (POINT_IN_TIME.has(entity)) {
+    q.set("report_date", params.endDate);
+  } else {
+    q.set("start_date", params.startDate);
+    q.set("end_date", params.endDate);
+  }
+  if (params.method && !NO_METHOD.has(entity)) {
+    q.set("accounting_method", qboMethod(params.method));
+  }
+  if (params.summarizeColumnBy) q.set("summarize_column_by", params.summarizeColumnBy);
+  return `reports/${entity}?${q.toString()}`;
+}
+
+/**
+ * Fetch ANY QBO report entity by name (Financial Reports module). Read-only GET,
+ * same auth/refresh path as `fetchReport`. Returns raw QBO JSON — the pure
+ * `src/lib/finreports/*` layer shapes it.
+ */
+export async function fetchReportEntity(
+  entity: string,
+  params: EntityReportParams,
+  ctx?: QboContext
+): Promise<unknown> {
+  const context = ctx ?? (await getContext(await getQboEnvironment()));
+  return get<unknown>(context, buildEntityPath(entity, params));
+}

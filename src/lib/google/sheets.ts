@@ -151,6 +151,7 @@ export async function writeCells(
 ): Promise<void> {
   if (cells.length === 0) return;
   const sheets = getGoogleSheetsClient();
+  await ensureGridSize(sheets, spreadsheetId, tabTitle, cells);
   const data = cells.map((c) => ({
     range: `${quoteTab(tabTitle)}!${columnIndexToA1(c.col)}${c.row}`,
     values: [[c.value]],
@@ -159,6 +160,138 @@ export async function writeCells(
     spreadsheetId,
     requestBody: { valueInputOption: "RAW", data },
   });
+}
+
+/**
+ * Grow a tab's grid (row/column count) if any queued cell would land outside
+ * its CURRENT dimensions (§4). Managed write-back columns are deliberately
+ * placed just past a tab's existing content, including any legend/note far to
+ * the right (see writeback.ts) — but the Sheets values API rejects a write
+ * past the grid's current size with "exceeds grid limits", even though typing
+ * there manually in the UI would auto-expand it. Without this, a tab whose
+ * header row happens to have stray content pushing our columns past its
+ * current width fails write-back identically on EVERY sync, forever, with no
+ * way to recover on its own — exactly what happened on the "26 DC" workbook's
+ * July tab (its header row reached column Z, pushing our block to AA, but the
+ * tab's grid was only 26 columns wide). Only grows, never shrinks; a no-op
+ * once the grid is already big enough.
+ */
+async function ensureGridSize(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  tabTitle: string,
+  cells: Array<{ row: number; col: number }>
+): Promise<void> {
+  const neededCols = Math.max(...cells.map((c) => c.col)) + 1;
+  const neededRows = Math.max(...cells.map((c) => c.row));
+
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+  });
+  const sheet = (res.data.sheets ?? []).find((s) => s.properties?.title === tabTitle);
+  const sheetId = sheet?.properties?.sheetId;
+  if (sheetId === undefined || sheetId === null) return; // tab not found — let the write fail normally
+
+  const grid = sheet?.properties?.gridProperties ?? {};
+  const columnCount = Math.max(grid.columnCount ?? 0, neededCols);
+  const rowCount = Math.max(grid.rowCount ?? 0, neededRows);
+  if (columnCount === (grid.columnCount ?? 0) && rowCount === (grid.rowCount ?? 0)) return; // already big enough
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          updateSheetProperties: {
+            properties: { sheetId, gridProperties: { rowCount, columnCount } },
+            fields: "gridProperties.rowCount,gridProperties.columnCount",
+          },
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * Hide + protect a tab's already-populated managed write-back columns (§4),
+ * restricting editing to this service account. A normal whole-row edit (a
+ * typo fix, a date correction) can otherwise clear the hidden row UUID and
+ * silently break row identity — the fingerprint-based fallback then treats
+ * the edited row as brand new, which is exactly what caused a real posted
+ * transaction to be re-attempted as a duplicate deposit in production (see
+ * duplicates.ts's findInvNumberSibling). Idempotent: skips adding a new
+ * protected range if an identical one (same columns, service account already
+ * an editor) already exists, so repeat runs don't accumulate duplicates.
+ * Hiding is re-applied unconditionally — it's a no-op on already-hidden
+ * columns. The spreadsheet owner can still remove any protection from the
+ * Sheets UI at any time; this never locks anyone out permanently.
+ */
+export async function lockdownManagedColumns(
+  spreadsheetId: string,
+  sheetId: number,
+  startCol: number,
+  endCol: number
+): Promise<void> {
+  const sheets = getGoogleSheetsClient();
+  const { client_email } = loadServiceAccount();
+
+  const existing = await getProtectedColumnRanges(sheets, spreadsheetId, sheetId);
+  const alreadyProtected = existing.some(
+    (p) =>
+      p.startColumnIndex === startCol &&
+      p.endColumnIndex === endCol &&
+      p.editorEmails.includes(client_email)
+  );
+
+  const requests: sheets_v4.Schema$Request[] = [
+    {
+      updateDimensionProperties: {
+        range: { sheetId, dimension: "COLUMNS", startIndex: startCol, endIndex: endCol },
+        properties: { hiddenByUser: true },
+        fields: "hiddenByUser",
+      },
+    },
+  ];
+  if (!alreadyProtected) {
+    requests.push({
+      addProtectedRange: {
+        protectedRange: {
+          range: { sheetId, startColumnIndex: startCol, endColumnIndex: endCol },
+          description: "GCD QBO Hub managed columns — do not edit (§4)",
+          warningOnly: false,
+          editors: { users: [client_email] },
+        },
+      },
+    });
+  }
+
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+}
+
+interface ProtectedColRange {
+  startColumnIndex: number;
+  endColumnIndex: number;
+  editorEmails: string[];
+}
+
+async function getProtectedColumnRanges(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  sheetId: number
+): Promise<ProtectedColRange[]> {
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets(properties(sheetId),protectedRanges(range,editors))",
+  });
+  const sheet = (res.data.sheets ?? []).find((s) => s.properties?.sheetId === sheetId);
+  return (sheet?.protectedRanges ?? [])
+    .filter((p) => p.range?.startColumnIndex != null && p.range?.endColumnIndex != null)
+    .map((p) => ({
+      startColumnIndex: p.range!.startColumnIndex!,
+      endColumnIndex: p.range!.endColumnIndex!,
+      editorEmails: p.editors?.users ?? [],
+    }));
 }
 
 export const CONTROL_COLUMN_HEADERS = [

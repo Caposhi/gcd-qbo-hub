@@ -15,6 +15,7 @@ import {
   type DatePreset,
 } from "@/lib/tekmetric/periods";
 import type { TekKpi } from "@/lib/tekmetric/types";
+import { findRepeatVehicleVisits } from "@/lib/tekmetric/normalize";
 import { TekCharts } from "./charts";
 import { refreshTekmetricAction } from "./actions";
 
@@ -110,6 +111,7 @@ export default async function TekmetricPage({
   const { data, fetchedAt } = configured
     ? await readOperationsSnapshot(period, comparison)
     : { data: null, fetchedAt: null };
+  const repeatVisits = data ? findRepeatVehicleVisits(data.repairOrders, data.vehicles) : [];
 
   return (
     <>
@@ -117,7 +119,10 @@ export default async function TekmetricPage({
       <h1>Tekmetric Operations</h1>
       <p className="page-desc">
         Read-only shop-management KPIs from Tekmetric — ARO, gross profit, technician utilization, revenue by
-        make, and service-advisor performance. Data is cached; use Refresh to pull the latest.
+        make, and service-advisor performance. Data is cached; use Refresh to pull the latest. The headline{" "}
+        <strong>Gross profit</strong>/<strong>Gross margin</strong> subtract real labor cost from QBO&apos;s payroll
+        ledger — the advisor/vehicle/make breakdowns below don&apos;t (payroll can&apos;t be attributed to one RO),
+        so they won&apos;t sum to the headline figure.
       </p>
 
       {!configured && (
@@ -229,6 +234,40 @@ export default async function TekmetricPage({
                   <tr>
                     <td colSpan={7} className="card-subtitle">
                       No advisor activity in this period.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <h2 style={{ marginTop: "1.5rem", fontSize: 18 }}>Repeat visits this period</h2>
+          <p className="card-subtitle">
+            Vehicles with 2+ ROs in {period.start} → {period.end} — the gap between RO count ({data.kpis.roCount.value})
+            and car count ({data.kpis.carCount.value}). Matched by VIN when Tekmetric has one on file, else by the
+            internal vehicle record.
+          </p>
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="gcd">
+              <thead>
+                <tr>
+                  <th>Vehicle</th>
+                  <th>VIN</th>
+                  <th className="num">ROs this period</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repeatVisits.map((v) => (
+                  <tr key={v.vehicleKey}>
+                    <td>{[v.year, v.make, v.model].filter(Boolean).join(" ") || "Unknown vehicle"}</td>
+                    <td>{v.vin ?? "—"}</td>
+                    <td className="num">{v.roCount}</td>
+                  </tr>
+                ))}
+                {repeatVisits.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="card-subtitle">
+                      No vehicle had more than one RO in this period.
                     </td>
                   </tr>
                 )}

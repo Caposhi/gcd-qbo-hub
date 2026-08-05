@@ -42,17 +42,90 @@ export function normCustomer(s: string): string {
   return (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/**
+ * Order-insensitive customer key: the name's word tokens, uppercased and sorted,
+ * so "Castillo, Junior" and "Junior Castillo" collapse to the same key. Tekmetric
+ * stores the customer as "Last, First" on the payment but sometimes "First Last"
+ * in the fee-JE description; matching the sorted token set pairs them without
+ * loosening into different people (same tokens = same customer). Still guarded by
+ * date proximity, de-dup, and the deposit's exact-sum checksum.
+ */
+export function customerMatchKey(s: string): string {
+  return (s ?? "")
+    .toUpperCase()
+    .replace(/'/g, "") // O'BRIEN -> OBRIEN (apostrophes are within-word, not separators)
+    .split(/[\s,]+/) // split on the real separators between name parts (space, comma)
+    .map((t) => t.replace(/[^A-Z0-9]/g, "")) // strip any remaining punctuation within a token
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
 export interface FeeMatch {
   linked: FeeJournalEntry[];
-  /** Customers for which no fee JE was found. */
+  /** Charges (by customer label) for which no fee JE was found. */
   missing: string[];
+  /** How many were matched by fee amount because the name didn't line up. */
+  amountMatched: number;
+}
+
+/** One Tekmetric charge to find a fee JE for: the payment's customer + its known fee. */
+export interface FeeCharge {
+  customer: string;
+  /** Per-charge processor fee from the export, if captured (immune to name drift). */
+  feeAmount?: number | null;
 }
 
 /**
- * Match one fee journal entry per payment by customer name (the JE description
- * carries the customer), nearest date, de-duped via `used`. This is how a
- * Tekmetric payout's fees are located — independent of any stored per-charge
- * fee, so it works on data ingested before fees were captured.
+ * Match one fee journal entry per charge, de-duped via `used`, nearest date.
+ * Primary key is the customer name (order-insensitive); when that misses AND the
+ * charge's exact fee amount is known (from the Tekmetric export), fall back to
+ * matching an unused fee JE of that amount — so a customer-name discrepancy in
+ * QBO (e.g. "Castillo, Junior" booked as "Junior Castillo Jr") can't strand a
+ * deposit. The deposit's exact-sum checksum still governs, so a fallback match
+ * can never make the total wrong.
+ */
+export function matchFees(
+  feeJEs: FeeJournalEntry[],
+  charges: FeeCharge[],
+  settlementDate: string,
+  used: Set<string>,
+  daysApart: (a: string, b: string) => number,
+  maxDays = 12
+): FeeMatch {
+  const linked: FeeJournalEntry[] = [];
+  const missing: string[] = [];
+  let amountMatched = 0;
+  const inWindow = (j: FeeJournalEntry) => !used.has(j.jeId) && daysApart(j.date, settlementDate) <= maxDays;
+  const nearest = (a: FeeJournalEntry, b: FeeJournalEntry) =>
+    daysApart(a.date, settlementDate) - daysApart(b.date, settlementDate);
+
+  for (const ch of charges) {
+    const key = customerMatchKey(ch.customer);
+    // 1) by customer name (order-insensitive)
+    let je = key ? feeJEs.filter((j) => inWindow(j) && customerMatchKey(j.customerName) === key).sort(nearest)[0] : undefined;
+    // 2) fall back to the exact known fee amount
+    if (!je && ch.feeAmount != null) {
+      const cents = Math.round(ch.feeAmount * 100);
+      const byAmt = feeJEs.filter((j) => inWindow(j) && Math.round(j.amount * 100) === cents).sort(nearest)[0];
+      if (byAmt) {
+        je = byAmt;
+        amountMatched++;
+      }
+    }
+    if (je) {
+      used.add(je.jeId);
+      linked.push(je);
+    } else {
+      missing.push(ch.customer || (ch.feeAmount != null ? `$${ch.feeAmount.toFixed(2)} fee` : "unknown"));
+    }
+  }
+  return { linked, missing, amountMatched };
+}
+
+/**
+ * Back-compat wrapper: match by customer name only (no per-charge fee amounts).
+ * Prefer `matchFees` with charges so the amount fallback is available.
  */
 export function matchFeesByCustomer(
   feeJEs: FeeJournalEntry[],
@@ -62,22 +135,7 @@ export function matchFeesByCustomer(
   daysApart: (a: string, b: string) => number,
   maxDays = 12
 ): FeeMatch {
-  const linked: FeeJournalEntry[] = [];
-  const missing: string[] = [];
-  for (const cust of customers) {
-    const key = normCustomer(cust);
-    if (!key) { missing.push(cust); continue; }
-    const je = feeJEs
-      .filter((j) => !used.has(j.jeId) && normCustomer(j.customerName) === key && daysApart(j.date, settlementDate) <= maxDays)
-      .sort((a, b) => daysApart(a.date, settlementDate) - daysApart(b.date, settlementDate))[0];
-    if (je) {
-      used.add(je.jeId);
-      linked.push(je);
-    } else {
-      missing.push(cust);
-    }
-  }
-  return { linked, missing };
+  return matchFees(feeJEs, customers.map((customer) => ({ customer })), settlementDate, used, daysApart, maxDays);
 }
 
 /**
