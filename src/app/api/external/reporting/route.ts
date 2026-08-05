@@ -8,14 +8,16 @@
  * deterministic `projections` insights, so the Arcade tile and the hub's own
  * page can never show different numbers for the same filters.
  *
- * Deliberately read-only in the "no live QBO refresh" sense too: this never
- * passes `forceRefresh` — it always serves loadReporting's normal
- * fetch-through-cache behavior (auto-refreshes past its own 6h TTL), the
- * same as opening the hub's own page without clicking "Refresh from
- * QuickBooks". That owner_admin/reviewer-gated manual refresh stays a
- * hub-only action for now.
- *
- * GET ?preset=&comparison=&method=&granularity=&start=&end=
+ * GET  ?preset=&comparison=&method=&granularity=&start=&end=
+ *   Normal fetch-through-cache read (auto-refreshes past its own 6h TTL),
+ *   same as opening the hub's own page without clicking "Refresh from
+ *   QuickBooks".
+ * POST (same query params)
+ *   Forces a live QBO refetch, mirroring the hub's own
+ *   refreshReportSnapshotsAction. No per-user role check happens here —
+ *   the Arcade bridge has no user session to check a role against; access
+ *   to the Arcade at all (ownership/management only, per the redesign
+ *   brief) is the trust boundary this relies on instead.
  */
 import { NextResponse } from "next/server";
 import { loadReporting, type ReportFilters } from "@/lib/projections/report-service";
@@ -36,17 +38,12 @@ function authorized(req: Request): boolean {
   return auth === `Bearer ${secret}`;
 }
 
-export async function GET(req: Request) {
-  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
-  const url = new URL(req.url);
-  const q = url.searchParams;
+function filtersFrom(q: URLSearchParams): ReportFilters {
   const preset: RangePreset = RANGE_PRESET_VALUES.has(q.get("preset") ?? "") ? (q.get("preset") as RangePreset) : "this_month";
   const comparison: ComparisonMode = q.get("comparison") === "prior_year" ? "prior_year" : "prior_period";
   const method: AccountingMethod = q.get("method") === "cash" ? "cash" : "accrual";
   const granularity: Granularity = GRANULARITY_VALUES.has(q.get("granularity") ?? "") ? (q.get("granularity") as Granularity) : "month";
-
-  const filters: ReportFilters = {
+  return {
     preset,
     comparison,
     method,
@@ -54,14 +51,28 @@ export async function GET(req: Request) {
     customStart: q.get("start") ?? undefined,
     customEnd: q.get("end") ?? undefined,
   };
+}
 
+async function respond(filters: ReportFilters, opts: { forceRefresh?: boolean } = {}) {
   try {
     const [reporting, insights] = await Promise.all([
-      loadReporting(filters, new Date()),
+      loadReporting(filters, new Date(), opts),
       buildModuleInsights("projections"),
     ]);
     return NextResponse.json({ reporting, insights });
   } catch (err) {
     return NextResponse.json({ error: "reporting_failed", message: String(err) }, { status: 500 });
   }
+}
+
+export async function GET(req: Request) {
+  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const url = new URL(req.url);
+  return respond(filtersFrom(url.searchParams));
+}
+
+export async function POST(req: Request) {
+  if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const url = new URL(req.url);
+  return respond(filtersFrom(url.searchParams), { forceRefresh: true });
 }
