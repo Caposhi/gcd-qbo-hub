@@ -11,15 +11,30 @@ import {
   comparisonRange,
   presetRange,
   shopToday,
+  ytdComposableRange,
+  monthRangeToKey,
   type ComparisonMode,
   type DatePreset,
 } from "@/lib/tekmetric/periods";
-import type { TekKpi } from "@/lib/tekmetric/types";
-import { findRepeatVehicleVisits } from "@/lib/tekmetric/normalize";
+import type { TekKpi, TekOperationsData, TekPeriod } from "@/lib/tekmetric/types";
+import { findRepeatVehicleVisits, type TekRepeatVisit } from "@/lib/tekmetric/normalize";
+import { composeOperationsRange, type MonthRef } from "@/lib/tekmetric/compose";
+import { MAX_FILL_PER_CLICK } from "@/lib/tekmetric/fill-gaps";
 import { TekCharts } from "./charts";
-import { refreshTekmetricAction } from "./actions";
+import { refreshTekmetricAction, fillMissingTekmetricMonthsAction } from "./actions";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Presets wide enough that a live "Refresh from Tekmetric" pull is never
+ * offered for them — read via `composeOperationsRange` from the existing
+ * per-month cache instead (see compose.ts). "Last 90 days" is deliberately
+ * NOT here: at 90 days it (and its comparison, whichever mode) always stays
+ * under `MAX_REFRESH_RANGE_DAYS` (100), so it keeps using the plain live
+ * refresh unchanged — composing it would just be extra machinery for a
+ * preset that was never actually part of the OOM this exists to avoid.
+ */
+const WIDE_PRESETS = new Set<DatePreset>(["ytd", "last_year"]);
 
 const selectStyle: React.CSSProperties = {
   padding: "8px 12px",
@@ -74,6 +89,15 @@ function KpiTile({ label, kpi, format }: { label: string; kpi: TekKpi; format: K
   );
 }
 
+/** "10 of 12 months cached — missing: Mar 2025, Jul 2025" style summary,
+ *  mirroring the health page's own phrasing for the same underlying gap. */
+function monthsCoverageLabel(found: string[], missing: MonthRef[]): string {
+  const total = found.length + missing.length;
+  if (total === 0) return "no months in range";
+  if (missing.length === 0) return `all ${total} month${total === 1 ? "" : "s"} cached`;
+  return `${found.length} of ${total} month${total === 1 ? "" : "s"} cached — missing ${missing.map((m) => m.label).join(", ")}`;
+}
+
 export default async function TekmetricPage({
   searchParams,
 }: {
@@ -105,13 +129,72 @@ export default async function TekmetricPage({
     ? (searchParams.comparison as ComparisonMode)
     : DEFAULT_COMPARISON;
 
-  const period = presetRange(preset, shopToday());
-  const priorPeriod = comparisonRange(period, comparison);
+  const isWide = WIDE_PRESETS.has(preset);
 
-  const { data, fetchedAt } = configured
-    ? await readOperationsSnapshot(period, comparison)
-    : { data: null, fetchedAt: null };
-  const repeatVisits = data ? findRepeatVehicleVisits(data.repairOrders, data.vehicles) : [];
+  let data: TekOperationsData | null = null;
+  let fetchedAt: Date | null = null;
+  let repeatVisits: TekRepeatVisit[] = [];
+  let repeatVisitsTotal = 0;
+  let displayPeriod: TekPeriod = presetRange(preset, shopToday());
+  let displayComparisonPeriod: TekPeriod | null = null;
+  let ytdUnavailable = false;
+  let coverage: { found: string[]; missing: MonthRef[]; comparisonFound: string[]; comparisonMissing: MonthRef[] } | null = null;
+
+  if (isWide) {
+    const range = preset === "ytd" ? ytdComposableRange(shopToday()) : presetRange("last_year", shopToday());
+    if (!range) {
+      // Only reachable for "ytd" while still in January — zero complete
+      // months of the current year exist yet to compose from.
+      ytdUnavailable = true;
+    } else {
+      displayPeriod = range;
+      // "prior_period" on YTD's trimmed range would compare against
+      // whatever whole months immediately precede it — which, for a
+      // Jan-through-July-style range, spills into the PRIOR year's back
+      // half (Jun–Dec) rather than the intuitive "same months, last year."
+      // Only "last_year" (a full calendar year) makes "prior_period" and
+      // "prior_year" coincide (see periods.ts test coverage) — for "ytd",
+      // always use prior_year semantics once any comparison is wanted.
+      const effectiveComparisonMode: ComparisonMode = preset === "ytd" && comparison !== "none" ? "prior_year" : comparison;
+      displayComparisonPeriod = comparisonRange(range, effectiveComparisonMode);
+      if (configured) {
+        const composed = await composeOperationsRange(range, displayComparisonPeriod);
+        if (!("error" in composed)) {
+          coverage = {
+            found: composed.monthsFound,
+            missing: composed.monthsMissing,
+            comparisonFound: composed.comparisonMonthsFound,
+            comparisonMissing: composed.comparisonMonthsMissing,
+          };
+          // Nothing cached at all yet reads the same as the narrow-preset
+          // "no cached data" case below, not as a real all-zero period.
+          if (composed.monthsFound.length > 0) {
+            data = composed.data;
+            repeatVisits = composed.repeatVisits;
+            repeatVisitsTotal = composed.repeatVisitsTotal;
+          }
+        }
+        // The `{error: "not_month_aligned"}` case is an internal invariant
+        // this branch's own construction should never violate; degrading to
+        // "no data" rather than crashing is still the right fallback if it
+        // somehow did.
+      }
+    }
+  } else {
+    const period = presetRange(preset, shopToday());
+    const priorPeriod = comparisonRange(period, comparison);
+    displayPeriod = period;
+    displayComparisonPeriod = priorPeriod;
+    const snap = configured ? await readOperationsSnapshot(period, comparison) : { data: null, fetchedAt: null };
+    data = snap.data;
+    fetchedAt = snap.fetchedAt;
+    repeatVisits = data ? findRepeatVehicleVisits(data.repairOrders, data.vehicles) : [];
+    repeatVisitsTotal = repeatVisits.length;
+  }
+
+  const fillBatch = coverage ? coverage.missing.slice(0, MAX_FILL_PER_CLICK) : [];
+  const fillBatchKeys = fillBatch.map(monthRangeToKey).join(",");
+  const totalMissing = coverage ? coverage.missing.length : 0;
 
   return (
     <>
@@ -134,7 +217,7 @@ export default async function TekmetricPage({
 
       {searchParams.error && (
         <div className="notice danger">
-          Refresh failed: {searchParams.error}. The last cached data (if any) is shown below.
+          {searchParams.error}. The last cached data (if any) is shown below.
         </div>
       )}
 
@@ -165,36 +248,72 @@ export default async function TekmetricPage({
         </button>
       </form>
 
+      {isWide && (
+        <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
+          {preset === "ytd"
+            ? "Composed from the cached calendar months so far this year (not a live pull) — through the last fully completed month; comparison uses the same months last year."
+            : "Composed from the cached calendar months making up the year (not a live pull)."}
+        </p>
+      )}
+
       <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
-        {period.start} → {period.end}
-        {priorPeriod && ` · comparison ${priorPeriod.start} → ${priorPeriod.end}`}
+        {displayPeriod.start} → {displayPeriod.end}
+        {displayComparisonPeriod && ` · comparison ${displayComparisonPeriod.start} → ${displayComparisonPeriod.end}`}
         {fetchedAt && ` · cached ${fetchedAt.toISOString().slice(0, 16).replace("T", " ")} UTC`}
       </p>
 
-      {configured && !data && (
+      {ytdUnavailable && (
         <div className="notice info">
-          No cached data for this period yet.{" "}
-          {canRefresh ? "Click Refresh to pull it from Tekmetric." : "An owner needs to refresh it first."}
+          Not enough of this year has completed yet to compose a YTD view (at least one full month is needed).
+          Try &quot;This month&quot; in the meantime.
         </div>
       )}
 
-      {canRefresh && configured && (
+      {configured && !ytdUnavailable && !data && (
+        <div className="notice info">
+          No cached data for this period yet.{" "}
+          {isWide
+            ? canRefresh
+              ? "Click Fill missing months below to pull it from Tekmetric."
+              : "An owner needs to fill it first."
+            : canRefresh
+              ? "Click Refresh to pull it from Tekmetric."
+              : "An owner needs to refresh it first."}
+        </div>
+      )}
+
+      {!isWide && canRefresh && configured && (
+        <form action={refreshTekmetricAction} className="row-actions">
+          <input type="hidden" name="preset" value={preset} />
+          <input type="hidden" name="comparison" value={comparison} />
+          <button className="btn secondary" type="submit">
+            ↻ Refresh from Tekmetric
+          </button>
+        </form>
+      )}
+
+      {isWide && configured && coverage && !ytdUnavailable && (
         <>
-          <form action={refreshTekmetricAction} className="row-actions">
-            <input type="hidden" name="preset" value={preset} />
-            <input type="hidden" name="comparison" value={comparison} />
-            <button className="btn secondary" type="submit">
-              ↻ Refresh from Tekmetric
-            </button>
-          </form>
-          {(preset === "last_year" || preset === "ytd" || preset === "last_90_days") && (
-            <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.25rem" }}>
-              Refresh pulls full repair-order detail live, so it&apos;s capped to a ~100-day window (period and
-              comparison each) — a wide preset like this may refuse depending on the comparison chosen. For
-              multi-month trends, see Ops History / the Ops forecast on the Projections page instead, which read
-              from the existing monthly cache.
-            </p>
-          )}
+          <p className="muted" style={{ fontSize: "0.8rem" }}>
+            {monthsCoverageLabel(coverage.found, coverage.missing)}
+            {displayComparisonPeriod &&
+              (coverage.comparisonMissing.length > 0 || coverage.comparisonFound.length > 0) &&
+              ` · comparison: ${monthsCoverageLabel(coverage.comparisonFound, coverage.comparisonMissing)}`}
+          </p>
+          {totalMissing > 0 &&
+            (canRefresh ? (
+              <form action={fillMissingTekmetricMonthsAction} className="row-actions">
+                <input type="hidden" name="preset" value={preset} />
+                <input type="hidden" name="comparison" value={comparison} />
+                <input type="hidden" name="months" value={fillBatchKeys} />
+                <button className="btn secondary" type="submit">
+                  ↻ Fill {fillBatch.length < totalMissing ? `next ${fillBatch.length} of ${totalMissing}` : `${totalMissing}`}{" "}
+                  missing month{totalMissing === 1 ? "" : "s"}
+                </button>
+              </form>
+            ) : (
+              <p className="card-subtitle">An owner can fill the missing months from this page.</p>
+            ))}
         </>
       )}
 
@@ -215,6 +334,13 @@ export default async function TekmetricPage({
           />
 
           <h2 style={{ marginTop: "1.5rem", fontSize: 18 }}>Advisor performance</h2>
+          {isWide && (
+            <p className="card-subtitle">
+              Per-advisor car count sums each cached month&apos;s distinct-vehicle count — a car serviced by the
+              same advisor in two different months counts twice here, unlike the Car count KPI above (which is
+              deduplicated across the whole period).
+            </p>
+          )}
           <div className="table-wrap" style={{ marginTop: 12 }}>
             <table className="gcd">
               <thead>
@@ -253,9 +379,10 @@ export default async function TekmetricPage({
 
           <h2 style={{ marginTop: "1.5rem", fontSize: 18 }}>Repeat visits this period</h2>
           <p className="card-subtitle">
-            Vehicles with 2+ ROs in {period.start} → {period.end} — the gap between RO count ({data.kpis.roCount.value})
-            and car count ({data.kpis.carCount.value}). Matched by VIN when Tekmetric has one on file, else by the
-            internal vehicle record.
+            Vehicles with 2+ ROs in {displayPeriod.start} → {displayPeriod.end} — the gap between RO count (
+            {data.kpis.roCount.value}) and car count ({data.kpis.carCount.value}). Matched by VIN when Tekmetric has
+            one on file, else by the internal vehicle record.
+            {repeatVisitsTotal > repeatVisits.length && ` Showing the top ${repeatVisits.length} of ${repeatVisitsTotal} by RO count.`}
           </p>
           <div className="table-wrap" style={{ marginTop: 12 }}>
             <table className="gcd">

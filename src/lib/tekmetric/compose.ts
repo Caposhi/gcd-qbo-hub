@@ -117,6 +117,16 @@ interface RangeAccumulator {
   vehicleTally: Map<string, TekRepeatVisit>;
   monthsFound: string[];
   monthsMissing: MonthRef[];
+  /**
+   * How many months were actually folded in, regardless of path —
+   * `foldRange`'s real cache hits/misses (which is what `monthsFound` also
+   * tracks) OR `composeMonths`'s direct fold of already-fetched test data
+   * (which has no found/missing concept at all, so `monthsFound` stays
+   * empty there even when real months were folded). Used to distinguish
+   * "the comparison range genuinely has zero activity" from "the
+   * comparison range has zero CACHED DATA" — see finishAccumulator.
+   */
+  monthsFoldedCount: number;
 }
 
 function emptyAccumulator(): RangeAccumulator {
@@ -128,6 +138,7 @@ function emptyAccumulator(): RangeAccumulator {
     vehicleTally: new Map(),
     monthsFound: [],
     monthsMissing: [],
+    monthsFoldedCount: 0,
   };
 }
 
@@ -145,6 +156,7 @@ function mergeVehicleTally(into: Map<string, TekRepeatVisit>, from: Map<string, 
 
 /** Fold one month's normalized TekOperationsData into the running accumulator. */
 function foldMonth(acc: RangeAccumulator, month: TekOperationsData): void {
+  acc.monthsFoldedCount += 1;
   acc.kpi.roCount += month.kpis.roCount.value;
   acc.kpi.revenue += month.kpis.aro.value * month.kpis.roCount.value;
   acc.kpi.grossProfit += month.kpis.grossProfit.value;
@@ -274,13 +286,25 @@ export interface ComposedRange {
   /** How many distinct vehicles had 2+ ROs before capping — for an honest
    *  "showing top 50 of N" label when the cap bites. */
   repeatVisitsTotal: number;
-  /** Calendar month labels actually found cached, oldest first. */
+  /** Calendar month labels actually found cached, oldest first — the
+   *  CURRENT range only. */
   monthsFound: string[];
-  /** Calendar months in range with no cached snapshot yet, oldest first —
-   *  surface these plainly rather than silently under-counting; the caller
-   *  can offer to fill them via the existing (size-guarded) refreshOperations,
-   *  one month at a time. */
+  /** Calendar months in the CURRENT range with no cached snapshot yet,
+   *  oldest first — surface these plainly rather than silently
+   *  under-counting; the caller can offer to fill them via
+   *  fillMissingMonths (fill-gaps.ts), one month at a time. */
   monthsMissing: MonthRef[];
+  /** Same as `monthsFound`, for the COMPARISON range — a gap here doesn't
+   *  shrink the current-range figures shown, but it DOES mean every KPI
+   *  delta/comparison is computed against an incomplete prior range and
+   *  should be flagged just as plainly (this is exactly the year-over-year
+   *  comparison the whole composed view exists for — a silently-partial
+   *  comparison side defeats the point). Empty when there's no comparison
+   *  range at all. */
+  comparisonMonthsFound: string[];
+  /** Same as `monthsMissing`, for the COMPARISON range. Empty when there's
+   *  no comparison range at all. */
+  comparisonMonthsMissing: MonthRef[];
 }
 
 export interface NotMonthAligned {
@@ -301,12 +325,19 @@ function finishAccumulator(range: TekPeriod, current: RangeAccumulator, prior: R
   const aro = (k: KpiAcc): number => (k.roCount > 0 ? round2(k.revenue / k.roCount) : 0);
   const margin = (k: KpiAcc): number => (k.revenue > 0 ? round2((k.grossProfit / k.revenue) * 100) : 0);
 
+  // A comparison range with genuinely ZERO cached months folds to an
+  // all-zero accumulator — computing deltas against that would read as "up
+  // 100%" or similar nonsense, not the honest "no comparison data yet" this
+  // should be. Only treat `prior` as a real baseline once at least one of
+  // its months actually got folded in.
+  const priorForDeltas = prior && prior.monthsFoldedCount > 0 ? prior : null;
+
   const kpis: TekKpiSummary = {
-    roCount: buildKpi(current.kpi.roCount, prior ? prior.kpi.roCount : null),
-    aro: buildKpi(aro(current.kpi), prior ? aro(prior.kpi) : null),
-    grossProfit: buildKpi(current.kpi.grossProfit, prior ? prior.kpi.grossProfit : null),
-    grossMarginPct: buildKpi(margin(current.kpi), prior ? margin(prior.kpi) : null),
-    carCount: buildKpi(current.vehicleTally.size, prior ? prior.vehicleTally.size : null),
+    roCount: buildKpi(current.kpi.roCount, priorForDeltas ? priorForDeltas.kpi.roCount : null),
+    aro: buildKpi(aro(current.kpi), priorForDeltas ? aro(priorForDeltas.kpi) : null),
+    grossProfit: buildKpi(current.kpi.grossProfit, priorForDeltas ? priorForDeltas.kpi.grossProfit : null),
+    grossMarginPct: buildKpi(margin(current.kpi), priorForDeltas ? margin(priorForDeltas.kpi) : null),
+    carCount: buildKpi(current.vehicleTally.size, priorForDeltas ? priorForDeltas.vehicleTally.size : null),
   };
 
   const data: TekOperationsData = {
@@ -332,6 +363,8 @@ function finishAccumulator(range: TekPeriod, current: RangeAccumulator, prior: R
     repeatVisitsTotal: allRepeatVisits.length,
     monthsFound: current.monthsFound,
     monthsMissing: current.monthsMissing,
+    comparisonMonthsFound: prior?.monthsFound ?? [],
+    comparisonMonthsMissing: prior?.monthsMissing ?? [],
   };
 }
 

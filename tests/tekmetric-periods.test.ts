@@ -6,6 +6,7 @@ import {
   monthsInRange,
   monthKeyToRange,
   monthRangeToKey,
+  ytdComposableRange,
 } from "@/lib/tekmetric/periods";
 import { toStartOfDay, toEndOfDay } from "@/lib/tekmetric/client";
 
@@ -107,6 +108,26 @@ describe("monthsInRange (composed multi-month view — see compose.ts)", () => {
     expect(monthsInRange({ start: "2026-01-01", end: "2026-07-13" })).toBeNull();
     // Starts mid-month even though it ends cleanly.
     expect(monthsInRange({ start: "2026-01-15", end: "2026-02-28" })).toBeNull();
+  });
+});
+
+describe("ytdComposableRange (composing a wide 'Year to date' view)", () => {
+  it("trims YTD to Jan 1 through the last FULLY completed month", () => {
+    // TODAY = 2026-07-13 → June is the last complete month.
+    expect(ytdComposableRange(TODAY)).toEqual({ start: "2026-01-01", end: "2026-06-30" });
+  });
+
+  it("excludes the current month even on its very last day (never assumed complete mid-month)", () => {
+    expect(ytdComposableRange(new Date("2026-12-31T12:00:00Z"))).toEqual({ start: "2026-01-01", end: "2026-11-30" });
+  });
+
+  it("handles a month right after January rollover (February complete, March in progress)", () => {
+    expect(ytdComposableRange(new Date("2026-03-01T12:00:00Z"))).toEqual({ start: "2026-01-01", end: "2026-02-28" });
+  });
+
+  it("returns null while still in January — zero complete months so far this year", () => {
+    expect(ytdComposableRange(new Date("2026-01-15T12:00:00Z"))).toBeNull();
+    expect(ytdComposableRange(new Date("2026-01-31T12:00:00Z"))).toBeNull();
   });
 });
 

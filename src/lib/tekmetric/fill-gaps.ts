@@ -32,6 +32,15 @@ import { refreshOperations, fetchTekmetricRoster, type TekRosterCache } from "./
 import { comparisonRange } from "./periods";
 import type { TekPeriod } from "./types";
 
+/**
+ * How many months a single "Fill missing months" click may attempt. Enforced
+ * here as the shared constant the page uses to slice its hidden field AND
+ * (defensively — never trust the client) the server action re-applies before
+ * calling `fillMissingMonths`, regardless of how many month keys were
+ * actually posted.
+ */
+export const MAX_FILL_PER_CLICK = 6;
+
 export interface FillMonthResult {
   label: string;
   start: string;
