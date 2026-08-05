@@ -175,6 +175,44 @@ export function monthRangesBack(
 }
 
 /**
+ * The calendar months a whole-month-aligned range spans, oldest first — the
+ * decomposition a wide-range Operations view (e.g. "Last year") composes
+ * from the existing per-month `tek_snapshot` cache instead of a live pull
+ * (see snapshot.ts's `MAX_REFRESH_RANGE_DAYS` guard and compose.ts).
+ *
+ * Deliberately narrow: `range` MUST start on the 1st of a month and end on
+ * the last day of a month (the same test `wholeCalendarMonths` uses above),
+ * because that's exactly how every cached monthly snapshot is keyed
+ * (`monthRangesBack`/the backfill script/the AI council's monthly refresh
+ * all write one row per exact calendar month). A range like "last_90_days"
+ * or "last_30_days" doesn't align to month boundaries at either end, so
+ * there is no whole-months decomposition of it that wouldn't either miss
+ * partial-month data or double-count days from an adjacent month — callers
+ * with a non-aligned range, or "YTD"'s trailing partial current month, must
+ * trim to the last full month themselves before calling this. Returns null
+ * (never a wrong answer) when `range` isn't whole-month-aligned.
+ */
+export function monthsInRange(range: TekPeriod): Array<{ start: string; end: string; label: string }> | null {
+  const months = wholeCalendarMonths(range);
+  if (months === null) return null;
+  const s = new Date(`${range.start}T00:00:00Z`);
+  const y = s.getUTCFullYear();
+  const m = s.getUTCMonth();
+  const out: Array<{ start: string; end: string; label: string }> = [];
+  for (let i = 0; i < months; i++) {
+    const abs = m + i;
+    const yy = y + Math.floor(abs / 12);
+    const mm = ((abs % 12) + 12) % 12;
+    out.push({
+      start: iso(utc(yy, mm, 1)),
+      end: iso(utc(yy, mm, daysInMonth(yy, mm))),
+      label: `${MONTH_ABBR[mm]} ${yy}`,
+    });
+  }
+  return out;
+}
+
+/**
  * The one clock-reading helper: "today" as a UTC date whose Y/M/D equal the
  * calendar date in the shop's timezone (SYNC_TZ, default America/New_York).
  * `presetRange` stays pure — callers pass this in — but both the page and the
