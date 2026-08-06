@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { presetRange, comparisonRange, monthRangesBack, monthsInRange } from "@/lib/tekmetric/periods";
+import {
+  presetRange,
+  comparisonRange,
+  monthRangesBack,
+  monthsInRange,
+  monthKeyToRange,
+  monthRangeToKey,
+  ytdComposableRange,
+} from "@/lib/tekmetric/periods";
 import { toStartOfDay, toEndOfDay } from "@/lib/tekmetric/client";
 
 // Fixed "today" = Mon 2026-07-13 (UTC) so ranges are deterministic.
@@ -100,6 +108,47 @@ describe("monthsInRange (composed multi-month view — see compose.ts)", () => {
     expect(monthsInRange({ start: "2026-01-01", end: "2026-07-13" })).toBeNull();
     // Starts mid-month even though it ends cleanly.
     expect(monthsInRange({ start: "2026-01-15", end: "2026-02-28" })).toBeNull();
+  });
+});
+
+describe("ytdComposableRange (composing a wide 'Year to date' view)", () => {
+  it("trims YTD to Jan 1 through the last FULLY completed month", () => {
+    // TODAY = 2026-07-13 → June is the last complete month.
+    expect(ytdComposableRange(TODAY)).toEqual({ start: "2026-01-01", end: "2026-06-30" });
+  });
+
+  it("excludes the current month even on its very last day (never assumed complete mid-month)", () => {
+    expect(ytdComposableRange(new Date("2026-12-31T12:00:00Z"))).toEqual({ start: "2026-01-01", end: "2026-11-30" });
+  });
+
+  it("handles a month right after January rollover (February complete, March in progress)", () => {
+    expect(ytdComposableRange(new Date("2026-03-01T12:00:00Z"))).toEqual({ start: "2026-01-01", end: "2026-02-28" });
+  });
+
+  it("returns null while still in January — zero complete months so far this year", () => {
+    expect(ytdComposableRange(new Date("2026-01-15T12:00:00Z"))).toBeNull();
+    expect(ytdComposableRange(new Date("2026-01-31T12:00:00Z"))).toBeNull();
+  });
+});
+
+describe("monthKeyToRange / monthRangeToKey (fill-missing-months action, §never trust the client)", () => {
+  it("round-trips a whole calendar month through the key encoding", () => {
+    const range = monthKeyToRange("2025-03");
+    expect(range).toEqual({ start: "2025-03-01", end: "2025-03-31", label: "Mar 2025" });
+    expect(monthRangeToKey({ start: "2025-03-01" })).toBe("2025-03");
+  });
+
+  it("handles February (leap and non-leap) correctly", () => {
+    expect(monthKeyToRange("2024-02")).toEqual({ start: "2024-02-01", end: "2024-02-29", label: "Feb 2024" });
+    expect(monthKeyToRange("2025-02")).toEqual({ start: "2025-02-01", end: "2025-02-28", label: "Feb 2025" });
+  });
+
+  it("rejects malformed or out-of-range input rather than guessing", () => {
+    expect(monthKeyToRange("not-a-month")).toBeNull();
+    expect(monthKeyToRange("2025-13")).toBeNull();
+    expect(monthKeyToRange("2025-00")).toBeNull();
+    expect(monthKeyToRange("")).toBeNull();
+    expect(monthKeyToRange("2025-3")).toBeNull(); // must be zero-padded
   });
 });
 

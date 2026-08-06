@@ -241,6 +241,21 @@ describe("composeMonths — comparison range composes the same way and drives re
   });
 });
 
+describe("composeMonths — a requested-but-empty comparison range is honest 'no comparison', not a fake 100% jump", () => {
+  it("does not treat a zero-coverage comparison range as a real all-zero prior", () => {
+    // A comparison range was requested (comparisonMonths=[]), but nothing was
+    // actually folded into it — this must read the same as "no comparison
+    // requested at all" (priorValue/deltaAbs/deltaPct all null), not as
+    // "the prior period genuinely had $0 gross profit, so this is up
+    // infinity percent."
+    const composed = composeMonths(RANGE, [JAN, FEB], []);
+    expect(composed.data.kpis.grossProfit.priorValue).toBeNull();
+    expect(composed.data.kpis.grossProfit.deltaAbs).toBeNull();
+    expect(composed.data.kpis.grossProfit.deltaPct).toBeNull();
+    expect(composed.data.kpis.roCount.priorValue).toBeNull();
+  });
+});
+
 describe("composeMonths — degenerate zero-month input", () => {
   // composeMonths takes already-fetched month data (no I/O) — tracking which
   // calendar months were found vs. missing in the cache is foldRange's job
