@@ -9,6 +9,7 @@ import {
   markReviewedAction,
   recheckQboMatchAction,
 } from "../../actions";
+import { qboWebUrl } from "@/lib/qbo/links";
 
 export const dynamic = "force-dynamic";
 
@@ -74,19 +75,33 @@ export default async function RowDetailPage({ params }: { params: { id: string }
           </dl>
         </div>
 
-        {row.qboTransactionId && (
-          <div className="card">
-            <h3 className="card-title" style={{ marginBottom: 12 }}>QBO transaction</h3>
-            <dl className="kv">
-              <dt>Transaction ID</dt><dd>{row.qboTransactionId}</dd>
-              <dt>Type</dt><dd>{row.qboTransactionType}</dd>
-              <dt>Posted at</dt><dd>{row.qboPostedAt?.toISOString()}</dd>
-            </dl>
-            <p className="card-subtitle" style={{ marginTop: 12 }}>
-              The original posted snapshot is preserved for audit; QBO is never auto-edited.
-            </p>
-          </div>
-        )}
+        {row.qboTransactionId && (() => {
+          // The environment lives on the QboTransaction record, not the row —
+          // match by transaction id (there's normally exactly one per row; a
+          // row is never re-posted, §10).
+          const txn = row.transactions.find((t) => t.qboTransactionId === row.qboTransactionId) ?? row.transactions[0];
+          const webUrl = qboWebUrl(row.qboTransactionType, row.qboTransactionId, txn?.qboEnvironment as "sandbox" | "live" | undefined);
+          return (
+            <div className="card">
+              <h3 className="card-title" style={{ marginBottom: 12 }}>QBO transaction</h3>
+              <dl className="kv">
+                <dt>Transaction ID</dt><dd>{row.qboTransactionId}</dd>
+                <dt>Type</dt><dd>{row.qboTransactionType}</dd>
+                <dt>Posted at</dt><dd>{row.qboPostedAt?.toISOString()}</dd>
+              </dl>
+              {webUrl && (
+                <p style={{ marginTop: 12 }}>
+                  <a className="btn secondary" href={webUrl} target="_blank" rel="noopener noreferrer">
+                    View in QBO ↗
+                  </a>
+                </p>
+              )}
+              <p className="card-subtitle" style={{ marginTop: 12 }}>
+                The original posted snapshot is preserved for audit; QBO is never auto-edited.
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       {changeEvents.length > 0 && (

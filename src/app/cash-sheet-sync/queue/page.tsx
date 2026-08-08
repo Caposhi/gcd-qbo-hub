@@ -83,9 +83,14 @@ export default async function QueuePage({
   const activeTab = searchParams.tab ?? "";
   const activeStatus = searchParams.status ?? "";
   const q = searchParams.q ?? "";
+  // Dashboard tiles link in with a comma-separated list when one tile spans
+  // more than one status (e.g. "Posted" covers Posted + Posted With Warning +
+  // Deposit Created); the manual status dropdown always sends exactly one.
+  const activeStatusList = activeStatus ? activeStatus.split(",").filter(Boolean) : [];
 
   const where: Record<string, unknown> = {};
-  if (activeStatus) where.status = activeStatus;
+  if (activeStatusList.length === 1) where.status = activeStatusList[0];
+  else if (activeStatusList.length > 1) where.status = { in: activeStatusList };
   if (activeTab) where.tabName = activeTab;
 
   // Month tabs: the distinct tab names present, ordered Jan→Dec.
@@ -162,8 +167,15 @@ export default async function QueuePage({
           defaultValue={q}
           style={{ minWidth: 320 }}
         />
-        <select className="input" name="status" defaultValue={activeStatus} style={{ maxWidth: 220 }}>
-          <option value="">All statuses</option>
+        <select
+          className="input"
+          name="status"
+          defaultValue={activeStatusList.length === 1 ? activeStatusList[0] : ""}
+          style={{ maxWidth: 220 }}
+        >
+          <option value="">
+            {activeStatusList.length > 1 ? `${activeStatusList.length} statuses (from a tile) — pick one to narrow` : "All statuses"}
+          </option>
           {statuses.map((s) => (
             <option key={s} value={s}>
               {s}
@@ -178,7 +190,7 @@ export default async function QueuePage({
         {filtered.length} row{filtered.length === 1 ? "" : "s"}
         {activeTab ? ` in ${activeTab}` : ""}
         {q ? ` matching “${q}”` : ""}
-        {activeStatus ? ` · ${activeStatus}` : ""}.
+        {activeStatusList.length ? ` · ${activeStatusList.join(" or ")}` : ""}.
       </p>
 
       <div className="table-wrap">
