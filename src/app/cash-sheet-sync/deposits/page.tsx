@@ -3,12 +3,14 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
+import { DateRangeFilter } from "../../components/DateRangeFilter";
 import { RowStatus } from "@/lib/cashsheet/status";
 import {
   findCashDepositCandidates,
   resolveDepositAccounts,
   alreadyHasDeposit,
 } from "@/lib/cashsheet/cash-deposit-service";
+import { resolveDateRange, dateRangeWhere, describeDateRange } from "@/lib/cashsheet/date-range";
 import { locateCashDepositsAction, createCashDepositAction, createAllReadyCashDepositsAction } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -28,12 +30,22 @@ interface PlanEvent {
   plan?: { paymentId: string; paymentCents: number; depositedCents: number; overShortCents: number; withinThreshold: boolean } | null;
 }
 
-export default async function CashDepositsPage() {
+export default async function CashDepositsPage({
+  searchParams,
+}: {
+  searchParams: { range?: string; from?: string; to?: string };
+}) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
   const editable = can(user.role, "approve_posting");
 
-  const [rows, accounts] = await Promise.all([findCashDepositCandidates(), resolveDepositAccounts()]);
+  const activeRange = searchParams.range ?? "";
+  const customFrom = searchParams.from ?? "";
+  const customTo = searchParams.to ?? "";
+  const resolvedRange = resolveDateRange(activeRange || undefined, { customFrom, customTo });
+  const dateWhere = dateRangeWhere(resolvedRange);
+
+  const [rows, accounts] = await Promise.all([findCashDepositCandidates(dateWhere), resolveDepositAccounts()]);
   const rowIds = rows.map((r) => r.id);
 
   // Latest plan/created event per row (for display).
@@ -113,6 +125,23 @@ export default async function CashDepositsPage() {
         reconciled a different way.
       </div>
 
+      <DateRangeFilter
+        activePreset={activeRange}
+        customFrom={customFrom}
+        customTo={customTo}
+        hrefFor={(preset) => {
+          const p = new URLSearchParams();
+          if (preset !== "all") p.set("range", preset);
+          const s = p.toString();
+          return `/cash-sheet-sync/deposits${s ? `?${s}` : ""}`;
+        }}
+      />
+      <p className="card-subtitle" style={{ margin: "6px 0 12px" }}>
+        Showing <strong>{describeDateRange(activeRange || "all", resolvedRange)}</strong> — {rows.length} candidate
+        row{rows.length === 1 ? "" : "s"}. "Locate" always checks the full backlog regardless of this filter (it's
+        read-only); "Create all ready" only posts what's in the current filtered view below.
+      </p>
+
       {!accountsReady && (
         <div className="notice danger" style={{ marginTop: 12 }}>
           Account mapping incomplete — need both “Cash on hand” ({accounts.depositToId ?? "unresolved"}) and “Cash
@@ -133,6 +162,9 @@ export default async function CashDepositsPage() {
 
       {editable && accountsReady && readyCount > 0 && (
         <form action={createAllReadyCashDepositsAction} className="row-actions" style={{ margin: "0.25rem 0 0.5rem" }}>
+          {activeRange && <input type="hidden" name="range" value={activeRange} />}
+          {customFrom && <input type="hidden" name="from" value={customFrom} />}
+          {customTo && <input type="hidden" name="to" value={customTo} />}
           <button className="btn primary" type="submit">Create all {readyCount} ready deposit{readyCount === 1 ? "" : "s"}</button>
           <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
             Posts every row marked <em>ready</em> above, each re-verified and duplicate-guarded before it writes.

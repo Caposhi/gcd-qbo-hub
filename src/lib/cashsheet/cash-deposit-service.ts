@@ -30,8 +30,12 @@ export const OVER_SHORT_ACCOUNT = "Cash over/short";
  * record the cash in the "Amt Collected" column — that collected cash is what
  * gets physically deposited, and its Customer Payment already sits in
  * Undeposited Funds (posted by Back Office). Ordered oldest first.
+ *
+ * `range` narrows by the row's own date (§Phase 3 — same filter shape as the
+ * Queue page); omitted/fully-open means every candidate, matching prior
+ * behavior exactly.
  */
-export async function findCashDepositCandidates() {
+export async function findCashDepositCandidates(range?: { gte?: Date; lte?: Date }) {
   return prisma.sheetRow.findMany({
     where: {
       invNumber: { not: null },
@@ -48,6 +52,7 @@ export async function findCashDepositCandidates() {
       // "not found" row a human has declared will never resolve) are inert
       // everywhere, not just the Queue.
       archived: false,
+      ...(range ? { date: range } : {}),
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
   });

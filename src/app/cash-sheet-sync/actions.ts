@@ -577,10 +577,18 @@ export async function createCashDepositAction(formData: FormData) {
  * postDepositForRow before anything posts, and the double-count guard runs from
  * a single fresh deposit scan. This is the "manual batch" rung of the ladder,
  * before any fully-unattended posting.
+ *
+ * Scoped to whatever date range the Deposits page currently has active
+ * (§Phase 3, passed as hidden `range`/`from`/`to` fields) — the button's own
+ * label counts exactly this same filtered set, so what you see really is
+ * what you get. Without this, the button could silently post rows outside
+ * the current view, which is exactly the kind of surprise a posting action
+ * must never produce.
  */
-export async function createAllReadyCashDepositsAction() {
+export async function createAllReadyCashDepositsAction(formData: FormData) {
   const user = await requirePermission("approve_posting");
   const { findCashDepositCandidates, alreadyHasDeposit } = await import("@/lib/cashsheet/cash-deposit-service");
+  const { resolveDateRange, dateRangeWhere } = await import("@/lib/cashsheet/date-range");
 
   const prep = await prepareDepositContext();
   if (!prep.ok) {
@@ -591,7 +599,11 @@ export async function createAllReadyCashDepositsAction() {
     return;
   }
 
-  const candidates = (await findCashDepositCandidates()).filter((r) => !alreadyHasDeposit(r));
+  const range = resolveDateRange(String(formData.get("range") ?? "") || undefined, {
+    customFrom: String(formData.get("from") ?? ""),
+    customTo: String(formData.get("to") ?? ""),
+  });
+  const candidates = (await findCashDepositCandidates(dateRangeWhere(range))).filter((r) => !alreadyHasDeposit(r));
 
   // Only attempt rows a recent Locate found as ready (latest plan event, found).
   const planEvents = candidates.length

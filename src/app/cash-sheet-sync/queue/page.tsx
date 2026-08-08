@@ -2,8 +2,10 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { RequireAuth } from "../../components/RequireAuth";
+import { DateRangeFilter } from "../../components/DateRangeFilter";
 import { RowStatus } from "@/lib/cashsheet/status";
 import { MONTH_TABS, canonicalMonthTab } from "@/lib/cashsheet/config";
+import { resolveDateRange, dateRangeWhere, describeDateRange, type DateRangePreset } from "@/lib/cashsheet/date-range";
 
 export const dynamic = "force-dynamic";
 
@@ -78,7 +80,7 @@ function haystack(r: Row): string {
 export default async function QueuePage({
   searchParams,
 }: {
-  searchParams: { status?: string; tab?: string; q?: string; archived?: string };
+  searchParams: { status?: string; tab?: string; q?: string; archived?: string; range?: string; from?: string; to?: string };
 }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -87,10 +89,15 @@ export default async function QueuePage({
   const activeStatus = searchParams.status ?? "";
   const q = searchParams.q ?? "";
   const showArchived = searchParams.archived === "1";
+  const activeRange = searchParams.range ?? "";
+  const customFrom = searchParams.from ?? "";
+  const customTo = searchParams.to ?? "";
   // Dashboard tiles link in with a comma-separated list when one tile spans
   // more than one status (e.g. "Posted" covers Posted + Posted With Warning +
   // Deposit Created); the manual status dropdown always sends exactly one.
   const activeStatusList = activeStatus ? activeStatus.split(",").filter(Boolean) : [];
+  const resolvedRange = resolveDateRange(activeRange || undefined, { customFrom, customTo });
+  const dateWhere = dateRangeWhere(resolvedRange);
 
   const where: Record<string, unknown> = {};
   if (activeStatusList.length === 1) where.status = activeStatusList[0];
@@ -101,6 +108,9 @@ export default async function QueuePage({
   // pending row before this filter existed, which is the whole problem this
   // fixes. "Show archived" reveals them alongside everything else.
   if (!showArchived) where.archived = false;
+  // No range (the default) leaves every dashboard tile link and existing
+  // bookmark exactly as it worked before this filter existed (§Phase 1).
+  if (dateWhere) where.date = dateWhere;
 
   // Month tabs: the distinct tab names present, ordered Jan→Dec.
   const distinctTabs = await prisma.sheetRow.findMany({
@@ -134,16 +144,25 @@ export default async function QueuePage({
   const statuses = Object.values(RowStatus);
 
   // Build an href that keeps the other filters when switching one.
-  const hrefWith = (over: { tab?: string | null; status?: string; q?: string; archived?: boolean }) => {
+  const hrefWith = (over: {
+    tab?: string | null;
+    status?: string;
+    q?: string;
+    archived?: boolean;
+    range?: string | null;
+  }) => {
     const p = new URLSearchParams();
     const tab = over.tab === undefined ? activeTab : over.tab ?? "";
     const status = over.status === undefined ? activeStatus : over.status;
     const query = over.q === undefined ? q : over.q;
     const archived = over.archived === undefined ? showArchived : over.archived;
+    const range = over.range === undefined ? activeRange : over.range ?? "";
     if (tab) p.set("tab", tab);
     if (status) p.set("status", status);
     if (query) p.set("q", query);
     if (archived) p.set("archived", "1");
+    // "all" is the implicit default (no range param) — never write it out.
+    if (range && range !== "all") p.set("range", range);
     const s = p.toString();
     return `/cash-sheet-sync/queue${s ? `?${s}` : ""}`;
   };
@@ -168,9 +187,27 @@ export default async function QueuePage({
         ))}
       </div>
 
+      {/* Date range — a second, more precise filter dimension than the month
+          tabs above (it reads the actual row date, so it also covers
+          quarters/years/custom, and works the same way on the Deposits page). */}
+      <DateRangeFilter
+        activePreset={activeRange}
+        customFrom={customFrom}
+        customTo={customTo}
+        hrefFor={(preset) => hrefWith({ range: preset === "all" ? null : preset })}
+        otherHiddenFields={{ tab: activeTab, status: activeStatus, q, archived: showArchived ? "1" : "" }}
+      />
+      <p className="card-subtitle" style={{ margin: "6px 0 0" }}>
+        Date range: <strong>{describeDateRange(activeRange || "all", resolvedRange)}</strong>
+        {resolvedRange.start || resolvedRange.end ? "" : " — every row, regardless of date."}
+      </p>
+
       {/* Search + status */}
       <form method="get" className="row-actions" style={{ marginTop: "0.75rem" }}>
         {activeTab && <input type="hidden" name="tab" value={activeTab} />}
+        {activeRange && <input type="hidden" name="range" value={activeRange} />}
+        {customFrom && <input type="hidden" name="from" value={customFrom} />}
+        {customTo && <input type="hidden" name="to" value={customTo} />}
         <input
           className="input"
           name="q"
