@@ -141,6 +141,8 @@ a:hover { color:var(--text-link-hover); }
 .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(228px,1fr)); gap:16px; }
 .kpi-card { position:relative; background:#fff; border:1px solid var(--border-subtle); border-radius:var(--radius-lg);
   box-shadow:var(--shadow-sm); padding:19px 21px; overflow:hidden; }
+.kpi-card-link { transition:box-shadow .12s ease, transform .12s ease, border-color .12s ease; cursor:pointer; }
+.kpi-card-link:hover { box-shadow:var(--shadow-md, 0 4px 14px rgba(0,0,0,.08)); border-color:var(--royal-blue); transform:translateY(-1px); }
 .kpi-label { font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--text-muted); font-weight:700; }
 .kpi-value { font-family:var(--font-heading); font-size:33px; font-weight:600; color:var(--navy-blue); letter-spacing:-.01em; line-height:1.1; margin:8px 0 12px; }
 .kpi-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; }

@@ -14,6 +14,7 @@
 import type { PostingPlan } from "@/lib/cashsheet/classify";
 import type { ParsedRow } from "@/lib/cashsheet/rows";
 import { buildMemo, buildDocNumber } from "@/lib/cashsheet/memo";
+import { formatDate } from "@/lib/cashsheet/dates";
 import { getContext, post, query, redactPayload, type QboContext } from "./client";
 import type { QboEnvironment } from "@/lib/cashsheet/rollout";
 
@@ -46,6 +47,10 @@ export async function postPlan(
   const ctx = await getContext(environment);
   const memo = buildMemo(tabName, row, rowUuid);
   const docNumber = buildDocNumber(rowUuid);
+  // The sheet row's own date, not "today" — otherwise every posting lands on
+  // whatever day the sync happened to run, which drifts from the cash sheet
+  // and throws off which statement period a reconciliation catches it in.
+  const txnDate = formatDate(row.date) || undefined;
 
   switch (plan.action) {
     case "expense": {
@@ -53,12 +58,12 @@ export async function postPlan(
       // expenses were categorized before (e.g. "Jose" on the OWNER Contract
       // Labor account). Best-effort — a payee lookup hiccup never blocks the post.
       const payee = await resolvePayeeRef(ctx, row.name);
-      return doPost(ctx, "purchase", buildPurchase(plan, memo, docNumber, payee), "Purchase");
+      return doPost(ctx, "purchase", buildPurchase(plan, memo, docNumber, txnDate, payee), "Purchase");
     }
     case "deposit":
-      return doPost(ctx, "deposit", buildDeposit(plan, memo, docNumber), "Deposit");
+      return doPost(ctx, "deposit", buildDeposit(plan, memo, docNumber, txnDate), "Deposit");
     case "transfer":
-      return doPost(ctx, "transfer", buildTransfer(plan, memo), "Transfer");
+      return doPost(ctx, "transfer", buildTransfer(plan, memo, txnDate), "Transfer");
     default:
       throw new Error(`Unsupported action ${plan.action}`);
   }
@@ -95,12 +100,13 @@ async function resolvePayeeRef(ctx: QboContext, name: string): Promise<PayeeRef 
   return undefined;
 }
 
-function buildPurchase(plan: PostingPlan, memo: string, docNumber: string, payee?: PayeeRef) {
+function buildPurchase(plan: PostingPlan, memo: string, docNumber: string, txnDate: string | undefined, payee?: PayeeRef) {
   return {
     PaymentType: "Cash",
     AccountRef: accountRef(plan.cashAccountId, plan.cashAccount),
     ...(payee ? { EntityRef: { value: payee.value, name: payee.name, type: payee.type } } : {}),
     DocNumber: docNumber,
+    ...(txnDate ? { TxnDate: txnDate } : {}),
     PrivateNote: memo,
     Line: [
       {
@@ -115,10 +121,11 @@ function buildPurchase(plan: PostingPlan, memo: string, docNumber: string, payee
   };
 }
 
-function buildDeposit(plan: PostingPlan, memo: string, docNumber: string) {
+function buildDeposit(plan: PostingPlan, memo: string, docNumber: string, txnDate: string | undefined) {
   return {
     DepositToAccountRef: accountRef(plan.cashAccountId, plan.cashAccount),
     DocNumber: docNumber,
+    ...(txnDate ? { TxnDate: txnDate } : {}),
     PrivateNote: memo,
     Line: [
       {
@@ -133,12 +140,13 @@ function buildDeposit(plan: PostingPlan, memo: string, docNumber: string) {
   };
 }
 
-function buildTransfer(plan: PostingPlan, memo: string) {
+function buildTransfer(plan: PostingPlan, memo: string, txnDate: string | undefined) {
   // QBO Transfer has no DocNumber field; the memo carries the row UUID.
   return {
     FromAccountRef: accountRef(plan.cashAccountId, plan.cashAccount),
     ToAccountRef: accountRef(plan.destinationAccountId, plan.destinationAccount),
     Amount: plan.amount,
+    ...(txnDate ? { TxnDate: txnDate } : {}),
     PrivateNote: memo,
   };
 }

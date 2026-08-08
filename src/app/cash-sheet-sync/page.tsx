@@ -42,7 +42,7 @@ export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment, recentChanges, dupCounts] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
@@ -56,10 +56,19 @@ export default async function OverviewPage() {
       include: { sheetRow: { select: { id: true, tabName: true, rowNumberLastSeen: true } } },
     }),
     unreviewedCounts([RowStatus.PossibleDuplicate, RowStatus.DuplicateRowId]),
+    // Rows an owner_admin already approved but that haven't posted yet — the
+    // "dry-run trap": approval only takes effect on the next REAL sync, and
+    // it's easy to run a dry-run afterward and assume nothing happened.
+    prisma.sheetRow.count({ where: { approvedAt: { not: null }, qboTransactionId: null } }),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const changedSinceLastSync =
     Number((lastRun?.summaryJson as { rowsChangedSinceLastSync?: number } | null)?.rowsChangedSinceLastSync ?? 0);
+  const awaitingApproval = counts[RowStatus.ReadyToPost] ?? 0;
+
+  /** Build a Queue link pre-filtered to one or more statuses. */
+  const queueHref = (...rowStatuses: string[]) =>
+    `/cash-sheet-sync/queue?status=${encodeURIComponent(rowStatuses.join(","))}`;
 
   return (
     <>
@@ -117,15 +126,66 @@ export default async function OverviewPage() {
       </div>
 
       <h2 style={{ fontSize: 18, margin: "8px 0 12px" }}>Attention</h2>
+      <p className="page-desc" style={{ marginTop: 0 }}>Click any tile to see exactly which rows it counts.</p>
       <div className="kpi-grid">
-        <StatCard label="Possible dupes" n={dupCounts[RowStatus.PossibleDuplicate] ?? 0} sev="warn" />
-        <StatCard label="Duplicate row IDs" n={dupCounts[RowStatus.DuplicateRowId] ?? 0} sev="warn" />
-        <StatCard label="Unknown purpose" n={counts[RowStatus.UnknownPurpose] ?? 0} sev="warn" />
-        <StatCard label="Missing account map" n={counts[RowStatus.MissingAccountMapping] ?? 0} sev="warn" />
-        <StatCard label="Changed after posting" n={counts[RowStatus.ChangedAfterPosting] ?? 0} sev="danger" />
-        <StatCard label="Removed after posting" n={counts[RowStatus.RemovedFromSheetAfterPosting] ?? 0} sev="danger" />
-        <StatCard label="Audit-only (INV)" n={counts[RowStatus.AuditOnly] ?? 0} />
-        <StatCard label="Awaiting QBO match" n={counts[RowStatus.AwaitingQboMatch] ?? 0} />
+        <StatCard
+          label="Awaiting approval"
+          n={awaitingApproval}
+          sev={awaitingApproval > 0 ? "warn" : undefined}
+          href={queueHref(RowStatus.ReadyToPost)}
+        />
+        <StatCard
+          label="Possible dupes"
+          n={dupCounts[RowStatus.PossibleDuplicate] ?? 0}
+          sev="warn"
+          href={queueHref(RowStatus.PossibleDuplicate)}
+        />
+        <StatCard
+          label="Duplicate row IDs"
+          n={dupCounts[RowStatus.DuplicateRowId] ?? 0}
+          sev="warn"
+          href={queueHref(RowStatus.DuplicateRowId)}
+        />
+        <StatCard
+          label="Unknown purpose"
+          n={counts[RowStatus.UnknownPurpose] ?? 0}
+          sev="warn"
+          href={queueHref(RowStatus.UnknownPurpose)}
+        />
+        <StatCard
+          label="Missing account map"
+          n={counts[RowStatus.MissingAccountMapping] ?? 0}
+          sev="warn"
+          href={queueHref(RowStatus.MissingAccountMapping)}
+        />
+        <StatCard
+          label="Changed after posting"
+          n={counts[RowStatus.ChangedAfterPosting] ?? 0}
+          sev="danger"
+          href={queueHref(RowStatus.ChangedAfterPosting)}
+        />
+        <StatCard
+          label="Removed after posting"
+          n={counts[RowStatus.RemovedFromSheetAfterPosting] ?? 0}
+          sev="danger"
+          href={queueHref(RowStatus.RemovedFromSheetAfterPosting)}
+        />
+        <StatCard
+          label="Audit-only (INV)"
+          n={counts[RowStatus.AuditOnly] ?? 0}
+          href={queueHref(RowStatus.AuditOnly)}
+        />
+        <StatCard
+          label="Awaiting QBO match"
+          n={counts[RowStatus.AwaitingQboMatch] ?? 0}
+          href={queueHref(RowStatus.AwaitingQboMatch)}
+        />
+        <StatCard
+          label="Rows in error"
+          n={counts[RowStatus.Error] ?? 0}
+          sev={(counts[RowStatus.Error] ?? 0) > 0 ? "danger" : undefined}
+          href={queueHref(RowStatus.Error)}
+        />
       </div>
 
       <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Recent sheet edits</h2>
@@ -168,6 +228,14 @@ export default async function OverviewPage() {
       </div>
 
       <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Manual actions</h2>
+      {approvedNotPosted > 0 && (
+        <div className="notice warn" style={{ marginBottom: 12 }}>
+          <strong>{approvedNotPosted}</strong> row{approvedNotPosted === 1 ? " is" : "s are"} approved and waiting to
+          post. Approval only takes effect on a real sync — <strong>"Run dry-run now" will not post{" "}
+          {approvedNotPosted === 1 ? "it" : "them"}</strong>, on purpose. Use "Run sync now" (or wait for tonight's
+          cron) to actually post {approvedNotPosted === 1 ? "it" : "them"}.
+        </div>
+      )}
       <div className="row-actions">
         <form action={runDryRunAction}>
           <button className="btn ghost" type="submit" disabled={!can(user.role, "run_dry_run")}>
@@ -217,10 +285,25 @@ function changedFields(diffJson: unknown): string {
     .join(", ");
 }
 
-/** Stat tile: count + a severity badge only when the count is non-zero (calm at 0). */
-function StatCard({ label, n, sev }: { label: string; n: number; sev?: "warn" | "danger" }) {
-  return (
-    <div className="kpi-card">
+/**
+ * Stat tile: count + a severity badge only when the count is non-zero (calm at
+ * 0). When `href` is given the whole tile is a link into the Queue,
+ * pre-filtered to exactly the rows this number counts — so every number on
+ * the dashboard is one click from the rows behind it.
+ */
+function StatCard({
+  label,
+  n,
+  sev,
+  href,
+}: {
+  label: string;
+  n: number;
+  sev?: "warn" | "danger";
+  href?: string;
+}) {
+  const body = (
+    <>
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{n}</div>
       {sev && n > 0 && (
@@ -228,6 +311,14 @@ function StatCard({ label, n, sev }: { label: string; n: number; sev?: "warn" | 
           <span className={`badge ${sev}`}>needs attention</span>
         </div>
       )}
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <Link href={href} className="kpi-card kpi-card-link" style={{ display: "block", textDecoration: "none", color: "inherit" }}>
+        {body}
+      </Link>
+    );
+  }
+  return <div className="kpi-card">{body}</div>;
 }
