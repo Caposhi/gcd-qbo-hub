@@ -172,6 +172,29 @@ export async function locateRow(
   return { ...base, found: true, reason: "ok", payment, plan };
 }
 
+/**
+ * How many deposit-match candidates are currently ready to create (§Phase 4
+ * dashboard tile): not yet turned into a deposit, and the most recent Locate
+ * found a matching Undeposited-Funds payment for them. Global (no date
+ * range) to match every other Overview stat tile's "current state, all
+ * time" convention (§Phase 1) — the Deposits page itself is where the date
+ * filter narrows things down.
+ */
+export async function countReadyCashDeposits(): Promise<number> {
+  const candidates = (await findCashDepositCandidates()).filter((r) => !alreadyHasDeposit(r));
+  if (!candidates.length) return 0;
+  const planEvents = await prisma.rowEvent.findMany({
+    where: { sheetRowId: { in: candidates.map((r) => r.id) }, eventType: "cash_deposit_plan" },
+    orderBy: { createdAt: "desc" },
+  });
+  const latestFound = new Map<string, boolean>();
+  for (const e of planEvents) {
+    if (!e.sheetRowId || latestFound.has(e.sheetRowId)) continue;
+    latestFound.set(e.sheetRowId, !!(e.diffJson as { found?: boolean } | null)?.found);
+  }
+  return candidates.filter((r) => latestFound.get(r.id)).length;
+}
+
 /** Statuses treated as "already has a QBO deposit" for idempotency. */
 export function alreadyHasDeposit(row: { qboTransactionType: string | null; status: string }): boolean {
   return row.qboTransactionType === "Deposit" || row.status === RowStatus.DepositCreated;

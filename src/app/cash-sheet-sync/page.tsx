@@ -5,6 +5,7 @@ import { can } from "@/lib/auth/roles";
 import { getRolloutStage, getQboEnvironment } from "@/lib/config-store";
 import { hasValidCredentials } from "@/lib/qbo/oauth";
 import { RowStatus } from "@/lib/cashsheet/status";
+import { countReadyCashDeposits } from "@/lib/cashsheet/cash-deposit-service";
 import { runDryRunAction, runSandboxSyncAction, runBackfillAction } from "./actions";
 import { RequireAuth } from "../components/RequireAuth";
 
@@ -42,7 +43,7 @@ export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted, depositsReady] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
@@ -60,6 +61,9 @@ export default async function OverviewPage() {
     // "dry-run trap": approval only takes effect on the next REAL sync, and
     // it's easy to run a dry-run afterward and assume nothing happened.
     prisma.sheetRow.count({ where: { approvedAt: { not: null }, qboTransactionId: null } }),
+    // Deposit-matching pilot (§Phase 4): candidates Locate already found a
+    // match for, sitting on /cash-sheet-sync/deposits waiting for a click.
+    countReadyCashDeposits().catch(() => 0),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const changedSinceLastSync =
@@ -179,6 +183,12 @@ export default async function OverviewPage() {
           label="Awaiting QBO match"
           n={counts[RowStatus.AwaitingQboMatch] ?? 0}
           href={queueHref(RowStatus.AwaitingQboMatch)}
+        />
+        <StatCard
+          label="Deposits ready"
+          n={depositsReady}
+          sev={depositsReady > 0 ? "warn" : undefined}
+          href="/cash-sheet-sync/deposits"
         />
         <StatCard
           label="Rows in error"
