@@ -30,8 +30,12 @@ export const OVER_SHORT_ACCOUNT = "Cash over/short";
  * record the cash in the "Amt Collected" column — that collected cash is what
  * gets physically deposited, and its Customer Payment already sits in
  * Undeposited Funds (posted by Back Office). Ordered oldest first.
+ *
+ * `range` narrows by the row's own date (§Phase 3 — same filter shape as the
+ * Queue page); omitted/fully-open means every candidate, matching prior
+ * behavior exactly.
  */
-export async function findCashDepositCandidates() {
+export async function findCashDepositCandidates(range?: { gte?: Date; lte?: Date }) {
   return prisma.sheetRow.findMany({
     where: {
       invNumber: { not: null },
@@ -44,6 +48,11 @@ export async function findCashDepositCandidates() {
       // qboTransactionType is NULL on undeposited rows — would evaluate to
       // NULL and silently drop every candidate (SQL 3-valued logic).
       status: { notIn: [RowStatus.DepositCreated, RowStatus.PossibleDuplicate] },
+      // Archived rows (auto-Superseded, or manually archived — e.g. an old
+      // "not found" row a human has declared will never resolve) are inert
+      // everywhere, not just the Queue.
+      archived: false,
+      ...(range ? { date: range } : {}),
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
   });
@@ -161,6 +170,29 @@ export async function locateRow(
     };
   }
   return { ...base, found: true, reason: "ok", payment, plan };
+}
+
+/**
+ * How many deposit-match candidates are currently ready to create (§Phase 4
+ * dashboard tile): not yet turned into a deposit, and the most recent Locate
+ * found a matching Undeposited-Funds payment for them. Global (no date
+ * range) to match every other Overview stat tile's "current state, all
+ * time" convention (§Phase 1) — the Deposits page itself is where the date
+ * filter narrows things down.
+ */
+export async function countReadyCashDeposits(): Promise<number> {
+  const candidates = (await findCashDepositCandidates()).filter((r) => !alreadyHasDeposit(r));
+  if (!candidates.length) return 0;
+  const planEvents = await prisma.rowEvent.findMany({
+    where: { sheetRowId: { in: candidates.map((r) => r.id) }, eventType: "cash_deposit_plan" },
+    orderBy: { createdAt: "desc" },
+  });
+  const latestFound = new Map<string, boolean>();
+  for (const e of planEvents) {
+    if (!e.sheetRowId || latestFound.has(e.sheetRowId)) continue;
+    latestFound.set(e.sheetRowId, !!(e.diffJson as { found?: boolean } | null)?.found);
+  }
+  return candidates.filter((r) => latestFound.get(r.id)).length;
 }
 
 /** Statuses treated as "already has a QBO deposit" for idempotency. */

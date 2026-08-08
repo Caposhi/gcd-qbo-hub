@@ -8,6 +8,8 @@ import {
   approveRowAction,
   markReviewedAction,
   recheckQboMatchAction,
+  archiveRowAction,
+  unarchiveRowAction,
 } from "../../actions";
 import { qboWebUrl } from "@/lib/qbo/links";
 
@@ -53,6 +55,13 @@ export default async function RowDetailPage({ params }: { params: { id: string }
       {row.status === "Removed From Sheet After Posting" && (
         <div className="notice danger">
           This posted row disappeared from the sheet. QBO was NOT deleted. Investigate whether this was intentional.
+        </div>
+      )}
+      {row.archived && (
+        <div className="notice">
+          <strong>Archived</strong> {row.archivedAt?.toISOString().slice(0, 16).replace("T", " ")} by{" "}
+          {row.archivedByEmail ?? "the sync engine (auto)"} — {row.archivedReason}. Hidden from the Queue and
+          Deposits pages by default; never posted to QBO.
         </div>
       )}
 
@@ -175,6 +184,30 @@ export default async function RowDetailPage({ params }: { params: { id: string }
       </div>
       {!can(user.role, "approve_posting") && (
         <p className="card-subtitle" style={{ marginTop: 10 }}>Approving a posting requires the owner_admin role (§14).</p>
+      )}
+
+      {!row.qboTransactionId && can(user.role, "archive_row") && (
+        <div className="card" style={{ marginTop: 12 }}>
+          {row.archived ? (
+            <form action={unarchiveRowAction.bind(null, row.id)} className="row-actions">
+              <button className="btn secondary" type="submit">Unarchive — bring back into the Queue</button>
+            </form>
+          ) : (
+            <form action={archiveRowAction.bind(null, row.id)} className="row-actions">
+              <input
+                className="input"
+                name="reason"
+                placeholder="Why archive this row? (e.g. edited/superseded, will never resolve)"
+                style={{ minWidth: 340 }}
+              />
+              <button className="btn ghost" type="submit">Archive — hide from Queue &amp; Deposits</button>
+            </form>
+          )}
+          <p className="card-subtitle" style={{ marginTop: 8, marginBottom: 0 }}>
+            Archiving never touches QBO or deletes this row — it only hides a never-posted row from the default
+            views. Only available because this row has no QBO transaction; a posted row can never be archived.
+          </p>
+        </div>
       )}
 
       <h2 style={{ fontSize: 18, margin: "24px 0 10px" }}>Sync events</h2>

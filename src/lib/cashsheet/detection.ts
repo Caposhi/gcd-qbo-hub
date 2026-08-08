@@ -70,3 +70,22 @@ export function findRemovedAfterPosting(postedUuids: string[], seenUuids: Iterab
   const seen = seenUuids instanceof Set ? seenUuids : new Set(seenUuids);
   return postedUuids.filter((u) => !seen.has(u));
 }
+
+/**
+ * Synthetic, never-posted rows whose content no longer appears anywhere in a
+ * full tab scan (§4, §10) — the counterpart to findRemovedAfterPosting for
+ * rows that were never posted at all. Same diff shape, very different
+ * meaning: a removed POSTED row is a critical alert (someone may be hiding a
+ * discrepancy); an orphaned unposted synthetic row almost always just means
+ * the sheet was edited (date/amount/name correction) before this row
+ * captured a stable GCD_QBO_Row_ID, leaving the old content behind under its
+ * old fingerprint-keyed identity with nothing to do — the engine auto-marks
+ * it Superseded and archives it rather than alerting anyone (see engine.ts).
+ */
+export function findSupersededSyntheticRows(
+  knownSyntheticUuids: string[],
+  seenUuids: Iterable<string>
+): string[] {
+  const seen = seenUuids instanceof Set ? seenUuids : new Set(seenUuids);
+  return knownSyntheticUuids.filter((u) => !seen.has(u));
+}

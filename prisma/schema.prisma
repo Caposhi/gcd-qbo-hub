@@ -246,6 +246,18 @@ model SheetRow {
   statusReason        String?
   removedFromSheetAt  DateTime?
 
+  // Archive (§10 hygiene): hides a row from the default Queue/Deposits view
+  // without ever deleting it — the append-only audit trail stays intact.
+  // Set automatically by the sync engine for a Superseded row, or manually by
+  // an owner_admin (e.g. a deposit-match candidate that will never resolve).
+  // NEVER permitted on a row that already has a qboTransactionId (enforced in
+  // the archiveRowAction, not just here) — a posted row's status/visibility is
+  // never touched, only never-posted rows can be archived.
+  archived            Boolean   @default(false)
+  archivedAt          DateTime?
+  archivedByEmail     String? // null when archived automatically by the engine
+  archivedReason      String?
+
   // Review/approval workflow (§12, §14). A reviewer can mark a warning
   // reviewed; only an owner_admin can approve a row for posting. `approvedAt`
   // is what the rollout gate reads at a manual stage.
@@ -275,6 +287,7 @@ model SheetRow {
   @@index([status])
   @@index([tabName])
   @@index([normalizedFingerprint])
+  @@index([archived])
   @@map("css_sheet_rows")
 }
 

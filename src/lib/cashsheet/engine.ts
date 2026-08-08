@@ -31,7 +31,12 @@ import {
   type PostedRowRef,
   type InvNumberRowRef,
 } from "./duplicates";
-import { isChangedAfterPosting, diffSnapshots, findRemovedAfterPosting } from "./detection";
+import {
+  isChangedAfterPosting,
+  diffSnapshots,
+  findRemovedAfterPosting,
+  findSupersededSyntheticRows,
+} from "./detection";
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
 import { canonicalMonthTab, TEMPLATE_TAB } from "./config";
@@ -68,6 +73,9 @@ export interface RunSummary {
   duplicateRowIds: number;
   changedAfterPosting: number;
   removedAfterPosting: number;
+  /** Never-posted synthetic rows auto-archived because their content no
+   *  longer appears in the sheet (§4, §10) — see findSupersededSyntheticRows. */
+  supersededSynthetic: number;
   /** Rows whose cell values differ from the previous daily sync (§11). */
   rowsChangedSinceLastSync: number;
   tabsScanned: string[];
@@ -121,6 +129,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     duplicateRowIds: 0,
     changedAfterPosting: 0,
     removedAfterPosting: 0,
+    supersededSynthetic: 0,
     rowsChangedSinceLastSync: 0,
     tabsScanned: [],
   };
@@ -330,6 +339,48 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     const removed = findRemovedAfterPosting(uuids, seen);
     for (const uuid of removed) {
       await handleRemoved(spreadsheetId, uuid, run.id, summary);
+    }
+  }
+
+  // ---- 4a. Superseded-synthetic-row detection (§4, §10) ------------------
+  // A never-posted row that hasn't captured a stable UUID yet is keyed by a
+  // content fingerprint (uuid.ts). Edit that content (fix a date, a typo, an
+  // amount) before the UUID lands, and the fingerprint changes — the engine
+  // then sees what looks like a brand-new row, and the OLD one is orphaned
+  // forever with nothing to do, looking identical to a real pending row in
+  // the Queue (this is exactly how the $960/07-17 and $980/07-30 "ghost" PR
+  // rows happened). Auto-mark + auto-archive these rather than alert anyone —
+  // by construction there is no action to take on one.
+  const syntheticByTab = new Map<string, { id: string; rowUuid: string; status: string }[]>();
+  if (monthTabs.length) {
+    const candidates = await prisma.sheetRow.findMany({
+      where: {
+        spreadsheetId,
+        tabName: { in: monthTabs.map((t) => t.title) },
+        rowUuid: { startsWith: "syn-" },
+        qboTransactionId: null,
+        archived: false,
+      },
+      select: { id: true, rowUuid: true, tabName: true, status: true },
+    });
+    for (const c of candidates) {
+      const list = syntheticByTab.get(c.tabName) ?? [];
+      list.push({ id: c.id, rowUuid: c.rowUuid, status: c.status });
+      syntheticByTab.set(c.tabName, list);
+    }
+  }
+  for (const [tabName, rows] of syntheticByTab) {
+    const seen = seenUuidsByTab.get(tabName);
+    if (!seen) continue; // tab wasn't scanned this run → don't false-flag
+    const supersededUuids = new Set(
+      findSupersededSyntheticRows(
+        rows.map((r) => r.rowUuid),
+        seen
+      )
+    );
+    for (const row of rows) {
+      if (!supersededUuids.has(row.rowUuid)) continue;
+      await handleSuperseded(row.id, row.status, run.id, summary);
     }
   }
 
@@ -692,6 +743,30 @@ async function handleRemoved(spreadsheetId: string, rowUuid: string, runId: stri
   summary.removedAfterPosting++;
 }
 
+/**
+ * Mark a synthetic, never-posted row Superseded and auto-archive it (§4,
+ * §10) — see findSupersededSyntheticRows for why this is safe to do silently
+ * (no alert, unlike handleRemoved): a never-posted row has no QBO side effect
+ * to worry about, so there is nothing for a human to act on. `archivedBy*`
+ * fields are left null to distinguish an engine auto-archive from a manual
+ * one (see archiveRowAction).
+ */
+async function handleSuperseded(rowId: string, previousStatus: string, runId: string, summary: RunSummary) {
+  const reason = `Superseded (was: ${previousStatus}) — row content no longer found in a full tab scan, likely edited before this row captured a stable ID.`;
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: {
+      status: RowStatus.Superseded,
+      statusReason: reason,
+      archived: true,
+      archivedAt: new Date(),
+      archivedReason: "Auto-archived by the sync engine — see statusReason",
+    },
+  });
+  await recordEvent(runId, rowId, "superseded", reason);
+  summary.supersededSynthetic++;
+}
+
 async function loadMappings(): Promise<MappingLike[]> {
   const rows = await prisma.purposeMapping.findMany({ where: { active: true } });
   return rows.map((m) => ({
@@ -827,6 +902,7 @@ async function sendDailySummary(summary: RunSummary) {
     `Duplicate row ids: ${summary.duplicateRowIds}`,
     `Changed after post:${summary.changedAfterPosting}`,
     `Removed after post:${summary.removedAfterPosting}`,
+    `Superseded (auto-archived):${summary.supersededSynthetic}`,
     `Edited since last sync:${summary.rowsChangedSinceLastSync}`,
     "",
     appUrl ? `Dashboard: ${appUrl}/cash-sheet-sync` : "",
