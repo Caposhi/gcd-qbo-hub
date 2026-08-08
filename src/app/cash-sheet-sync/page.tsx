@@ -43,7 +43,7 @@ export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted, depositsReady] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted, depositsReady, lastReconCheck] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
@@ -64,6 +64,8 @@ export default async function OverviewPage() {
     // Deposit-matching pilot (§Phase 4): candidates Locate already found a
     // match for, sitting on /cash-sheet-sync/deposits waiting for a click.
     countReadyCashDeposits().catch(() => 0),
+    // Reconciliation assistant (§Phase 5): the last period anyone checked.
+    prisma.rowEvent.findFirst({ where: { eventType: "reconciliation_check" }, orderBy: { createdAt: "desc" } }),
   ]);
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const changedSinceLastSync =
@@ -198,6 +200,27 @@ export default async function OverviewPage() {
         />
       </div>
 
+      {lastReconCheck && (() => {
+        const summary = (lastReconCheck.diffJson as { summary?: { residual?: number | null } } | null)?.summary;
+        const explained = (lastReconCheck.diffJson as { explained?: boolean | null } | null)?.explained;
+        const hasResidual = summary && summary.residual !== null && summary.residual !== undefined;
+        return (
+          <div style={{ marginTop: 16 }}>
+            <Link href="/cash-sheet-sync/reconcile" className="card kpi-card-link" style={{ display: "block", textDecoration: "none", color: "inherit", maxWidth: 360 }}>
+              <div className="kpi-label">Last reconciliation check</div>
+              <div className="card-subtitle" style={{ margin: "6px 0 0" }}>
+                {lastReconCheck.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC
+              </div>
+              {hasResidual && (
+                <span className={`badge ${explained ? "ok" : "danger"}`} style={{ marginTop: 8, display: "inline-block" }}>
+                  {explained ? "fully explained" : "unexplained gap"}
+                </span>
+              )}
+            </Link>
+          </div>
+        );
+      })()}
+
       <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Recent sheet edits</h2>
       <p className="page-desc" style={{ marginTop: 0 }}>
         Cell changes detected between daily syncs. Click a row to see its full change history (was → now).
@@ -275,6 +298,9 @@ export default async function OverviewPage() {
         </Link>
         <Link className="btn secondary" href="/cash-sheet-sync/deposits">
           Cash deposits →
+        </Link>
+        <Link className="btn secondary" href="/cash-sheet-sync/reconcile">
+          Reconciliation assistant →
         </Link>
       </div>
       {!can(user.role, "run_sandbox_sync") && (

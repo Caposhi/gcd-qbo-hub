@@ -757,3 +757,136 @@ export async function seedDefaultMappingsAction() {
   }
   revalidatePath("/cash-sheet-sync/mappings");
 }
+
+/**
+ * Run the account-register reconciliation check (§Phase 5) — read-only,
+ * same trust level as "Locate payments in QBO" (recheck_qbo_match), since
+ * both are QBO lookups anyone who can review the dashboard should be able
+ * to trigger, not just an owner_admin. Fetches the live Cash-on-hand
+ * register for the given period, cross-references it against every
+ * qboTransactionId the hub knows about, and stores the result as a
+ * RowEvent (sheetRowId: null — this isn't about one row, it's about a
+ * whole period) so the page can show the last run without re-fetching QBO
+ * on every page load.
+ */
+export async function runReconciliationCheckAction(formData: FormData) {
+  await requirePermission("recheck_qbo_match");
+  const { getContext } = await import("@/lib/qbo/client");
+  const { fetchAccountRegister } = await import("@/lib/qbo/reconciliation");
+  const { matchRegisterToHub, summarizeReconciliation, fullyExplained } = await import(
+    "@/lib/cashsheet/reconciliation"
+  );
+  const { resolveDateRange } = await import("@/lib/cashsheet/date-range");
+
+  const rangePreset = String(formData.get("range") ?? "") || undefined;
+  const customFrom = String(formData.get("from") ?? "");
+  const customTo = String(formData.get("to") ?? "");
+  const range = resolveDateRange(rangePreset, { customFrom, customTo });
+  const rangeStart = range.start;
+  const rangeEnd = range.end;
+  if (!rangeStart || !rangeEnd) {
+    await prisma.rowEvent.create({
+      data: { eventType: "reconciliation_error", eventMessage: "Pick a bounded date range (not All time) to run a reconciliation check." },
+    });
+    revalidatePath("/cash-sheet-sync/reconcile");
+    return;
+  }
+  const startStr = rangeStart.toISOString().slice(0, 10);
+  const endStr = rangeEnd.toISOString().slice(0, 10);
+
+  const beginningRaw = String(formData.get("beginningBalance") ?? "").trim();
+  const endingRaw = String(formData.get("endingBalance") ?? "").trim();
+  const beginningBalance = beginningRaw === "" ? null : Number(beginningRaw);
+  const endingBalance = endingRaw === "" ? null : Number(endingRaw);
+
+  const environment = await getQboEnvironment();
+  const cashOnHand = await prisma.accountMapping.findUnique({ where: { friendlyName: "Cash on hand" } });
+  if (!cashOnHand?.qboAccountId) {
+    await prisma.rowEvent.create({
+      data: { eventType: "reconciliation_error", eventMessage: `Cash on hand account not resolved — set it on the Mappings page first.` },
+    });
+    revalidatePath("/cash-sheet-sync/reconcile");
+    return;
+  }
+
+  let register;
+  try {
+    const ctx = await getContext(environment);
+    register = await fetchAccountRegister(ctx, cashOnHand.qboAccountId, startStr, endStr);
+  } catch (err) {
+    await prisma.rowEvent.create({
+      data: { eventType: "reconciliation_error", eventMessage: `QBO fetch failed: ${String(err)}` },
+    });
+    revalidatePath("/cash-sheet-sync/reconcile");
+    return;
+  }
+
+  // Every qboTransactionId the hub has EVER posted, globally — not scoped to
+  // this period — because a transaction dated inside the period is what
+  // matters, not when the hub happened to post it (§Phase 3's TxnDate fix
+  // means these now agree, but older data may not).
+  const known = await prisma.sheetRow.findMany({
+    where: { qboTransactionId: { not: null } },
+    select: { qboTransactionId: true },
+  });
+  const knownTxnIds = new Set<string>(known.map((k) => k.qboTransactionId!));
+
+  const { foreign } = matchRegisterToHub(register, knownTxnIds);
+
+  // "Missing": validated, classified, ready-to-post rows dated in the period
+  // that haven't posted yet — exactly the Overview's "Awaiting approval"
+  // tile (§Phase 1), scoped to this period. Deliberately NOT audit-only INV
+  // rows (they never post by design, §6B) and NOT Error/Unknown-purpose rows
+  // (their amount/direction can't be trusted) — those are surfaced
+  // separately, with no dollar amount assumed.
+  const missingRowsRaw = await prisma.sheetRow.findMany({
+    where: { date: { gte: rangeStart, lte: rangeEnd }, archived: false, status: RowStatus.ReadyToPost },
+    select: { id: true, tabName: true, rowNumberLastSeen: true, date: true, name: true, purpose: true, amtCollected: true, amountPaidOut: true, bankDeposit: true },
+  });
+  const missingRows = missingRowsRaw.map((r) => {
+    const paidOut = r.amountPaidOut ? Number(r.amountPaidOut) : 0;
+    const bankDep = r.bankDeposit ? Number(r.bankDeposit) : 0;
+    const collected = r.amtCollected ? Number(r.amtCollected) : 0;
+    // amount_paid_out and bank_deposit both leave Cash on hand; amt_collected
+    // (non-audit — an audit-only row never reaches ReadyToPost, §6B) adds to it.
+    const direction: "in" | "out" = collected > 0 ? "in" : "out";
+    const amount = collected > 0 ? collected : paidOut > 0 ? paidOut : bankDep;
+    return { id: r.id, tabName: r.tabName, rowNumberLastSeen: r.rowNumberLastSeen, date: r.date, name: r.name, purpose: r.purpose, direction, amount };
+  });
+
+  const blockedRows = await prisma.sheetRow.findMany({
+    where: {
+      date: { gte: rangeStart, lte: rangeEnd },
+      archived: false,
+      status: { in: [RowStatus.Error, RowStatus.UnknownPurpose, RowStatus.MissingAccountMapping] },
+    },
+    select: { id: true, tabName: true, rowNumberLastSeen: true, date: true, name: true, purpose: true, status: true, statusReason: true },
+  });
+
+  const summary = summarizeReconciliation(register, foreign, missingRows, beginningBalance, endingBalance);
+  const explained = fullyExplained(summary);
+
+  await prisma.rowEvent.create({
+    data: {
+      eventType: "reconciliation_check",
+      eventMessage:
+        `Checked ${startStr} → ${endStr}: ${register.length} register txns, ${foreign.length} foreign, ` +
+        `${missingRows.length} missing, ${blockedRows.length} blocked` +
+        (summary.residual !== null ? ` · residual ${summary.residual.toFixed(2)} (${explained ? "fully explained" : "NOT fully explained"})` : ""),
+      diffJson: {
+        range: rangePreset ?? "custom",
+        startStr,
+        endStr,
+        beginningBalance,
+        endingBalance,
+        register,
+        foreign,
+        missingRows,
+        blockedRows,
+        summary,
+        explained,
+      } as unknown as object,
+    },
+  });
+  revalidatePath("/cash-sheet-sync/reconcile");
+}
