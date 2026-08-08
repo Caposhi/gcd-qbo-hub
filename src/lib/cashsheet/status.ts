@@ -26,6 +26,17 @@ export const RowStatus = {
   ChangedAfterPosting: "Changed After Posting",
   RemovedFromSheetAfterPosting: "Removed From Sheet After Posting",
   Skipped: "Skipped",
+  /**
+   * A never-posted, not-yet-UUID'd row whose exact content no longer appears
+   * anywhere in a full tab scan — almost always because the sheet was edited
+   * (a date/amount/name correction) before this row captured a stable
+   * GCD_QBO_Row_ID, which left the old content behind as an orphan under its
+   * old fingerprint-keyed identity (see uuid.ts, engine.ts §4). Auto-applied
+   * and auto-archived by the sync engine — there is nothing to do with a
+   * Superseded row, which is the point: it stops looking identical to a real
+   * pending row in the Queue (§10, the whole reason this status exists).
+   */
+  Superseded: "Superseded",
 } as const;
 
 export type RowStatus = (typeof RowStatus)[keyof typeof RowStatus];

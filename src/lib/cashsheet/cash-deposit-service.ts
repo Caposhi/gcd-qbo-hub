@@ -44,6 +44,10 @@ export async function findCashDepositCandidates() {
       // qboTransactionType is NULL on undeposited rows — would evaluate to
       // NULL and silently drop every candidate (SQL 3-valued logic).
       status: { notIn: [RowStatus.DepositCreated, RowStatus.PossibleDuplicate] },
+      // Archived rows (auto-Superseded, or manually archived — e.g. an old
+      // "not found" row a human has declared will never resolve) are inert
+      // everywhere, not just the Queue.
+      archived: false,
     },
     orderBy: [{ date: "asc" }, { rowNumberLastSeen: "asc" }],
   });

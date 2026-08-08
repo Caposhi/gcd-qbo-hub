@@ -25,6 +25,11 @@ export type Permission =
   | "run_dry_run"
   | "run_sandbox_sync"
   | "approve_posting"
+  // Archive a never-posted row (a stale/superseded row, or a deposit-match
+  // candidate that will never resolve) out of the active Queue/Deposits view.
+  // Never permitted on a row that has a qboTransactionId — archiving only
+  // hides a row from default views, it never touches QBO or deletes history.
+  | "archive_row"
   | "edit_mappings"
   | "change_rollout_stage"
   | "toggle_live_mode"
@@ -61,6 +66,7 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "run_dry_run",
     "run_sandbox_sync",
     "approve_posting",
+    "archive_row",
     "edit_mappings",
     "change_rollout_stage",
     "toggle_live_mode",

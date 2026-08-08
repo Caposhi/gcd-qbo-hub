@@ -180,6 +180,49 @@ export async function advanceStageAction(next: RolloutStage) {
   revalidatePath("/cash-sheet-sync");
 }
 
+/**
+ * Manually archive a never-posted row (§10 hygiene) — the generic escape
+ * hatch for rows the automatic Superseded detection doesn't catch (e.g. a
+ * deposit-match candidate from months ago that will never resolve, or a
+ * stray miskeyed row). Owner-only. Never permitted on a row that already has
+ * a qboTransactionId: archiving only hides a row from default views, it must
+ * never be usable to make a REAL posting disappear from the audit trail.
+ */
+export async function archiveRowAction(rowId: string, formData: FormData) {
+  const user = await requirePermission("archive_row");
+  const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
+  if (!row) throw new Error("Row not found");
+  if (row.qboTransactionId) {
+    throw new Error("Cannot archive a row that already has a QBO transaction — archiving never hides posted history.");
+  }
+  const reason = String(formData.get("reason") ?? "").trim() || "No reason given";
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: { archived: true, archivedAt: new Date(), archivedByEmail: user.email, archivedReason: reason },
+  });
+  await prisma.rowEvent.create({
+    data: { sheetRowId: rowId, eventType: "archived", eventMessage: `Archived by ${user.email}: ${reason}` },
+  });
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+  revalidatePath("/cash-sheet-sync/queue");
+  revalidatePath("/cash-sheet-sync/deposits");
+}
+
+/** Undo a manual or automatic archive — brings the row back into default views. */
+export async function unarchiveRowAction(rowId: string) {
+  const user = await requirePermission("archive_row");
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: { archived: false, archivedAt: null, archivedByEmail: null, archivedReason: null },
+  });
+  await prisma.rowEvent.create({
+    data: { sheetRowId: rowId, eventType: "unarchived", eventMessage: `Unarchived by ${user.email}` },
+  });
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+  revalidatePath("/cash-sheet-sync/queue");
+  revalidatePath("/cash-sheet-sync/deposits");
+}
+
 export async function recheckQboMatchAction(rowId: string) {
   await requirePermission("recheck_qbo_match");
   const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
