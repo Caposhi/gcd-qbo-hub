@@ -22,8 +22,8 @@ export interface SendOutcome {
 export async function sendEmail(msg: EmailMessage): Promise<SendOutcome> {
   const apiKey = process.env.SENDGRID_API_KEY;
   const from = process.env.ALERT_FROM_EMAIL;
-  if (!apiKey || !from) {
-    return { ok: false, error: "SENDGRID_API_KEY / ALERT_FROM_EMAIL not configured" };
+  if (!apiKey || !from || !msg.to) {
+    return { ok: false, error: "SendGrid sender, recipient, or API key not configured" };
   }
 
   try {
@@ -62,8 +62,8 @@ export async function sendEmail(msg: EmailMessage): Promise<SendOutcome> {
 }
 
 export const ALERT_RECIPIENTS = {
-  errorSummary: () => process.env.ALERT_SUMMARY_RECIPIENT || "bills@germancardepot.com",
-  critical: () => process.env.ALERT_CRITICAL_RECIPIENT || "michaelc@germancardepot.com",
+  errorSummary: () => process.env.ALERT_SUMMARY_RECIPIENT || "",
+  critical: () => process.env.ALERT_CRITICAL_RECIPIENT || "",
 };
 
 function escapeHtml(s: string): string {

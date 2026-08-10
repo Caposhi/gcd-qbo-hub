@@ -19,8 +19,8 @@ export const CONFIG_KEYS = {
 export const DEFAULT_ROLLOUT_STAGE: RolloutStage = "dry_run";
 export const DEFAULT_QBO_ENVIRONMENT = "sandbox";
 
-/** The GCD cash-sheet workbook (§3). */
-export const DEFAULT_SPREADSHEET_ID = "1NGz6sOiJtKOOBZYpM5_0ODZxgHkSQRWYZQqufpotTWA";
+/** No production workbook fallback: configure the DB key or GOOGLE_SHEET_ID. */
+export const DEFAULT_SPREADSHEET_ID = "";
 
 /** Monthly tabs by name only (§3). Template is skipped for posting. */
 export const MONTH_TABS = [

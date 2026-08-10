@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This is a superseded implementation progress log retained for provenance. It may contain stale phases, costs, routes, and verification claims. Use the root README and current runbooks instead.
+
 # GCD Hub — Build Progress
 
 Running log of what shipped, phase by phase. See `docs/HUB_HANDOFF.md` for the

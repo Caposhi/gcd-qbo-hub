@@ -1,285 +1,135 @@
 # GCD QBO Hub
 
-German Car Depot's **QuickBooks Online hub** — a modular, authenticated dashboard
-for QBO automations, reporting, and portals. It is built as a multi-module hub
-from day one: the first module is **Cash Sheet Sync**, with **Financial
-Projections**, an **AI Report Assistant**, and a **Coworker Portal** ("Ask My
-Client") planned to slot in under the same shell later.
+GCD QBO Hub is the internal finance and operations dashboard for German Car Depot. It combines a production Cash Sheet Sync workflow with authenticated reporting, AI, coworker, deposit, check-reception, and Tekmetric modules. The repository root is the only active application tree.
 
-Business entity: **Alan Gelfand Inc DBA German Car Depot**.
+**Current status (verified 2026-08-10):** Cash Sheet Sync is registered as `live`; the other six registered modules are marked `prototype` in source. “Prototype” does not mean harmless: Deposit Reconciliation and Check Reception can create real QuickBooks Online transactions when an authorized operator uses them with a live QBO connection. The checked-in Render blueprint describes production infrastructure, but this audit did not access Render, Intuit, Google, SendGrid, Anthropic, Tekmetric, or the transcript service to verify their current state.
 
-> ⚠️ This is a real accounting automation and audit system. It defaults to the
-> safest possible behavior (dry-run, sandbox) and **never** posts to live
-> QuickBooks until an owner deliberately advances every rollout stage. QBO
-> transactions are **never** auto-edited or auto-deleted.
+## If you have to take over today
 
----
+1. Check `/api/health` for process liveness, then sign in as an owner and inspect `/system-health` for persisted QBO, sync, Tekmetric, transcript, AI-budget, and alert state. Neither view performs live upstream checks.
+2. Inspect the current rollout stage and QBO environment under Cash Sheet Sync settings before running any sync or creating deposits/checks.
+3. Check the latest `SyncRun`, unresolved `Alert` records, failed/pending rows, QBO credential expiry, and the two Render cron jobs.
+4. Confirm `MAGIC_LINK_DEBUG` is false and protect `/console/state` and `/console/stream` with a nonempty `CONSOLE_TOKEN`.
+5. Confirm the shared `CRON_SECRET` and Arcade bridge secret match their callers. Never paste their values into an issue, log, or document.
+6. Before changing schema or deployment state, take a database backup and verify where Render backups are retained. Restore has not been exercised from this repository.
+7. Read [Operations](docs/OPERATIONS.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), and [Status](docs/STATUS.md) before intervening.
 
-## Stack
+## Active repository map
 
-- **Next.js (App Router) + TypeScript** — shared shell, module routes, API routes.
-- **Postgres + Prisma** — durable audit store (module tables namespaced `css_`).
-- **Render** — one web service + one Cron Job + a managed Postgres (see
-  `render.yaml`). No Redis/BullMQ — a daily sync doesn't need a job queue.
-- **Google Sheets API** (service account) — sheet ingestion.
-- **QBO Accounting API** (OAuth2) — direct expense/deposit/transfer creation.
-- **SendGrid** — email alerts (the same proven pattern as `gcd-webhook`, not Gmail).
-- **NextAuth / Auth.js** — email magic-link login restricted to `@germancardepot.com`.
-
-## Architecture at a glance
-
-```
-src/
-├── app/                       # Next.js App Router
-│   ├── layout.tsx             # shared shell (nav from the module registry, auth)
-│   ├── page.tsx               # hub home — module grid
-│   ├── auth/                  # sign-in / verify / error pages
-│   ├── api/
-│   │   ├── auth/[...nextauth]  # NextAuth
-│   │   ├── cron/sync           # protected daily sync (Bearer CRON_SECRET)
-│   │   ├── qbo/connect|callback# QBO OAuth2 flow
-│   │   └── health
-│   ├── console/               # /console/manifest|state|stream (gcd-arcade contract)
-│   └── cash-sheet-sync/       # THE first module (overview, queue, row detail, mappings, settings)
-├── lib/
-│   ├── modules/registry.ts    # module registry (nav + route grouping + table prefixes)
-│   ├── auth/                  # NextAuth options, roles, session gating
-│   ├── console/contract.ts    # /console/* manifest + state + SSE bus
-│   ├── crypto.ts              # AES-256-GCM token encryption at rest
-│   ├── db.ts                  # Prisma singleton
-│   ├── config-store.ts        # DB config with audited change history
-│   ├── google/sheets.ts       # service-account Sheets client (list tabs, read ranges, UUID metadata)
-│   ├── qbo/                   # OAuth2 client + Accounting API + posting builders
-│   ├── email/sendgrid.ts      # SendGrid sender
-│   └── cashsheet/             # PURE domain logic (unit-tested, §20) + the sync engine
-└── prisma/schema.prisma       # users, config, qbo_credentials + css_* module tables
-```
-
-The **pure domain logic** in `src/lib/cashsheet/*` (parsing, mapping, hashing,
-duplicate/change/removal detection, rollout gating, role gating) has no DB or
-network dependencies and is fully unit-tested with Vitest. The **engine**
-(`engine.ts`) orchestrates a run using those pure rules plus the service clients.
-
-## Modules
-
-| Module | Status | What it does |
+| Path | Classification | Purpose |
 |---|---|---|
-| **Cash Sheet Sync** | live | Posts the employee cash sheet to QBO with a full audit trail (the bulk of this repo). |
-| **Financial Projections** | prototype | Projects cash-flow forward from an assumptions set (opening balance, monthly in/out, growth, one-offs) via a pure, unit-tested engine. Scenarios are admin-editable; `owner_admin` creates them, everyone with `view_projections` can view. |
-| **AI Report Assistant** | prototype | A `claude-opus-4-8` assistant (adaptive thinking) that answers questions about the books through **read-only** tools over the hub DB — it can't post, edit, or delete anything. Needs `ANTHROPIC_API_KEY`; shows "not configured" without it. |
-| **Coworker Portal** | prototype | "Ask My Client" — owners/reviewers raise a question about a transaction; a coworker answers it. This activates the `coworker` role (view + answer only). |
+| `src/app/` | Active | Next.js App Router pages, server actions, and route handlers |
+| `src/lib/` | Active | Auth, QBO, Sheets, sync, AI, reporting, integration, and domain services |
+| `prisma/` | Active, authoritative schema | PostgreSQL schema, migrations, and seed data |
+| `tests/` | Active | Unit and integration-style tests run by Vitest |
+| `scripts/` | Active operator tooling | Backfills and diagnostics; some call external systems |
+| `render.yaml` | Active deployment declaration | Render web, two cron jobs, and PostgreSQL 16 |
+| `docs/` | Current runbooks | Source-backed operating and subsystem documentation |
+| `docs/archive/` | Historical only | Superseded progress and handoff records; never operating instructions |
 
-Each module is a self-contained section under the shared shell, registered in
-`src/lib/modules/registry.ts`, gated by a role permission, and namespaced with
-its own DB table prefix (`css_`, `proj_`, `ai_`, `cwp_`) so nothing collides.
-The prototypes are behind the same auth as everything else.
+There is no second app tree, worker process, Redis instance, or durable queue in this repository. Next.js serves the UI and APIs in one process. Console events use a process-local in-memory ring buffer and disappear on restart.
 
-## Why customer invoice cash is audit-only (read this)
+## Architecture and data flow
 
-`Amt Collected` rows with purpose **INV** are **audit-only by default** — the
-automation **never** creates QBO income or a deposit for them. Customer invoice
-cash is already recorded through Tekmetric/BackOffice and matched into QBO;
-posting it again would **double-count revenue**. Instead the hub tries to find
-and link the existing QBO record; if none is found it flags **"QBO Match Not
-Found / Audit Only"** for review.
-
-## Source-of-truth philosophy
-
-QuickBooks is the accounting source of truth **once a transaction is posted**.
-The Google Sheet is an employee intake worksheet. This dashboard is the control
-and audit layer. After a row posts:
-
-- If the sheet row is **edited**, it's flagged **Changed After Posting** (with a
-  field-level diff) and a critical email goes to `michaelc@germancardepot.com`.
-  QBO is not touched.
-- If the posted row **disappears** from the sheet, it's flagged **Removed From
-  Sheet After Posting** (a distinct signal — deleting instead of editing is a
-  plausible way to hide a discrepancy) and the same alert fires. QBO is not
-  touched.
-- The DB preserves the original posted snapshot, current snapshot, diff,
-  timestamps, QBO transaction id, and full event history — even after the row is
-  edited or removed.
-
----
-
-## Setup
-
-### 1. Prerequisites
-
-- Node 20+ and a Postgres database.
-- A Google Cloud **service account** with the Sheets API enabled.
-- The real **QuickBooks developer app** for this business (sandbox keys first).
-- A **SendGrid** API key and a verified sender.
-
-### 2. Install & configure
-
-```bash
-npm install
-cp .env.example .env.local     # fill in the values (see .env.example comments)
-npx prisma migrate dev         # create the schema
-npm run db:seed                # seed purpose/account mappings + safe defaults
-npm run dev                    # http://localhost:3000
+```mermaid
+flowchart LR
+  U["Authenticated staff"] --> W["Next.js web service"]
+  A["gcd-arcade server/BFF"] -->|"shared bearer secret"| W
+  C["Render cron jobs"] -->|"CRON_SECRET"| W
+  W --> P[("PostgreSQL 16")]
+  W --> G["Google cash sheet"]
+  W --> Q["QuickBooks Online"]
+  W --> T["Tekmetric API"]
+  W --> X["Transcript service"]
+  W --> H["Anthropic API"]
+  W --> S["SendGrid"]
+  W -.-> E["Process-local console event buffer"]
 ```
 
-Generate the required secrets:
+- Google Sheet rows enter Cash Sheet Sync, are normalized and persisted, matched against QBO, reviewed, then conditionally posted. Persisted rows, events, sync runs, mappings, transactions, and alerts form the audit trail.
+- QBO is both a read source and a write destination. Cash Sheet Sync can create expenses/transfers; Deposit Reconciliation can create deposits; Check Reception can create checks. Existing QBO objects are not automatically edited or deleted by these workflows.
+- QBO reports, Tekmetric snapshots, transcript aggregates, scenarios, and AI outputs feed projections and assistant views. AI requests can incur cost and persist conversations/reports.
+- Coworker Portal imports a configured QBO account into questions, stores answers, and can send notifications.
+- Arcade calls the `/api/external/*` surface through its own server-side bridge. Those requests use one shared service identity, not the end user's hub role.
+
+See [Architecture](docs/ARCHITECTURE.md) and [Data model](docs/DATA_MODEL.md) for ownership, invariants, and detailed flows.
+
+## Runtime components and schedules
+
+| Component | Entry point | Trigger |
+|---|---|---|
+| Web UI and APIs | `npm run start` / `src/app/` | HTTP |
+| Daily cash-sheet cron | `POST /api/cron/sync` | Render schedule `0 23 * * *` |
+| Monthly AI council | `POST /api/cron/ai-council` | Render schedule `0 6 1 * *` |
+| PostgreSQL | Prisma client and migrations | Web process and deploy migration command |
+
+Render schedules are UTC. The daily job therefore runs at 19:00 Eastern during daylight time and 18:00 Eastern during standard time. It runs every day, including weekends. The route derives mode and rollout stage from the database; do not infer live-write safety from the cron command.
+
+## Application and HTTP surface
+
+Registered modules are Cash Sheet Sync (`live`), Financial Projections, AI Report Assistant, Coworker Portal, Deposit Reconciliation, Check Reception, and Tekmetric Operations (all `prototype`). `/system-health` is an owner-only read of persisted state. A financial-report library and database snapshot/capability models also exist, but there is no registered Financial Reports module or `/financial-reports` page; treat that work as incomplete.
+
+Public or separately authenticated routes:
+
+- `/api/health` is public liveness only.
+- `/api/auth/*`, `/auth/*`, and legal pages support login and policy display.
+- `/api/qbo/connect` and `/api/qbo/callback` implement the authorized OAuth flow.
+- `/api/cron/*` requires `Authorization: Bearer <CRON_SECRET>` and fails closed when unset.
+- `/api/external/*` requires `ARCADE_BRIDGE_SECRET` and fails closed when unset. Its assistant POST can incur AI cost and persist data; reporting POST forces a live QBO report refresh.
+- `/console/manifest` is public with permissive CORS. `/console/state` and `/console/stream` are protected only when `CONSOLE_TOKEN` is nonempty; the query-string `key` fallback can leak via request logs. Console telemetry is operationally sensitive.
+
+## Authentication and trust boundaries
+
+NextAuth email magic links use SendGrid. Allowed domains come from `ALLOWED_EMAIL_DOMAINS`; the exact `BOOTSTRAP_OWNER_EMAIL` is provisioned as `owner_admin` on first sign-in. Roles are `owner_admin`, `reviewer`, and `coworker`, with server-side permission checks defined in `src/lib/auth/roles.ts`. QBO OAuth credentials are encrypted in PostgreSQL with AES-256-GCM using `APP_ENCRYPTION_KEY`.
+
+The cron, Arcade, and console shared secrets are separate machine trust boundaries and do not carry a human user's role. `MAGIC_LINK_DEBUG=true` prints a one-time login credential to logs and must be a short-lived recovery measure only.
+
+## Local development
+
+Requires Node 20 or newer, npm, and PostgreSQL.
 
 ```bash
-openssl rand -hex 32   # APP_ENCRYPTION_KEY (encrypts QBO tokens at rest)
-openssl rand -hex 32   # NEXTAUTH_SECRET
-openssl rand -hex 32   # CRON_SECRET
+npm ci
+cp .env.example .env.local
+npm run prisma:generate
+npm run prisma:migrate
+npm run dev
 ```
 
-### 3. Connect Google Sheets
+Use sandbox or fake integration accounts. Missing credentials should be preferred over production credentials during local setup. Do not run backfill, diagnostics, seed, migration, or posting commands against an unidentified database.
 
-1. Create a service account, download its JSON key.
-2. Put the key in `GOOGLE_SERVICE_ACCOUNT_JSON` (single-line) or
-   `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (`base64 -w0 key.json`).
-3. **Share the workbook** (`26 DC`) with the service account's email
-   (`client_email`) — at least Viewer.
-4. `GOOGLE_SHEET_ID` is already set to the GCD workbook
-   (`1NGz6sOiJtKOOBZYpM5_0ODZxgHkSQRWYZQqufpotTWA`).
-
-The ingestion service auto-detects each monthly tab's header row by matching the
-expected column names (`Date`, `Rcv by or paid to`, `Name`, `Purpose`, `INV#`,
-`Back up`, `Approved By`, `Amt Collected`, `Amount Paid Out`, `Bank Deposit`,
-`Cash Balance In Envelope`) — it never assumes a fixed row number.
-
-### 4. Set up the QBO app & OAuth redirect URI (sequence matters)
-
-Because the redirect URI must be an **exact match** on a stable HTTPS URL:
-
-1. **Deploy the hub first** (even as a skeleton) so you have a stable URL, e.g.
-   `https://gcd-qbo-hub.onrender.com`.
-2. In the **Intuit developer dashboard**, add the redirect URI
-   `https://gcd-qbo-hub.onrender.com/api/qbo/callback` for the **sandbox** keys
-   (and later the same path for production keys).
-3. Set `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENV=sandbox`.
-4. Sign in as the owner, go to **Cash Sheet Sync → Settings → Connect QBO**, and
-   complete consent. Tokens are stored **encrypted** in `qbo_credentials`;
-   refresh happens automatically before expiry.
-
-If QBO isn't connected, the dashboard shows **"setup required"** and every sync
-runs in validation/dry-run only — it never silently attempts to post.
-
-### 5. Resolve account mappings
-
-After connecting QBO, open **Mappings** and paste the real QBO **account IDs**
-for each slot (Cash on hand, Chase Checking 9680, the COGS/expense/income
-accounts, Employee Loans Receivable, …). Until an account is resolved, rows that
-need it are flagged **Missing Account Mapping** rather than posted on a guessed
-name.
-
----
-
-## Running syncs & the rollout ladder
-
-The system **never** defaults to unattended live posting. Advance one stage at a
-time from **Settings** (owner_admin only; each change is audited):
-
-1. **`dry_run`** — never touches QBO; shows exactly what would happen.
-2. **`sandbox_manual`** — valid rows queue; an admin approves each before it
-   posts to the QBO **sandbox**.
-3. **`sandbox_auto`** — valid/mapped/non-duplicate rows post automatically to
-   sandbox on each sync.
-4. **`live_manual`** — same as stage 2 but against **live** QuickBooks.
-5. **`live_auto`** — fully unattended live posting. Last rung, owner-only.
-
-Per-purpose override: any mapping can set **requires manual approval** (e.g.
-Employee Loans stay manual even after Bank Deposits auto-post).
-
-The stage lives in the DB `config` table with a change history — flips are
-auditable, not silent prod env edits. The code enforces one-step-at-a-time
-advancement, so "jump straight to live_auto" is impossible.
-
-### Manual actions
-
-- **Run dry-run now** / **Run sync now** (overview).
-- **Approve** a queued row (owner_admin) — it posts on the next gated sync.
-- **Mark reviewed** (reviewer or owner_admin).
-- **Recheck QBO match** for audit-only invoice rows.
-- CLI: `npm run sync:dry-run` and `npm run sync:backfill` (prior-date preview).
-
-### Scheduling
-
-A Render **Cron Job** calls `POST /api/cron/sync` daily at end of business day
-(default 19:00 America/New_York; the blueprint schedules `0 23 * * *` UTC) with
-`Authorization: Bearer $CRON_SECRET`. The route reads mode/stage from config, so
-the cron command never needs to know the stage. It runs every day including
-weekends and keeps processing rows even if one errors.
-
----
-
-## Auth & roles
-
-Login is **required** (email magic-link, `@germancardepot.com` only). Roles:
-
-| Role | Can |
-|---|---|
-| `owner_admin` | everything — approve postings, edit mappings, advance stage, toggle live, connect QBO, manage users |
-| `reviewer` | view dashboards, run dry-runs, mark warnings reviewed. **Cannot** approve postings or change mappings/stage |
-| `coworker` | reserved stub for the future "Ask My Client" portal — no cash-sheet powers yet |
-
-The first sign-in from `BOOTSTRAP_OWNER_EMAIL` is provisioned as `owner_admin`;
-everyone else defaults to `reviewer`.
-
-## Duplicate / change / removal detection (how it works)
-
-- **Row identity** is a hidden stable UUID (`GCD_QBO_Row_ID`) in the sheet's
-  hidden control column / developer metadata — never the visible row number, so
-  moving a row doesn't change its identity. Before a hidden UUID exists, rows are
-  keyed by a content fingerprint so the DB stays idempotent.
-- **Duplicate row ID** — the same hidden UUID on two+ rows flags all of them.
-- **Possible duplicate** — a new row whose fingerprint matches an already-posted
-  row (e.g. copied without the hidden id) is flagged, not posted.
-- **Already posted** — a row that already carries a QBO transaction id is skipped
-  (also enforced by a DB unique constraint).
-- **Changed after posting** — the stored original hash vs the current hash.
-- **Removed after posting** — a posted UUID absent from a full tab scan (a moved
-  row is still found and is *not* flagged).
-
-## Email alerts
-
-- **Daily summary** → `bills@germancardepot.com` (rows scanned/posted/skipped,
-  errors, possible duplicates, changed/removed-after-posting, audit-only, QBO
-  match failures, dashboard link).
-- **Changed/Removed after posting** critical alerts → `michaelc@germancardepot.com`.
-
-## The `/console/*` contract (gcd-arcade)
-
-The hub exposes `GET /console/manifest`, `GET /console/state`, and
-`GET /console/stream` (SSE) at the root, advertising one hub tile with per-module
-sub-items. It uses the same optional shared-secret gate (`CONSOLE_TOKEN`) as
-`gcd-webhook`. gcd-arcade's BFF reads these and renders a grouping tile. See
-`gcd-arcade/integrations/gcd-qbo-hub/` for the mirror + wiring notes.
+Validation for a normal change:
 
 ```bash
-curl -s $PUBLIC_APP_URL/console/manifest | jq .
-curl -s $PUBLIC_APP_URL/console/state    | jq .   # add -H "x-console-token: <t>" if gated
-```
-
-## Testing
-
-```bash
-npm test        # Vitest — the §20 domain-rule suite (68 tests)
+npm test
 npm run typecheck
-npm run build   # Prisma generate + Next.js build
+npm run lint
+npm run build
+npm audit --omit=dev
+git diff --check
 ```
 
-See [`TESTING.md`](./TESTING.md) for the full manual checklist.
+See [Testing](TESTING.md) for test boundaries and [Contributing](CONTRIBUTING.md) for the definition of done.
 
-## Deploy (Render)
+## Deploy, migrate, recover, and roll back
 
-`render.yaml` is a Blueprint defining the web service, the daily Cron Job, and a
-managed Postgres. **New → Blueprint → connect `caposhi/gcd-qbo-hub`**, then set
-the `sync: false` secrets in the dashboard. The build runs `prisma migrate deploy`
-automatically; run `npm run db:seed` once against the database to load mappings.
+`render.yaml` declares one Node web service, two Node cron services, and PostgreSQL 16. The web build currently runs `npm install`, build, and `prisma migrate deploy` in sequence. Review pending migrations and back up first: a failed migration can leave a release partially applied. Application rollback is a Render release/commit rollback; database rollback is forward repair or verified restore, because Prisma migrations have no automatic down path.
 
-## Critical warnings
+No checked-in backup job, restore drill, infrastructure state, or CI workflow was found. The actual Render service settings, custom domains, backup retention, deploy hooks, and manual dashboard variables remain external state. Procedures and limitations are in [Operations](docs/OPERATIONS.md).
 
-- Never double-count revenue — INV `Amt Collected` rows are audit-only.
-- Never edit or delete QBO transactions after posting, automatically, ever.
-- Never rely on row number alone for identity.
-- Never fabricate editor identity beyond what Google's API provides.
-- Never post live until sandbox testing is complete and each stage is advanced.
-- Never substitute an interactive QBO/Gmail/Drive connector for these unattended
-  production integrations.
+## Known risks and immediate follow-ups
+
+- Console state/stream fail open when `CONSOLE_TOKEN` is unset; the manifest is always public.
+- Deposit and check modules are labelled prototypes but contain real QBO create actions.
+- Arcade's shared bridge identity bypasses per-human hub authorization and can trigger cost/persistence.
+- The daily UTC schedule shifts one hour in local wall time across DST.
+- Health checks are persisted-state/liveness checks, not end-to-end upstream probes.
+- No CI, automated backup, restore drill, or documented external ownership register is checked in.
+- Production infrastructure and dashboard configuration were not verified during this repository-only audit.
+- Dependency-audit and full validation results are tracked in [Status](docs/STATUS.md).
+
+## Documentation source of truth
+
+Executable source, tests, migrations, and checked-in configuration define behavior. This README is the canonical zero-context handoff. Current runbooks are [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), [Integrations](docs/INTEGRATIONS.md), [Data model](docs/DATA_MODEL.md), [Environment](docs/ENVIRONMENT.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), and [Status](docs/STATUS.md). Subsystem notes remain under `docs/`; historical records are indexed in [the archive](docs/archive/README.md).
+
+**Documentation is part of every change.** A change is incomplete until all affected documentation, environment examples, commands, diagrams, operational notes, and external-setup descriptions are updated and verified in the same atomic change. The binding rule is in [AGENTS.md](AGENTS.md).

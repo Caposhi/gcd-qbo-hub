@@ -35,13 +35,17 @@ services:
         sync: false
       - key: CRON_SECRET
         sync: false
+      - key: ARCADE_BRIDGE_SECRET
+        sync: false
       - key: BOOTSTRAP_OWNER_EMAIL
-        value: michaelc@germancardepot.com
+        sync: false
       - key: ALLOWED_EMAIL_DOMAINS
         value: germancardepot.com
+      - key: LEGAL_CONTACT_EMAIL
+        sync: false
       # --- Google Sheets ---
       - key: GOOGLE_SHEET_ID
-        value: 1NGz6sOiJtKOOBZYpM5_0ODZxgHkSQRWYZQqufpotTWA
+        sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
         sync: false
       # --- QBO ---
@@ -57,8 +61,6 @@ services:
         sync: false
       - key: QBO_REDIRECT_URI
         value: https://gcd-qbo-hub.onrender.com/api/qbo/callback
-      - key: QBO_REALM_ID
-        sync: false
       # --- AI Report Assistant (prototype) + AI C-suite (Phase 3) ---
       - key: ANTHROPIC_API_KEY
         sync: false
@@ -81,11 +83,11 @@ services:
       - key: SENDGRID_API_KEY
         sync: false
       - key: ALERT_FROM_EMAIL
-        value: alerts@germancardepot.com
+        sync: false
       - key: ALERT_SUMMARY_RECIPIENT
-        value: bills@germancardepot.com
+        sync: false
       - key: ALERT_CRITICAL_RECIPIENT
-        value: michaelc@germancardepot.com
+        sync: false
       - key: SYNC_TZ
         value: America/New_York
 

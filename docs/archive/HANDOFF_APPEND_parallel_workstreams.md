@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This parallel-work note is retained only as implementation history and is not an operating instruction.
+
 # Append this to `docs/HUB_HANDOFF.md`
 
 > Paste the section below at the end of the existing `docs/HUB_HANDOFF.md` and

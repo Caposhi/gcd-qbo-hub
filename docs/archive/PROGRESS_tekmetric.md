@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This is a superseded Tekmetric workstream snapshot retained for provenance. Verify all behavior against current source and runbooks.
+
 # Tekmetric Integration — Progress (Build Phase 4 groundwork, Session B)
 
 Read-only Tekmetric shop-management integration for the GCD QBO Hub. This is

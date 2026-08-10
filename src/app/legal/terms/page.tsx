@@ -11,6 +11,7 @@ export const metadata = {
  * internal-use tool operated by German Car Depot for its own QuickBooks company.
  */
 export default function TermsPage() {
+  const legalContact = process.env.LEGAL_CONTACT_EMAIL;
   return (
     <article className="card" style={{ maxWidth: 760, margin: "2rem auto", lineHeight: 1.6 }}>
       <h1>Terms of Use &amp; End-User License Agreement</h1>
@@ -62,7 +63,13 @@ export default function TermsPage() {
 
       <h2>7. Contact</h2>
       <p>
-        Questions: <a href="mailto:michaelc@germancardepot.com">michaelc@germancardepot.com</a>.
+        Questions:{" "}
+        {legalContact ? (
+          <a href={`mailto:${legalContact}`}>{legalContact}</a>
+        ) : (
+          "use German Car Depot's verified business contact channel"
+        )}
+        .
       </p>
     </article>
   );

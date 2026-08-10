@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This handoff has been replaced by the root README and current runbooks. Do not use its setup, status, cost, or operational claims without re-verifying source and external state.
+
 # GCD QBO Hub — Handoff & Projections Build Plan
 
 > Drop this in `docs/HUB_HANDOFF.md`. It is the map a fresh Claude Code session

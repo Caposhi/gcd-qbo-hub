@@ -10,6 +10,7 @@ export const metadata = {
  * production-app checklist requires a publicly reachable privacy-policy URL.
  */
 export default function PrivacyPage() {
+  const legalContact = process.env.LEGAL_CONTACT_EMAIL;
   return (
     <article className="card" style={{ maxWidth: 760, margin: "2rem auto", lineHeight: 1.6 }}>
       <h1>Privacy Policy</h1>
@@ -59,7 +60,11 @@ export default function PrivacyPage() {
 
       <h2>Contact</h2>
       <p>
-        <a href="mailto:michaelc@germancardepot.com">michaelc@germancardepot.com</a>
+        {legalContact ? (
+          <a href={`mailto:${legalContact}`}>{legalContact}</a>
+        ) : (
+          "Use German Car Depot's verified business contact channel."
+        )}
       </p>
     </article>
   );

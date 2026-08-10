@@ -1,4 +1,6 @@
-# Check Reception — build spec
+# Check Reception
+
+**Current source status:** registered as a prototype with implemented batch/check persistence, payee mapping, audit events, and an authorized QBO Check creation path. This document describes the current boundary; source and tests remain authoritative.
 
 Status: **prototype** (first rung shipped)
 Module id: `check-reception` · table prefix: `chk_` · base path: `/check-reception`
