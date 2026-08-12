@@ -116,6 +116,12 @@ a:hover { color:var(--text-link-hover); }
   border-bottom:1px solid var(--border-subtle); }
 .topbar .crumb { font-size:11.5px; color:var(--text-muted); }
 .topbar .title { font-family:var(--font-heading); font-size:20px; font-weight:700; color:var(--navy-blue); line-height:1.15; }
+/* Back to GCD Arcade — iOS-style tinted back link, top-left of every topbar. */
+.back-to-arcade { display:flex; align-items:center; gap:2px; flex:none; padding-right:16px; margin-right:2px;
+  border-right:1px solid var(--border-subtle); color:var(--royal-blue); text-decoration:none;
+  font-size:13px; font-weight:600; transition:opacity var(--dur-fast) var(--ease-standard); }
+.back-to-arcade:hover { color:var(--royal-blue); opacity:.7; }
+.back-to-arcade svg { width:18px; height:18px; flex:none; }
 .topbar-search { display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--border-default);
   border-radius:var(--radius-md); padding:7px 12px; width:230px; font-size:13px; color:var(--gray-400); }
 .env-pill { display:inline-flex; align-items:center; gap:7px; background:var(--success-bg); color:var(--success);

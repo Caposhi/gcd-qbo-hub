@@ -16,6 +16,23 @@ export interface EnvInfo {
   configured: boolean;
 }
 
+// GCD Arcade — the launcher hub every program links back to. Override via env
+// if Render ever assigns the arcade's static site a different host.
+const ARCADE_URL = process.env.NEXT_PUBLIC_ARCADE_URL || "https://gcd-arcade-web.onrender.com";
+
+/** Top-left "back to arcade" link — iOS-style tinted back button, so leaving
+ *  this program for another one is a single click, same as every other GCD app. */
+function BackToArcade() {
+  return (
+    <a href={ARCADE_URL} title="Back to GCD Arcade" className="back-to-arcade">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+      Arcade
+    </a>
+  );
+}
+
 function crumbFor(pathname: string): { group: string; title: string } {
   if (pathname === "/") return { group: "Workspace", title: "Home" };
   const mod = MODULES.find(
@@ -34,6 +51,7 @@ export function TopBar({ env }: { env: EnvInfo }) {
 
   return (
     <header className="topbar">
+      <BackToArcade />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="crumb">Hub / {group}</div>
         <div className="title">{title}</div>
