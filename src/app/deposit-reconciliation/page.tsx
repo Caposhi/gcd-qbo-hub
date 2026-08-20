@@ -57,6 +57,10 @@ export default async function DepositReconciliationPage() {
     where: { eventType: "create_batch" },
     orderBy: { createdAt: "desc" },
   });
+  const lastIngest = await prisma.depEvent.findFirst({
+    where: { eventType: "ingest_reconcile" },
+    orderBy: { createdAt: "desc" },
+  });
   const matchedCount = payouts.filter((p) => p.status === "matched" && !p.qboDepositId).length;
 
   // Flag likely duplicates (same processor + source ref) so the cleanup button
@@ -91,7 +95,9 @@ export default async function DepositReconciliationPage() {
           </div>
           <p className="card-subtitle" style={{ margin: 0 }}>
             Drop CSVs: the Chase <em>Paymentech</em> settlement, and both Tekmetric files (the <em>payouts</em> export
-            and the <em>Payments/charges</em> export). Re-dropping the same files does nothing (idempotent).
+            and the <em>Payments/charges</em> export). Safe to re-drop the same files anytime — e.g. after a parsing
+            fix — it always re-checks everything not yet posted against the files and current logic, and reports
+            exactly what changed. A payout already posted to QBO is never touched.
           </p>
           <input type="file" name="files" multiple accept=".csv,text/csv" />
           <div className="row-actions" style={{ margin: 0 }}>
@@ -100,6 +106,11 @@ export default async function DepositReconciliationPage() {
         </form>
       ) : (
         <p className="notice info">Ingesting files requires owner_admin.</p>
+      )}
+      {lastIngest && (
+        <p className="card-subtitle" style={{ marginTop: 8 }}>
+          {lastIngest.message} · {lastIngest.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
       )}
 
       <h2>Proposed deposits</h2>
