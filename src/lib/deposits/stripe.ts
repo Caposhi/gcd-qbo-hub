@@ -71,6 +71,14 @@ export function parseStripeCharges(text: string): StripeCharge[] {
   for (const row of parseCsv(text)) {
     const gross = parseCurrency(pick(row, "Amount"));
     const fee = parseCurrency(pick(row, "Fee")) ?? 0;
+    // A (partially) refunded charge settles into the bank for less than its
+    // gross amount — the export still shows the original gross, but only
+    // gross - fee - refund actually lands in a payout. Missing this doesn't
+    // just mis-total one payout: because reconstruction below is a strict
+    // FIFO exact-sum walk with no error recovery, one overstated charge
+    // breaks that payout AND cascades to break every payout after it for
+    // the rest of the file (see stripe.test.ts's "August cascade" case).
+    const refunded = parseCurrency(pick(row, "Amount Refunded")) ?? 0;
     const created = datePart(pick(row, "Created date (UTC)", "Created (UTC)", "Created date"));
     const status = pick(row, "Status").toLowerCase();
     if (gross === null || !created) continue;
@@ -80,7 +88,7 @@ export function parseStripeCharges(text: string): StripeCharge[] {
       createdDate: created,
       gross,
       fee,
-      net: (toCents(gross) - toCents(fee)) / 100,
+      net: (toCents(gross) - toCents(fee) - toCents(refunded)) / 100,
     });
   }
   out.sort((a, b) => a.createdDate.localeCompare(b.createdDate));
