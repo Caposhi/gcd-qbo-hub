@@ -641,14 +641,15 @@ type DepCreateOutcome = { status: "created" | "skipped" | "blocked" | "error"; m
  *   - Tekmetric: link gross payments AND each charge's fee journal entry
  *     (negative, matched by the payment's customer). Total = Σpay − Σfees = net.
  * Guards: matched + all located, fresh double-count scan, exact-sum checksum
- * (must equal payout net or nothing posts). `feeUsed` is shared across a batch
- * so a fee JE backs only one deposit.
+ * (must equal payout net or nothing posts). `feeUsed`/`refundUsed` are shared
+ * across a batch so a fee JE or refund backs only one deposit.
  */
 async function createOneDeposit(
   payout: Prisma.DepPayoutGetPayload<{ include: { lines: true } }>,
   dc: DepCreateContext,
   userEmail: string,
-  feeUsed: Set<string>
+  feeUsed: Set<string>,
+  refundUsed: Set<string> = new Set()
 ): Promise<DepCreateOutcome> {
   const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedPaymentIds } = await import(
     "@/lib/qbo/deposits"
@@ -691,6 +692,9 @@ async function createOneDeposit(
   const feeEnd = shiftDate(payout.settlementDate, 2);
 
   let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
+  let refunds:
+    | Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry"; lineId?: string; amount: number }>
+    | undefined;
   let plug: { accountId: string; amount: number; description: string } | undefined;
 
   if (payout.processor === "tekmetric") {
@@ -705,7 +709,29 @@ async function createOneDeposit(
     if (missing.length) return blockedP(`Fee journal entry not found for: ${missing.join(", ")} (searched ${feeStart}…${feeEnd}) — re-run Locate.`);
     journalEntries = linked.map((je) => ({ id: je.jeId, lineId: je.ufLineId, amount: -je.amount }));
     const sumFeeCents = linked.reduce((s, je) => s + Math.round(je.amount * 100), 0);
-    const totalCents = sumPayCents - sumFeeCents;
+
+    // A refunded charge means the bank got less than gross − fees, so the refund
+    // has to be swept into this same deposit. Only ever linked when it closes the
+    // remaining gap EXACTLY (see pickRefundsForGap).
+    let sumRefundCents = 0;
+    const gapCents = sumPayCents - sumFeeCents - netCents;
+    if (gapCents > 0) {
+      const { findUndepositedRefunds, pickRefundsForGap, refundKey } = await import("@/lib/qbo/refunds");
+      const candidates = await findUndepositedRefunds(dc.ctx, feeStart, feeEnd);
+      const pick = pickRefundsForGap(candidates, gapCents, refundUsed);
+      if (pick.exact && pick.refunds.length > 0) {
+        for (const r of pick.refunds) refundUsed.add(refundKey(r));
+        refunds = pick.refunds.map((r) => ({
+          id: r.txnId,
+          txnType: r.kind,
+          lineId: r.lineId,
+          amount: -r.amount,
+        }));
+        sumRefundCents = pick.refunds.reduce((s, r) => s + Math.round(r.amount * 100), 0);
+      }
+    }
+
+    const totalCents = sumPayCents - sumFeeCents - sumRefundCents;
     if (totalCents !== netCents) {
       // Diagnose WHY rather than just reporting the gap. The export gives each
       // charge's real processor fee, so we can separate the two very different
@@ -727,8 +753,10 @@ async function createOneDeposit(
         why =
           ` The export's own per-charge fees total ${f(expectedFeeCents)}, but this payout is ${f(
             grossToNetCents
-          )} below its gross — the extra ${f(refundCents)} is a REFUND, not a processor fee, so no fee journal entry can` +
-          ` account for it. A refunded charge has to be recorded in QBO as a refund before this deposit can tie.`;
+          )} below its gross — the extra ${f(refundCents)} is a REFUND, not a processor fee.` +
+          ` No refund of ${f(refundCents)} was found in Undeposited Funds between ${feeStart} and ${feeEnd}` +
+          ` (searched refund receipts and journal entries that debit Undeposited Funds), so there's nothing to sweep` +
+          ` into the deposit. Record the refund in QBO against Undeposited Funds, then create this deposit again.`;
       } else if (sumFeeCents !== expectedFeeCents) {
         why = ` The fee journal entries located sum to ${f(sumFeeCents)}, but the export says these charges were charged ${f(
           expectedFeeCents
@@ -761,6 +789,7 @@ async function createOneDeposit(
     privateNote: `GCD Deposit Recon | ${payout.processor} | ${payout.settlementDate} | ${payout.sourceRef ?? ""}`,
     payments,
     journalEntries,
+    refunds,
     plug,
   };
   const totalCents = linkedDepositTotalCents(buildLinkedDepositBody(input));
@@ -814,7 +843,7 @@ export async function createDepositFromPayoutAction(formData: FormData) {
       revalidatePath("/deposit-reconciliation");
       return;
     }
-    await createOneDeposit(payout, prep.value, user.email, new Set());
+    await createOneDeposit(payout, prep.value, user.email, new Set(), new Set());
     revalidatePath("/deposit-reconciliation");
   } catch (err) {
     await prisma.depEvent.create({ data: { payoutId, eventType: "create_error", message: `Create failed: ${String(err)}` } });
@@ -845,12 +874,13 @@ export async function createAllMatchedDepositsAction() {
   });
 
   const feeUsed = new Set<string>();
+  const refundUsed = new Set<string>();
   let created = 0;
   let blocked = 0;
   let errored = 0;
   for (const payout of matched) {
     try {
-      const outcome = await createOneDeposit(payout, prep.value, user.email, feeUsed);
+      const outcome = await createOneDeposit(payout, prep.value, user.email, feeUsed, refundUsed);
       if (outcome.status === "created") created++;
       else if (outcome.status === "blocked") blocked++;
       else if (outcome.status === "error") errored++;

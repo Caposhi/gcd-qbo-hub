@@ -127,6 +127,13 @@ export interface LinkedDepositInput {
   payments: Array<{ id: string; amount: number }>;
   /** Fee journal entries to sweep (amount negative); lineId = the UF line's Id. */
   journalEntries?: Array<{ id: string; lineId: string; amount: number }>;
+  /**
+   * Refunds sitting in Undeposited Funds that reduced this payout (amount
+   * negative). A refunded charge means the bank received less than the gross
+   * minus fees, so the refund has to be swept into the same deposit for it to
+   * tie — see lib/qbo/refunds.ts.
+   */
+  refunds?: Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry"; lineId?: string; amount: number }>;
   /** Optional plug line (e.g. card surcharge / over-short) to tie to the bank. */
   plug?: { accountId: string; amount: number; description?: string };
 }
@@ -150,6 +157,20 @@ export function buildLinkedDepositBody(input: LinkedDepositInput) {
     lines.push({
       Amount: Number(je.amount.toFixed(2)),
       LinkedTxn: [{ TxnId: je.id, TxnType: "JournalEntry", TxnLineId: je.lineId }],
+    });
+  }
+  for (const r of input.refunds ?? []) {
+    lines.push({
+      Amount: Number(r.amount.toFixed(2)),
+      LinkedTxn: [
+        {
+          TxnId: r.id,
+          TxnType: r.txnType,
+          // A journal-entry link needs the specific UF line; a refund receipt
+          // links as a whole transaction.
+          ...(r.lineId !== undefined ? { TxnLineId: r.lineId } : {}),
+        },
+      ],
     });
   }
   if (input.plug && Math.round(input.plug.amount * 100) !== 0) {
