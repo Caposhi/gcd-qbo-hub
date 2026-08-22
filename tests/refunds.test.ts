@@ -69,3 +69,21 @@ describe("pickRefundsForGap", () => {
     expect(refundKey(refund("r1", 5))).toBe("RefundReceipt:r1:");
   });
 });
+
+describe("refund search result shape", () => {
+  it("separates sweepable refunds from near misses so the diagnostic can differ", () => {
+    // pickRefundsForGap only ever sees the sweepable list; a near miss must not
+    // be linkable, but must survive for messaging ("exists, wrong account").
+    const search = {
+      refunds: [refund("uf", 50)],
+      nearMisses: [
+        { txnId: "rr9", kind: "RefundReceipt" as const, amount: 1728.05, date: "2026-08-05", reason: 'deposited to "Chase Checking 9680" instead of Undeposited Funds' },
+      ],
+    };
+    const gap = Math.round(1728.05 * 100);
+    // Nothing sweepable ties, so no link is made...
+    expect(pickRefundsForGap(search.refunds, gap).refunds).toEqual([]);
+    // ...but the near miss at exactly the gap is available to explain why.
+    expect(search.nearMisses.filter((n) => Math.round(n.amount * 100) === gap)).toHaveLength(1);
+  });
+});

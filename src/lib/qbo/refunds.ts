@@ -41,44 +41,71 @@ export interface UndepositedRefund {
 }
 
 /**
- * Refunds sitting in Undeposited Funds in a date window.
+ * A refund we found but CAN'T sweep into a deposit, kept so the diagnostic can
+ * say "it exists but…" instead of the far less useful "not found".
+ */
+export interface RefundNearMiss {
+  txnId: string;
+  kind: RefundKind;
+  amount: number;
+  date: string;
+  /** Why it isn't sweepable, e.g. the account it was deposited to instead. */
+  reason: string;
+}
+
+export interface RefundSearch {
+  /** Sweepable: sitting in Undeposited Funds. */
+  refunds: UndepositedRefund[];
+  /** Found, but not in Undeposited Funds — actionable information, not noise. */
+  nearMisses: RefundNearMiss[];
+}
+
+/**
+ * Refunds in a date window.
  *
- * Deliberately broad on the JE side (any UF *debit*, which is the opposite
- * posting type from a fee) because a refund JE's memo wording isn't something we
- * can rely on — the caller only ever links one whose amount exactly equals the
- * gap it needs to close, and the deposit checksum still governs.
+ * Deliberately broad on the JE side (any UF *debit*, the opposite posting type
+ * from a fee) because a refund JE's memo wording isn't something we can rely on
+ * — the caller only ever links one whose amount exactly equals the gap it needs
+ * to close, and the deposit checksum still governs.
+ *
+ * A refund receipt booked somewhere OTHER than Undeposited Funds is returned as a
+ * near miss rather than dropped: "a refund of this amount exists but was
+ * deposited to Chase Checking" is the single most useful thing we can tell an
+ * owner whose deposit won't tie.
  */
 export async function findUndepositedRefunds(
   ctx: QboContext,
   startDate: string,
   endDate: string
-): Promise<UndepositedRefund[]> {
-  const out: UndepositedRefund[] = [];
+): Promise<RefundSearch> {
+  const refunds: UndepositedRefund[] = [];
+  const nearMisses: RefundNearMiss[] = [];
   const inRange =
     `where TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`;
 
-  // 1) Refund receipts deposited into Undeposited Funds.
+  // 1) Refund receipts. Sweepable only when deposited to Undeposited Funds.
   try {
     const res = await query<{ QueryResponse?: { RefundReceipt?: any[] } }>(
       ctx,
       `select * from RefundReceipt ${inRange}`
     );
     for (const r of res.QueryResponse?.RefundReceipt ?? []) {
-      const acct = String(r.DepositToAccountRef?.name ?? "");
-      if (acct && !/undeposited funds/i.test(acct)) continue;
       const amount = Number(r.TotalAmt ?? 0);
       if (!(amount > 0)) continue;
-      out.push({
-        txnId: String(r.Id),
-        kind: "RefundReceipt",
-        amount,
-        date: String(r.TxnDate ?? ""),
+      const acct = String(r.DepositToAccountRef?.name ?? "");
+      const base = { txnId: String(r.Id), kind: "RefundReceipt" as const, amount, date: String(r.TxnDate ?? "") };
+      if (acct && !/undeposited funds/i.test(acct)) {
+        nearMisses.push({ ...base, reason: `deposited to “${acct}” instead of Undeposited Funds` });
+        continue;
+      }
+      refunds.push({
+        ...base,
         memo: String(r.PrivateNote ?? r.CustomerMemo?.value ?? ""),
         customerName: String(r.CustomerRef?.name ?? ""),
       });
     }
   } catch {
-    // Entity unavailable in this company — fall through to journal entries.
+    // Entity unavailable in this company — fall through to the other shapes.
   }
 
   // 2) Journal entries that DEBIT Undeposited Funds (a fee JE credits it).
@@ -95,7 +122,7 @@ export async function findUndepositedRefunds(
         if (String(d.PostingType ?? "") !== "Debit") continue;
         const amount = Number(line.Amount ?? 0);
         if (!(amount > 0)) continue;
-        out.push({
+        refunds.push({
           txnId: String(je.Id),
           kind: "JournalEntry",
           lineId: String(line.Id),
@@ -109,7 +136,7 @@ export async function findUndepositedRefunds(
   } catch {
     /* ignore — no refunds found is a valid answer */
   }
-  return out;
+  return { refunds, nearMisses };
 }
 
 export interface RefundPick {
