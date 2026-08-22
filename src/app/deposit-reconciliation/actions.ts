@@ -16,6 +16,198 @@ import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { buildProposalsFromFiles, type NamedFile } from "@/lib/deposits/ingest";
 
+const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
+
+/** A payout's identity: the processor's own reference when we have one
+ *  (Stripe trace-id/payout-id, Paymentech batch #), else a fingerprint of
+ *  date + net amount. Stable across re-ingests so re-dropping the same
+ *  files — even after a parsing bug fix changes the numbers — updates the
+ *  same row instead of creating a duplicate. */
+function payoutKey(processor: string, sourceRef: string | null, settlementDate: string, netAmount: number): string {
+  return sourceRef
+    ? `${processor}|${sourceRef}`
+    : `${processor}|${settlementDate}|${Math.round(netAmount * 100)}`;
+}
+
+/** One payout as freshly parsed from the dropped files, normalized to the
+ *  shape reconcileParsedPayouts needs regardless of which list it came from
+ *  (a resolved deposit vs. a still-unresolved Tekmetric payout). */
+interface ParsedPayout {
+  processor: string;
+  sourceRef: string | null;
+  settlementDate: string;
+  gross: number;
+  fee: number;
+  net: number;
+  status: "proposed" | "needs_review";
+  deltaCents: number;
+  lines: Array<{ amount: number; fee?: number; brand: string; ref?: string }>;
+}
+
+export interface ReconcileOutcome {
+  created: number;
+  updated: number;
+  unchanged: number;
+  skippedPosted: number;
+}
+
+/** Shape reconcileParsedPayouts actually reads off an existing DepPayout —
+ *  spelled out explicitly rather than inferred through Prisma's generic
+ *  `include` typing, which stays stable regardless of the environment's
+ *  Prisma client generation state. */
+interface ExistingPayout {
+  id: string;
+  processor: string;
+  sourceRef: string | null;
+  settlementDate: string;
+  status: string;
+  deltaCents: number | null;
+  qboDepositId: string | null;
+  grossAmount: number | string;
+  feeAmount: number | string;
+  netAmount: number | string;
+  lines: Array<{ amount: number | string }>;
+}
+
+/**
+ * Upsert freshly-parsed payouts against whatever's already in the DB, by
+ * payoutKey — this is what makes re-dropping the same files (or the same
+ * files after a bug fix in the parsing logic) safe and useful to do anytime,
+ * instead of the old all-or-nothing "already imported, does nothing":
+ *
+ *   - Already posted to QBO (qboDepositId set) → NEVER touched, no matter
+ *     what the fresh parse says. Posted history is immutable (§10, §22).
+ *   - Exists, not posted, values differ → updated in place (status, gross/
+ *     fee/net, lines replaced). A row that was `needs_review` can become
+ *     `proposed` this way once the underlying bug is fixed, and vice versa
+ *     if a regression ever made things worse — the truth is always "what
+ *     the current files + current logic say right now".
+ *   - Exists, not posted, values identical → left alone, counted separately
+ *     so the summary can say "12 unchanged" instead of implying 12 updates.
+ *   - New key → created.
+ *
+ * Never touches QBO — this only maintains the hub's own proposed-deposit
+ * records.
+ */
+export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: string | null): Promise<ReconcileOutcome> {
+  const existing = (await prisma.depPayout.findMany({
+    where: {},
+    include: { lines: true },
+  })) as unknown as ExistingPayout[];
+  const byKey = new Map(
+    existing.map((p) => [payoutKey(p.processor, p.sourceRef, p.settlementDate, Number(p.netAmount)), p])
+  );
+
+  const outcome: ReconcileOutcome = { created: 0, updated: 0, unchanged: 0, skippedPosted: 0 };
+
+  for (const d of parsed) {
+    const key = payoutKey(d.processor, d.sourceRef, d.settlementDate, d.net);
+    const match = byKey.get(key);
+
+    if (!match) {
+      await prisma.depPayout.create({
+        data: {
+          importId,
+          processor: d.processor,
+          settlementDate: d.settlementDate,
+          grossAmount: dec(d.gross),
+          feeAmount: dec(d.fee),
+          netAmount: dec(d.net),
+          status: d.status,
+          deltaCents: d.status === "proposed" ? 0 : d.deltaCents,
+          sourceRef: d.sourceRef,
+          lines: { create: d.lines.map((l) => ({ amount: dec(l.amount), feeAmount: l.fee ? dec(l.fee) : null, brand: l.brand || null, ref: l.ref || null })) },
+        },
+      });
+      outcome.created++;
+      continue;
+    }
+
+    if (match.qboDepositId) {
+      outcome.skippedPosted++;
+      continue;
+    }
+
+    // Compare in cents — floats derived from Decimal storage vs. fresh
+    // reconstruction arithmetic can differ by fractions of a cent even when
+    // nothing actually changed, which would otherwise churn "unchanged" into
+    // a false "updated" on every single reprocess.
+    const centsEq = (a: number, b: number) => Math.round(a * 100) === Math.round(b * 100);
+    const sameTotals =
+      match.status === d.status &&
+      (match.deltaCents ?? 0) === d.deltaCents &&
+      centsEq(Number(match.grossAmount), d.gross) &&
+      centsEq(Number(match.feeAmount), d.fee) &&
+      centsEq(Number(match.netAmount), d.net) &&
+      match.lines.length === d.lines.length &&
+      match.lines.every((l, i) => centsEq(Number(l.amount), d.lines[i]?.amount ?? NaN));
+    if (sameTotals) {
+      outcome.unchanged++;
+      continue;
+    }
+
+    await prisma.depPayout.update({
+      where: { id: match.id },
+      data: {
+        grossAmount: dec(d.gross),
+        feeAmount: dec(d.fee),
+        netAmount: dec(d.net),
+        status: d.status,
+        deltaCents: d.status === "proposed" ? 0 : d.deltaCents,
+        // Old match state (from a prior Locate run) no longer applies once the
+        // reconstruction itself changed — re-running Locate is cheap and safe.
+        lines: { deleteMany: {}, create: d.lines.map((l) => ({ amount: dec(l.amount), feeAmount: l.fee ? dec(l.fee) : null, brand: l.brand || null, ref: l.ref || null })) },
+      },
+    });
+    await prisma.depEvent.create({
+      data: { payoutId: match.id, eventType: "reprocessed", message: `Updated by reprocess: ${match.status} → ${d.status}${d.status === "needs_review" ? ` (Δ ${(d.deltaCents / 100).toFixed(2)})` : ""}.` },
+    });
+    outcome.updated++;
+  }
+
+  return outcome;
+}
+
+/**
+ * Parse dropped files into the flat ParsedPayout shape reconcileParsedPayouts
+ * upserts against. Pure translation — buildProposalsFromFiles does the real
+ * parsing/reconstruction work.
+ */
+function toParsedPayouts(result: ReturnType<typeof buildProposalsFromFiles>): ParsedPayout[] {
+  const resolved: ParsedPayout[] = [...result.paymentechDeposits, ...(result.tekmetric?.deposits ?? [])].map((d) => ({
+    processor: d.processor,
+    sourceRef: d.sourceRef ?? null,
+    settlementDate: d.settlementDate,
+    gross: d.gross,
+    fee: d.fee,
+    net: d.net,
+    status: "proposed",
+    deltaCents: 0,
+    lines: d.lines,
+  }));
+  const unresolved: ParsedPayout[] = (result.tekmetric?.unresolved ?? []).map((u) => ({
+    processor: "tekmetric",
+    sourceRef: u.payout.traceId ?? u.payout.id,
+    settlementDate: u.payout.arrivalDate,
+    gross: 0,
+    fee: 0,
+    net: u.payout.amount,
+    status: "needs_review",
+    deltaCents: u.deltaCents,
+    lines: [],
+  }));
+  return [...resolved, ...unresolved];
+}
+
+/**
+ * Drop CSVs → proposed deposits. Safe to run on the same files anytime —
+ * first time or the fiftieth, before or after a parsing bug fix — since it
+ * always re-parses and reconciles against what's actually in the DB right
+ * now (reconcileParsedPayouts) rather than silently no-op'ing on a
+ * previously-seen file hash. The fileHash is still recorded (one DepImport
+ * row per distinct file set, for audit/provenance), but it no longer gates
+ * whether payouts get refreshed.
+ */
 export async function ingestDepositFilesAction(formData: FormData) {
   const user = await requirePermission("edit_mappings");
 
@@ -28,99 +220,38 @@ export async function ingestDepositFilesAction(formData: FormData) {
   }
   if (named.length === 0) return;
 
-  // Idempotency: the same set of files re-dropped does nothing.
   const combined = named.map((f) => `${f.name}::${f.text}`).sort().join("\n---\n");
   const fileHash = createHash("sha256").update(combined).digest("hex");
-  if (await prisma.depImport.findUnique({ where: { fileHash } })) {
-    revalidatePath("/deposit-reconciliation");
-    return;
-  }
-
   const result = buildProposalsFromFiles(named);
   const processors = new Set<string>();
   if (result.paymentechDeposits.length) processors.add("paymentech");
   if (result.tekmetric) processors.add("tekmetric");
 
-  const imp = await prisma.depImport.create({
+  let imp = await prisma.depImport.findUnique({ where: { fileHash } });
+  const isReprocess = !!imp;
+  if (!imp) {
+    imp = await prisma.depImport.create({
+      data: {
+        processor: [...processors].join("+") || "unknown",
+        fileHash,
+        rowCount: named.length,
+        importedByEmail: user.email,
+      },
+    });
+  }
+
+  const outcome = await reconcileParsedPayouts(toParsedPayouts(result), imp.id);
+
+  await prisma.depEvent.create({
     data: {
-      processor: [...processors].join("+") || "unknown",
-      fileHash,
-      rowCount: named.length,
-      importedByEmail: user.email,
+      eventType: "ingest_reconcile",
+      message:
+        `${isReprocess ? "Reprocessed" : "Ingested"} ${named.map((f) => f.name).join(", ")}: ` +
+        `${outcome.created} created, ${outcome.updated} updated, ${outcome.unchanged} unchanged` +
+        (outcome.skippedPosted ? `, ${outcome.skippedPosted} skipped (already posted to QBO)` : "") +
+        ` · by ${user.email}.`,
     },
   });
-
-  const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
-
-  // Dedupe: a payout is uniquely identified by (processor, sourceRef) — the
-  // Stripe trace-id / payout-id, or the Paymentech batch #. Re-dropping the same
-  // files in a different file-set (so the combined fileHash differs) must NOT
-  // re-create payouts. Seed from what already exists, then also guard within
-  // this ingest.
-  const existing = await prisma.depPayout.findMany({
-    select: { processor: true, sourceRef: true, settlementDate: true, netAmount: true },
-  });
-  const keyOf = (processor: string, sourceRef: string | null, settlementDate: string, netAmount: number) =>
-    sourceRef ? `${processor}|${sourceRef}` : `${processor}|${settlementDate}|${Math.round(netAmount * 100)}`;
-  const seen = new Set(existing.map((e) => keyOf(e.processor, e.sourceRef, e.settlementDate, Number(e.netAmount))));
-  let skipped = 0;
-
-  const proposed = [
-    ...result.paymentechDeposits,
-    ...(result.tekmetric?.deposits ?? []),
-  ];
-  for (const d of proposed) {
-    const key = keyOf(d.processor, d.sourceRef ?? null, d.settlementDate, d.net);
-    if (seen.has(key)) { skipped++; continue; }
-    seen.add(key);
-    await prisma.depPayout.create({
-      data: {
-        importId: imp.id,
-        processor: d.processor,
-        settlementDate: d.settlementDate,
-        grossAmount: dec(d.gross),
-        feeAmount: dec(d.fee),
-        netAmount: dec(d.net),
-        status: "proposed",
-        deltaCents: 0,
-        sourceRef: d.sourceRef ?? null,
-        lines: {
-          create: d.lines.map((l) => ({
-            amount: dec(l.amount),
-            feeAmount: l.fee ? dec(l.fee) : null,
-            brand: l.brand || null,
-            ref: l.ref || null,
-          })),
-        },
-      },
-    });
-  }
-
-  for (const u of result.tekmetric?.unresolved ?? []) {
-    const sourceRef = u.payout.traceId ?? u.payout.id;
-    const key = keyOf("tekmetric", sourceRef, u.payout.arrivalDate, u.payout.amount);
-    if (seen.has(key)) { skipped++; continue; }
-    seen.add(key);
-    await prisma.depPayout.create({
-      data: {
-        importId: imp.id,
-        processor: "tekmetric",
-        settlementDate: u.payout.arrivalDate,
-        grossAmount: dec(0),
-        feeAmount: dec(0),
-        netAmount: dec(u.payout.amount),
-        status: "needs_review",
-        deltaCents: u.deltaCents,
-        sourceRef,
-      },
-    });
-  }
-
-  if (skipped > 0) {
-    await prisma.depEvent.create({
-      data: { eventType: "ingest_dedupe", message: `Skipped ${skipped} payout(s) already present (same processor + source ref).` },
-    });
-  }
 
   if (result.notes.length) {
     await prisma.depEvent.create({
@@ -142,9 +273,7 @@ export async function cleanupDuplicatePayoutsAction() {
   const seen = new Set<string>();
   const dupeIds: string[] = [];
   for (const p of all) {
-    const key = p.sourceRef
-      ? `${p.processor}|${p.sourceRef}`
-      : `${p.processor}|${p.settlementDate}|${Math.round(Number(p.netAmount) * 100)}`;
+    const key = payoutKey(p.processor, p.sourceRef, p.settlementDate, Number(p.netAmount));
     if (p.qboDepositId) { seen.add(key); continue; } // posted — always keep
     if (seen.has(key)) dupeIds.push(p.id);
     else seen.add(key);
