@@ -102,17 +102,31 @@ export function matchFees(
 
   for (const ch of charges) {
     const key = customerMatchKey(ch.customer);
-    // 1) by customer name (order-insensitive)
-    let je = key ? feeJEs.filter((j) => inWindow(j) && customerMatchKey(j.customerName) === key).sort(nearest)[0] : undefined;
-    // 2) fall back to the exact known fee amount
-    if (!je && ch.feeAmount != null) {
-      const cents = Math.round(ch.feeAmount * 100);
-      const byAmt = feeJEs.filter((j) => inWindow(j) && Math.round(j.amount * 100) === cents).sort(nearest)[0];
+    const feeCents = ch.feeAmount != null ? Math.round(ch.feeAmount * 100) : null;
+    const sameCustomer = (j: FeeJournalEntry) => !!key && customerMatchKey(j.customerName) === key;
+    const sameAmount = (j: FeeJournalEntry) => feeCents !== null && Math.round(j.amount * 100) === feeCents;
+
+    // Preference order matters. Matching on the customer name ALONE used to win,
+    // which let a JE with the wrong amount be claimed by the wrong payout — two
+    // adjacent payouts then failed their checksum by equal and opposite amounts
+    // (observed: ±$11.48 between the 08-03 and 08-05 payouts). When the charge's
+    // exact fee is known from the export, require it: name+amount, then amount,
+    // and only then name alone.
+    let je =
+      feeCents !== null
+        ? feeJEs.filter((j) => inWindow(j) && sameCustomer(j) && sameAmount(j)).sort(nearest)[0]
+        : undefined;
+    if (!je && feeCents !== null) {
+      const byAmt = feeJEs.filter((j) => inWindow(j) && sameAmount(j)).sort(nearest)[0];
       if (byAmt) {
         je = byAmt;
         amountMatched++;
       }
     }
+    if (!je && key) {
+      je = feeJEs.filter((j) => inWindow(j) && sameCustomer(j)).sort(nearest)[0];
+    }
+
     if (je) {
       used.add(je.jeId);
       linked.push(je);

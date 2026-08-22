@@ -110,3 +110,51 @@ describe("matchFees — amount fallback", () => {
     expect(missing).toEqual(["Castillo, Junior"]);
   });
 });
+
+describe("matchFees — amount must win over a name-only match (§±11.48 swap)", () => {
+  it("prefers the JE matching BOTH customer and the known fee amount", () => {
+    // Same customer has two JEs in the window; only one is this charge's fee.
+    const fees = [je("wrong", "Junior Castillo", 16.78, "2026-08-03"), je("right", "Junior Castillo", 5.3, "2026-08-03")];
+    const { linked } = matchFees(
+      fees,
+      [{ customer: "Castillo, Junior", feeAmount: 5.3 }],
+      "2026-08-03",
+      new Set(),
+      daysApart
+    );
+    expect(linked.map((l) => l.jeId)).toEqual(["right"]);
+  });
+
+  it("does not let a same-name wrong-amount JE beat an exact amount match", () => {
+    // Before the fix the name match ("Castillo") won and pulled in 16.78,
+    // leaving the neighbouring payout short by the difference.
+    const fees = [je("byname", "Junior Castillo", 16.78, "2026-08-03"), je("byamt", "Someone Else", 5.3, "2026-08-03")];
+    const { linked, amountMatched } = matchFees(
+      fees,
+      [{ customer: "Castillo, Junior", feeAmount: 5.3 }],
+      "2026-08-03",
+      new Set(),
+      daysApart
+    );
+    expect(linked.map((l) => l.jeId)).toEqual(["byamt"]);
+    expect(amountMatched).toBe(1);
+  });
+
+  it("two adjacent payouts each take their own fee instead of swapping", () => {
+    // The real shape of the bug: one JE of 16.78 and one of 5.30, both for the
+    // same customer, split across two payouts. Processing the first payout must
+    // not consume the other's JE.
+    const fees = [je("a", "Junior Castillo", 5.3, "2026-08-03"), je("b", "Junior Castillo", 16.78, "2026-08-05")];
+    const used = new Set<string>();
+    const first = matchFees(fees, [{ customer: "Castillo, Junior", feeAmount: 5.3 }], "2026-08-03", used, daysApart);
+    const second = matchFees(fees, [{ customer: "Castillo, Junior", feeAmount: 16.78 }], "2026-08-05", used, daysApart);
+    expect(first.linked.map((l) => l.jeId)).toEqual(["a"]);
+    expect(second.linked.map((l) => l.jeId)).toEqual(["b"]);
+  });
+
+  it("still falls back to name alone when the fee amount is unknown", () => {
+    const fees = [je("1", "Junior Castillo", 43.6, "2026-07-20")];
+    const { linked } = matchFees(fees, [{ customer: "Castillo, Junior" }], "2026-07-20", new Set(), daysApart);
+    expect(linked.map((l) => l.jeId)).toEqual(["1"]);
+  });
+});
