@@ -693,7 +693,7 @@ async function createOneDeposit(
 
   let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
   let refunds:
-    | Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry"; lineId?: string; amount: number }>
+    | Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry" | "Payment"; lineId?: string; amount: number }>
     | undefined;
   let plug: { accountId: string; amount: number; description: string } | undefined;
 
@@ -714,11 +714,18 @@ async function createOneDeposit(
     // has to be swept into this same deposit. Only ever linked when it closes the
     // remaining gap EXACTLY (see pickRefundsForGap).
     let sumRefundCents = 0;
+    let refundNote = "";
+    // Refunds need a MUCH wider window than fees. A fee JE posts within days of
+    // settlement, but a refund can be dated either when it was issued or
+    // backdated to the original sale — and the sale can be weeks earlier (the
+    // charge refunded out of the 08-06 payout was originally taken on 07-22).
+    const refundStart = shiftDate(payout.settlementDate, -90);
+    const refundEnd = shiftDate(payout.settlementDate, 7);
     const gapCents = sumPayCents - sumFeeCents - netCents;
     if (gapCents > 0) {
       const { findUndepositedRefunds, pickRefundsForGap, refundKey } = await import("@/lib/qbo/refunds");
-      const candidates = await findUndepositedRefunds(dc.ctx, feeStart, feeEnd);
-      const pick = pickRefundsForGap(candidates, gapCents, refundUsed);
+      const found = await findUndepositedRefunds(dc.ctx, refundStart, refundEnd);
+      const pick = pickRefundsForGap(found.refunds, gapCents, refundUsed, payout.settlementDate);
       if (pick.exact && pick.refunds.length > 0) {
         for (const r of pick.refunds) refundUsed.add(refundKey(r));
         refunds = pick.refunds.map((r) => ({
@@ -728,6 +735,37 @@ async function createOneDeposit(
           amount: -r.amount,
         }));
         sumRefundCents = pick.refunds.reduce((s, r) => s + Math.round(r.amount * 100), 0);
+        await prisma.depEvent.create({
+          data: {
+            payoutId: payout.id,
+            eventType: "refund_linked",
+            message:
+              `Swept ${pick.refunds.length} refund(s) totalling ${(sumRefundCents / 100).toFixed(2)} into this deposit: ` +
+              pick.refunds.map((r) => `${r.kind} ${r.txnId}${r.lineId ? `/${r.lineId}` : ""} ${r.date} ${r.amount.toFixed(2)}${r.customerName ? ` (${r.customerName})` : ""}`).join("; ") +
+              (pick.exactCandidates > 1
+                ? ` · NOTE ${pick.exactCandidates} refunds in the window shared this amount; picked the one closest to ${payout.settlementDate}.`
+                : ""),
+          },
+        });
+      } else {
+        // Nothing sweepable. Say what we DID find, which is the difference
+        // between "record the refund" and "move the refund you already made".
+        const gapDollars = (gapCents / 100).toFixed(2);
+        const sameAmount = found.nearMisses.filter((n) => Math.round(n.amount * 100) === gapCents);
+        if (sameAmount.length > 0) {
+          refundNote =
+            ` A refund of ${gapDollars} DOES exist (${sameAmount
+              .map((n) => `${n.kind} ${n.txnId} on ${n.date}, ${n.reason}`)
+              .join("; ")}) — re-point it at Undeposited Funds so it can be swept into this deposit.`;
+        } else {
+          const others = [...found.refunds, ...found.nearMisses]
+            .map((r) => (r.amount ?? 0).toFixed(2))
+            .slice(0, 6);
+          refundNote =
+            ` No refund of ${gapDollars} was found between ${refundStart} and ${refundEnd}` +
+            (others.length ? ` (refunds seen in that window: ${others.join(", ")})` : " (no refunds at all in that window)") +
+            `.`;
+        }
       }
     }
 
@@ -753,10 +791,9 @@ async function createOneDeposit(
         why =
           ` The export's own per-charge fees total ${f(expectedFeeCents)}, but this payout is ${f(
             grossToNetCents
-          )} below its gross — the extra ${f(refundCents)} is a REFUND, not a processor fee.` +
-          ` No refund of ${f(refundCents)} was found in Undeposited Funds between ${feeStart} and ${feeEnd}` +
-          ` (searched refund receipts and journal entries that debit Undeposited Funds), so there's nothing to sweep` +
-          ` into the deposit. Record the refund in QBO against Undeposited Funds, then create this deposit again.`;
+          )} below its gross — the extra ${f(refundCents)} is a REFUND, not a processor fee.${refundNote}` +
+          ` Until that refund sits in Undeposited Funds there's nothing to sweep into the deposit — and note the books` +
+          ` currently overstate income by ${f(refundCents)} regardless of this deposit.`;
       } else if (sumFeeCents !== expectedFeeCents) {
         why = ` The fee journal entries located sum to ${f(sumFeeCents)}, but the export says these charges were charged ${f(
           expectedFeeCents
