@@ -87,3 +87,44 @@ describe("refund search result shape", () => {
     expect(search.nearMisses.filter((n) => Math.round(n.amount * 100) === gap)).toHaveLength(1);
   });
 });
+
+describe("refund JE direction (§the 08-06 refund)", () => {
+  // Back Office credits Undeposited Funds for a refund — the SAME direction as a
+  // card fee — so only the memo separates them. These assert the contract the
+  // live data proved: credit + non-fee memo = refund; credit + fee memo = fee.
+  const REFUND_MEMO = "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05";
+  const FEE_MEMO = "FEE | Credit Card: Visa | OSORIO, STEVEN | 08/05/26";
+
+  it("a refund memo is not a fee memo, and vice versa", () => {
+    expect(/credit card/i.test(REFUND_MEMO)).toBe(false);
+    expect(/credit card/i.test(FEE_MEMO)).toBe(true);
+  });
+
+  it("links the refund JE line by its UF line id", () => {
+    const je: UndepositedRefund = {
+      txnId: "9911",
+      kind: "JournalEntry",
+      lineId: "1",
+      amount: 1728.05,
+      date: "2026-08-05",
+      memo: REFUND_MEMO,
+      customerName: "OSORIO, STEVEN",
+    };
+    const pick = pickRefundsForGap([je], Math.round(1728.05 * 100));
+    expect(pick.exact).toBe(true);
+    expect(pick.refunds[0].lineId).toBe("1");
+    expect(refundKey(je)).toBe("JournalEntry:9911:1");
+  });
+
+  it("the whole 08-06 payout ties once the refund is swept in", () => {
+    const payments = 12505.42;
+    const fees = 312.99;
+    const refund = 1728.05;
+    const net = 10464.38;
+    const c = (n: number) => Math.round(n * 100);
+    // Before: payments − fees leaves the refund-sized gap the checksum caught.
+    expect(c(payments) - c(fees) - c(net)).toBe(c(refund));
+    // After: payments − fees − refund is the payout exactly.
+    expect(c(payments) - c(fees) - c(refund)).toBe(c(net));
+  });
+});

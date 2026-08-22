@@ -25,7 +25,20 @@ function escapeQuery(v: string): string {
   return v.replace(/'/g, "\\'");
 }
 
-export type RefundKind = "RefundReceipt" | "JournalEntry";
+/**
+ * How a refund can be represented in Undeposited Funds.
+ *
+ * `JournalEntry` is what Tekmetric's Back Office actually produces, confirmed
+ * against the live 2026-08-06 payout: Back Office DISPLAYS the refund as a
+ * negative "Customer Payment", but because QBO payments can't be negative it
+ * EXPORTS a journal entry — debit A/R, credit Undeposited Funds, memo
+ * "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05".
+ *
+ * `RefundReceipt` and `Payment` are kept because other configurations record
+ * refunds those ways (a refund receipt deposited to UF, or a negative payment),
+ * and detecting them costs one query each.
+ */
+export type RefundKind = "RefundReceipt" | "JournalEntry" | "Payment";
 
 export interface UndepositedRefund {
   /** QBO transaction id. */
@@ -108,7 +121,15 @@ export async function findUndepositedRefunds(
     // Entity unavailable in this company — fall through to the other shapes.
   }
 
-  // 2) Journal entries that DEBIT Undeposited Funds (a fee JE credits it).
+  // 2) Journal entries that CREDIT Undeposited Funds and are NOT card fees.
+  //
+  //    This is the shape Back Office actually produces. A refund reduces an
+  //    asset, so it CREDITS Undeposited Funds — the same direction as a fee JE,
+  //    which is why direction alone can't separate them. The memo does:
+  //      fee    → "FEE | Credit Card: Visa | NAME | date"
+  //      refund → "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05"
+  //    findFeeJournalEntries claims only the /credit card/ ones, so taking the
+  //    complement here means a refund JE is never double-counted as a fee.
   try {
     const res = await query<{ QueryResponse?: { JournalEntry?: any[] } }>(
       ctx,
@@ -119,7 +140,9 @@ export async function findUndepositedRefunds(
         const d = line.JournalEntryLineDetail;
         if (!d) continue;
         if (!/undeposited funds/i.test(String(d.AccountRef?.name ?? ""))) continue;
-        if (String(d.PostingType ?? "") !== "Debit") continue;
+        if (String(d.PostingType ?? "") !== "Credit") continue;
+        const memo = String(line.Description ?? je.PrivateNote ?? "");
+        if (/credit card/i.test(memo)) continue; // that's a processor fee, not a refund
         const amount = Number(line.Amount ?? 0);
         if (!(amount > 0)) continue;
         refunds.push({
@@ -128,7 +151,7 @@ export async function findUndepositedRefunds(
           lineId: String(line.Id),
           amount,
           date: String(je.TxnDate ?? ""),
-          memo: String(line.Description ?? je.PrivateNote ?? ""),
+          memo,
           customerName: String(d.Entity?.EntityRef?.name ?? ""),
         });
       }
@@ -136,6 +159,38 @@ export async function findUndepositedRefunds(
   } catch {
     /* ignore — no refunds found is a valid answer */
   }
+
+  // 3) NEGATIVE customer payments — how Back Office actually exports a refund.
+  //    A payment with no DepositToAccountRef defaults to Undeposited Funds in
+  //    QBO, so treat "absent" as UF; anything explicitly elsewhere is a near
+  //    miss (it can't be swept into this deposit).
+  try {
+    const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
+      ctx,
+      `select Id, TotalAmt, TxnDate, CustomerRef, DepositToAccountRef, PrivateNote from Payment ` +
+        `where TotalAmt < '0' and TxnDate >= '${escapeQuery(startDate)}' ` +
+        `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
+    );
+    for (const p of res.QueryResponse?.Payment ?? []) {
+      const total = Number(p.TotalAmt ?? 0);
+      if (!(total < 0)) continue;
+      const amount = Math.abs(total);
+      const acct = String(p.DepositToAccountRef?.name ?? "");
+      const base = { txnId: String(p.Id), kind: "Payment" as const, amount, date: String(p.TxnDate ?? "") };
+      if (acct && !/undeposited funds/i.test(acct)) {
+        nearMisses.push({ ...base, reason: `deposited to “${acct}” instead of Undeposited Funds` });
+        continue;
+      }
+      refunds.push({
+        ...base,
+        memo: String(p.PrivateNote ?? ""),
+        customerName: String(p.CustomerRef?.name ?? ""),
+      });
+    }
+  } catch {
+    /* ignore — the other shapes may still have found it */
+  }
+
   return { refunds, nearMisses };
 }
 

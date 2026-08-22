@@ -693,7 +693,7 @@ async function createOneDeposit(
 
   let journalEntries: Array<{ id: string; lineId: string; amount: number }> | undefined;
   let refunds:
-    | Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry"; lineId?: string; amount: number }>
+    | Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry" | "Payment"; lineId?: string; amount: number }>
     | undefined;
   let plug: { accountId: string; amount: number; description: string } | undefined;
 

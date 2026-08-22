@@ -133,7 +133,7 @@ export interface LinkedDepositInput {
    * minus fees, so the refund has to be swept into the same deposit for it to
    * tie — see lib/qbo/refunds.ts.
    */
-  refunds?: Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry"; lineId?: string; amount: number }>;
+  refunds?: Array<{ id: string; txnType: "RefundReceipt" | "JournalEntry" | "Payment"; lineId?: string; amount: number }>;
   /** Optional plug line (e.g. card surcharge / over-short) to tie to the bank. */
   plug?: { accountId: string; amount: number; description?: string };
 }
