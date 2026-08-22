@@ -707,10 +707,41 @@ async function createOneDeposit(
     const sumFeeCents = linked.reduce((s, je) => s + Math.round(je.amount * 100), 0);
     const totalCents = sumPayCents - sumFeeCents;
     if (totalCents !== netCents) {
+      // Diagnose WHY rather than just reporting the gap. The export gives each
+      // charge's real processor fee, so we can separate the two very different
+      // causes:
+      //   - a REFUND: the payout's gross-to-net difference exceeds the actual
+      //     fees, because a refunded charge reduced the payout. Refunds aren't
+      //     fee JEs, so no amount of fee matching will ever close this gap.
+      //   - a FEE-JE mismatch: the located JEs don't sum to the fees the export
+      //     says were charged, so the wrong JEs were paired.
+      const expectedFeeCents = payout.lines.reduce(
+        (s, l) => s + (l.feeAmount != null ? Math.round(Number(l.feeAmount) * 100) : 0),
+        0
+      );
+      const grossToNetCents = Math.round(Number(payout.grossAmount) * 100) - netCents;
+      const refundCents = grossToNetCents - expectedFeeCents;
+      const f = (c: number) => (c / 100).toFixed(2);
+      let why: string;
+      if (refundCents > 1) {
+        why =
+          ` The export's own per-charge fees total ${f(expectedFeeCents)}, but this payout is ${f(
+            grossToNetCents
+          )} below its gross — the extra ${f(refundCents)} is a REFUND, not a processor fee, so no fee journal entry can` +
+          ` account for it. A refunded charge has to be recorded in QBO as a refund before this deposit can tie.`;
+      } else if (sumFeeCents !== expectedFeeCents) {
+        why = ` The fee journal entries located sum to ${f(sumFeeCents)}, but the export says these charges were charged ${f(
+          expectedFeeCents
+        )} in fees — ${f(Math.abs(sumFeeCents - expectedFeeCents))} ${
+          sumFeeCents > expectedFeeCents ? "too much" : "too little"
+        }, so at least one JE belongs to a different payout. Re-run Locate.`;
+      } else {
+        why = " Fees match the export, so the payment set itself doesn't reconstruct this payout — re-run Locate.";
+      }
       return blockedP(
-        `Checksum mismatch (tekmetric): payments ${(sumPayCents / 100).toFixed(2)} − fees ${(sumFeeCents / 100).toFixed(
-          2
-        )} = ${(totalCents / 100).toFixed(2)} vs net ${(netCents / 100).toFixed(2)} — not posted.`
+        `Checksum mismatch (tekmetric): payments ${f(sumPayCents)} − fees ${f(sumFeeCents)} = ${f(
+          totalCents
+        )} vs net ${f(netCents)} — not posted.${why}`
       );
     }
   } else {
