@@ -9,11 +9,11 @@
  * the real processor fees were $312.99 — the other $1,728.05 was a refund, so no
  * amount of fee matching could close the gap.
  *
- * A refund can land in Undeposited Funds two ways, and which one depends on how
- * the refund was recorded — so we look for BOTH rather than assuming:
- *   - a **Refund Receipt** deposited to Undeposited Funds, or
- *   - a **journal entry** that DEBITS Undeposited Funds (the mirror of a fee JE,
- *     which credits it).
+ * A refund can land in Undeposited Funds three ways, so we look for all of them
+ * rather than assuming (Back Office uses the second):
+ *   - a **Refund Receipt** deposited to Undeposited Funds,
+ *   - a **journal entry** that CREDITS Undeposited Funds with a non-fee memo, or
+ *   - a **negative customer payment**.
  *
  * Read-only. The pure matcher (`pickRefundsForGap`) is unit-tested; the query is
  * the only IO here.
@@ -74,18 +74,35 @@ export interface RefundSearch {
 }
 
 /**
- * Refunds in a date window.
+ * Refunds in a date window, across all three representations.
  *
- * Deliberately broad on the JE side (any UF *debit*, the opposite posting type
- * from a fee) because a refund JE's memo wording isn't something we can rely on
- * — the caller only ever links one whose amount exactly equals the gap it needs
- * to close, and the deposit checksum still governs.
+ * The caller only ever links one whose amount exactly equals the gap it needs to
+ * close, and the deposit checksum still governs, so breadth here is safe.
  *
- * A refund receipt booked somewhere OTHER than Undeposited Funds is returned as a
- * near miss rather than dropped: "a refund of this amount exists but was
- * deposited to Chase Checking" is the single most useful thing we can tell an
- * owner whose deposit won't tie.
+ * A refund booked somewhere OTHER than Undeposited Funds is returned as a near
+ * miss rather than dropped: "a refund of this amount exists but was deposited to
+ * Chase Checking" is the single most useful thing we can tell an owner whose
+ * deposit won't tie.
  */
+/** QBO caps a query at 1000 rows; page until a short page comes back. */
+const PAGE = 1000;
+
+async function queryAllPages<T>(
+  ctx: QboContext,
+  entity: string,
+  where: string,
+  read: (res: any) => T[] | undefined
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let start = 1; ; start += PAGE) {
+    const res = await query<any>(ctx, `select * from ${entity} ${where} STARTPOSITION ${start} MAXRESULTS ${PAGE}`);
+    const rows = read(res) ?? [];
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
+}
+
 export async function findUndepositedRefunds(
   ctx: QboContext,
   startDate: string,
@@ -93,16 +110,18 @@ export async function findUndepositedRefunds(
 ): Promise<RefundSearch> {
   const refunds: UndepositedRefund[] = [];
   const nearMisses: RefundNearMiss[] = [];
+  // Paginated, NOT a single capped page. The refund window is deliberately wide
+  // (a refund can be dated well before the payout), and this company posts a fee
+  // journal entry per card charge — roughly 8 a day — so a 90-day window holds
+  // well over a thousand journal entries. A single MAXRESULTS 1000 page would
+  // silently truncate and could drop the very refund we're looking for.
   const inRange =
-    `where TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`;
+    `where TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}'`;
 
   // 1) Refund receipts. Sweepable only when deposited to Undeposited Funds.
   try {
-    const res = await query<{ QueryResponse?: { RefundReceipt?: any[] } }>(
-      ctx,
-      `select * from RefundReceipt ${inRange}`
-    );
-    for (const r of res.QueryResponse?.RefundReceipt ?? []) {
+    const rows = await queryAllPages<any>(ctx, "RefundReceipt", inRange, (r) => r.QueryResponse?.RefundReceipt);
+    for (const r of rows) {
       const amount = Number(r.TotalAmt ?? 0);
       if (!(amount > 0)) continue;
       const acct = String(r.DepositToAccountRef?.name ?? "");
@@ -131,11 +150,8 @@ export async function findUndepositedRefunds(
   //    findFeeJournalEntries claims only the /credit card/ ones, so taking the
   //    complement here means a refund JE is never double-counted as a fee.
   try {
-    const res = await query<{ QueryResponse?: { JournalEntry?: any[] } }>(
-      ctx,
-      `select * from JournalEntry ${inRange}`
-    );
-    for (const je of res.QueryResponse?.JournalEntry ?? []) {
+    const jes = await queryAllPages<any>(ctx, "JournalEntry", inRange, (r) => r.QueryResponse?.JournalEntry);
+    for (const je of jes) {
       for (const line of je.Line ?? []) {
         const d = line.JournalEntryLineDetail;
         if (!d) continue;
@@ -165,13 +181,13 @@ export async function findUndepositedRefunds(
   //    QBO, so treat "absent" as UF; anything explicitly elsewhere is a near
   //    miss (it can't be swept into this deposit).
   try {
-    const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
+    const pays = await queryAllPages<any>(
       ctx,
-      `select Id, TotalAmt, TxnDate, CustomerRef, DepositToAccountRef, PrivateNote from Payment ` +
-        `where TotalAmt < '0' and TxnDate >= '${escapeQuery(startDate)}' ` +
-        `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
+      "Payment",
+      `${inRange} and TotalAmt < '0'`,
+      (r) => r.QueryResponse?.Payment
     );
-    for (const p of res.QueryResponse?.Payment ?? []) {
+    for (const p of pays) {
       const total = Number(p.TotalAmt ?? 0);
       if (!(total < 0)) continue;
       const amount = Math.abs(total);
@@ -199,6 +215,12 @@ export interface RefundPick {
   refunds: UndepositedRefund[];
   /** True when the gap was closed to the cent. */
   exact: boolean;
+  /**
+   * How many candidates matched the gap exactly on their own. >1 means the amount
+   * was ambiguous and we broke the tie by date — recorded so the choice is
+   * auditable rather than invisible.
+   */
+  exactCandidates: number;
 }
 
 /**
@@ -215,20 +237,42 @@ export interface RefundPick {
 export function pickRefundsForGap(
   candidates: UndepositedRefund[],
   gapCents: number,
-  used: Set<string> = new Set()
+  used: Set<string> = new Set(),
+  /** Settlement date, used to break a same-amount tie by date proximity. */
+  settlementDate?: string
 ): RefundPick {
-  if (gapCents <= 0) return { refunds: [], exact: gapCents === 0 };
+  if (gapCents <= 0) return { refunds: [], exact: gapCents === 0, exactCandidates: 0 };
   const cents = (n: number) => Math.round(n * 100);
-  const key = (r: UndepositedRefund) => `${r.kind}:${r.txnId}:${r.lineId ?? ""}`;
-  const avail = candidates.filter((r) => !used.has(key(r)));
+  const avail = candidates.filter((r) => !used.has(refundKey(r)));
 
-  const single = avail.find((r) => cents(r.amount) === gapCents);
-  if (single) return { refunds: [single], exact: true };
+  // Amount alone is NOT unique: a wide window can hold another refund for the
+  // same figure (live example — a second $1,728.05 existed in the window, already
+  // deposited on a different day). Linking the first one found would tie the
+  // deposit while sweeping the WRONG transaction, so prefer the candidate closest
+  // to the settlement date: the refund that reduced THIS payout is the one that
+  // happened next to it.
+  const exactMatches = avail.filter((r) => cents(r.amount) === gapCents);
+  if (exactMatches.length > 0) {
+    const ranked = settlementDate
+      ? [...exactMatches].sort((a, b) => dayGap(a.date, settlementDate) - dayGap(b.date, settlementDate))
+      : exactMatches;
+    return { refunds: [ranked[0]], exact: true, exactCandidates: exactMatches.length };
+  }
 
   const total = avail.reduce((s, r) => s + cents(r.amount), 0);
-  if (avail.length > 0 && total === gapCents) return { refunds: avail, exact: true };
+  if (avail.length > 0 && total === gapCents) {
+    return { refunds: avail, exact: true, exactCandidates: 0 };
+  }
 
-  return { refunds: [], exact: false };
+  return { refunds: [], exact: false, exactCandidates: 0 };
+}
+
+/** Whole days between two ISO dates (0 when either is unparseable). */
+function dayGap(a: string, b: string): number {
+  const ta = Date.parse(`${a}T00:00:00Z`);
+  const tb = Date.parse(`${b}T00:00:00Z`);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return Number.MAX_SAFE_INTEGER;
+  return Math.abs(Math.round((ta - tb) / 86400000));
 }
 
 /** Stable key for the cross-payout no-reuse guard. */

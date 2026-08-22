@@ -725,7 +725,7 @@ async function createOneDeposit(
     if (gapCents > 0) {
       const { findUndepositedRefunds, pickRefundsForGap, refundKey } = await import("@/lib/qbo/refunds");
       const found = await findUndepositedRefunds(dc.ctx, refundStart, refundEnd);
-      const pick = pickRefundsForGap(found.refunds, gapCents, refundUsed);
+      const pick = pickRefundsForGap(found.refunds, gapCents, refundUsed, payout.settlementDate);
       if (pick.exact && pick.refunds.length > 0) {
         for (const r of pick.refunds) refundUsed.add(refundKey(r));
         refunds = pick.refunds.map((r) => ({
@@ -735,6 +735,18 @@ async function createOneDeposit(
           amount: -r.amount,
         }));
         sumRefundCents = pick.refunds.reduce((s, r) => s + Math.round(r.amount * 100), 0);
+        await prisma.depEvent.create({
+          data: {
+            payoutId: payout.id,
+            eventType: "refund_linked",
+            message:
+              `Swept ${pick.refunds.length} refund(s) totalling ${(sumRefundCents / 100).toFixed(2)} into this deposit: ` +
+              pick.refunds.map((r) => `${r.kind} ${r.txnId}${r.lineId ? `/${r.lineId}` : ""} ${r.date} ${r.amount.toFixed(2)}${r.customerName ? ` (${r.customerName})` : ""}`).join("; ") +
+              (pick.exactCandidates > 1
+                ? ` · NOTE ${pick.exactCandidates} refunds in the window shared this amount; picked the one closest to ${payout.settlementDate}.`
+                : ""),
+          },
+        });
       } else {
         // Nothing sweepable. Say what we DID find, which is the difference
         // between "record the refund" and "move the refund you already made".
