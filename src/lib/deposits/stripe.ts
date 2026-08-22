@@ -69,8 +69,17 @@ export function parseStripePayouts(text: string): StripePayout[] {
 export function parseStripeCharges(text: string): StripeCharge[] {
   const out: StripeCharge[] = [];
   for (const row of parseCsv(text)) {
+    // Tekmetric's per-payout "transfers" export is a balance-transaction listing:
+    // it carries a `Type` column and may include Payout/Transfer/Refund rows
+    // alongside the charges. Only charges fund a payout's gross, so skip the
+    // rest. (A refund row here would make the set not tie to the payout net,
+    // which is the honest outcome rather than something to paper over.)
+    const type = pick(row, "Type").toLowerCase().trim();
+    if (type && type !== "charge") continue;
+
     const gross = parseCurrency(pick(row, "Amount"));
-    const fee = parseCurrency(pick(row, "Fee")) ?? 0;
+    // "Fee" in the Payments export; "Fees" in the per-payout transfers export.
+    const fee = parseCurrency(pick(row, "Fee", "Fees")) ?? 0;
     // A (partially) refunded charge settles into the bank for less than its
     // gross amount — the export still shows the original gross, but only
     // gross - fee - refund actually lands in a payout. Missing this doesn't
@@ -79,12 +88,14 @@ export function parseStripeCharges(text: string): StripeCharge[] {
     // breaks that payout AND cascades to break every payout after it for
     // the rest of the file (see stripe.test.ts's "August cascade" case).
     const refunded = parseCurrency(pick(row, "Amount Refunded")) ?? 0;
-    const created = datePart(pick(row, "Created date (UTC)", "Created (UTC)", "Created date"));
+    const created = datePart(
+      pick(row, "Created date (UTC)", "Created (UTC)", "Created date", "Created")
+    );
     const status = pick(row, "Status").toLowerCase();
     if (gross === null || !created) continue;
     if (status && !["paid", "succeeded", "captured"].includes(status)) continue;
     out.push({
-      id: pick(row, "id"),
+      id: pick(row, "id", "ID"),
       createdDate: created,
       gross,
       fee,
@@ -149,4 +160,103 @@ export function reconstructTekmetricPayouts(
   }
 
   return { deposits, unresolved, leftoverCharges: queue.slice(i) };
+}
+
+// ---------------------------------------------------------------------------
+// Charges-only back-fill: attach a per-payout export to a payout we already have
+// ---------------------------------------------------------------------------
+
+export interface ChargeSetTotals {
+  count: number;
+  gross: number;
+  /** Processor fees on the set. */
+  fee: number;
+  /** What actually lands in the bank: Σ(gross − fee − refunded). */
+  net: number;
+}
+
+/** Totals for a charge set, using the same net definition as reconstruction. */
+export function chargeSetTotals(charges: StripeCharge[]): ChargeSetTotals {
+  let grossCents = 0;
+  let feeCents = 0;
+  let netCents = 0;
+  for (const c of charges) {
+    grossCents += toCents(c.gross);
+    feeCents += toCents(c.fee);
+    netCents += toCents(c.net);
+  }
+  return { count: charges.length, gross: grossCents / 100, fee: feeCents / 100, net: netCents / 100 };
+}
+
+/** A payout already on file that has no charges attached yet. */
+export interface BackfillCandidate {
+  id: string;
+  sourceRef: string | null;
+  settlementDate: string;
+  netAmount: number;
+}
+
+export interface ChargeSetBackfill {
+  /** Ready to feed through the normal reconcile path, or null when no unique match. */
+  deposit: ExpectedDeposit | null;
+  totals: ChargeSetTotals;
+  /** How many candidates the set ties to — >1 is ambiguous, so we decline. */
+  matchCount: number;
+  /** The matched candidate's id, for messaging. */
+  payoutId: string | null;
+}
+
+/**
+ * Reconstruct ONE already-known payout from a charges-only export.
+ *
+ * The workflow this serves: a payout couldn't be reconstructed because its
+ * charges fell outside the exported window — e.g. a Monday payout funded by the
+ * previous Thursday's charges — so the owner opens that payout in Tekmetric,
+ * exports just its transactions, and drops that single file. If those charges net
+ * to a known payout's net to the cent, they ARE that payout's charges.
+ *
+ * Deliberately strict, and for the same reason the deposit itself is
+ * checksum-gated: the WHOLE set must tie exactly, and exactly one candidate may
+ * match. Two payouts with an identical net is ambiguous, so we decline and report
+ * instead of guessing. The returned deposit carries the candidate's own
+ * settlementDate/sourceRef so it reconciles onto the existing row (an update)
+ * rather than creating a duplicate.
+ */
+export function backfillPayoutFromCharges(
+  charges: StripeCharge[],
+  candidates: BackfillCandidate[]
+): ChargeSetBackfill {
+  const totals = chargeSetTotals(charges);
+  if (charges.length === 0) return { deposit: null, totals, matchCount: 0, payoutId: null };
+
+  const netCents = toCents(totals.net);
+  const hits = candidates.filter((c) => toCents(c.netAmount) === netCents);
+  if (hits.length !== 1) {
+    return { deposit: null, totals, matchCount: hits.length, payoutId: null };
+  }
+
+  const target = hits[0];
+  const grossCents = charges.reduce((s, c) => s + toCents(c.gross), 0);
+  const lines: PayoutLine[] = charges.map((c) => ({
+    amount: c.gross,
+    fee: c.fee,
+    brand: "",
+    ref: c.id,
+  }));
+  return {
+    deposit: {
+      processor: "tekmetric",
+      settlementDate: target.settlementDate,
+      gross: grossCents / 100,
+      // Same convention as reconstruction: fee is the gross-to-net difference,
+      // so gross − fee always equals the payout that actually hit the bank.
+      fee: (grossCents - netCents) / 100,
+      net: target.netAmount,
+      lines,
+      sourceRef: target.sourceRef ?? undefined,
+    },
+    totals,
+    matchCount: 1,
+    payoutId: target.id,
+  };
 }

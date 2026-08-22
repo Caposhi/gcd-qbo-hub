@@ -240,7 +240,68 @@ export async function ingestDepositFilesAction(formData: FormData) {
     });
   }
 
-  const outcome = await reconcileParsedPayouts(toParsedPayouts(result), imp.id);
+  // A charges-only drop (one payout's transactions, exported to fix a payout the
+  // main files couldn't reconstruct) completes an existing row rather than
+  // creating one: match the whole set to an unresolved payout by exact net, then
+  // send it through the SAME reconcile path so it lands as an update.
+  const parsed = toParsedPayouts(result);
+  if (result.chargesOnly && result.chargesOnly.length > 0) {
+    const { backfillPayoutFromCharges } = await import("@/lib/deposits/stripe");
+    const candidates = (await prisma.depPayout.findMany({
+      where: { processor: "tekmetric", qboDepositId: null },
+      include: { lines: true },
+    })) as unknown as Array<{
+      id: string;
+      sourceRef: string | null;
+      settlementDate: string;
+      netAmount: number | string;
+      lines: unknown[];
+    }>;
+    // Only payouts with nothing attached yet — never re-open one that already
+    // reconstructed cleanly.
+    const openOnes = candidates
+      .filter((c) => c.lines.length === 0)
+      .map((c) => ({
+        id: c.id,
+        sourceRef: c.sourceRef,
+        settlementDate: c.settlementDate,
+        netAmount: Number(c.netAmount),
+      }));
+    const back = backfillPayoutFromCharges(result.chargesOnly, openOnes);
+    const t = back.totals;
+    if (back.deposit) {
+      parsed.push({
+        processor: "tekmetric",
+        settlementDate: back.deposit.settlementDate,
+        sourceRef: back.deposit.sourceRef ?? null,
+        gross: back.deposit.gross,
+        fee: back.deposit.fee,
+        net: back.deposit.net,
+        status: "proposed",
+        deltaCents: 0,
+        lines: back.deposit.lines.map((l) => ({ amount: l.amount, fee: l.fee, brand: l.brand, ref: l.ref })),
+      });
+      result.notes.push(
+        `Matched ${t.count} charge(s) (gross ${t.gross.toFixed(2)} − fees ${t.fee.toFixed(2)} = ${t.net.toFixed(
+          2
+        )}) to the ${back.deposit.settlementDate} payout and filled in its charges.`
+      );
+    } else if (back.matchCount > 1) {
+      result.notes.push(
+        `Those ${t.count} charge(s) net to ${t.net.toFixed(2)}, which matches ${back.matchCount} payouts awaiting charges — ambiguous, so nothing was changed. Re-drop with the payouts file to disambiguate.`
+      );
+    } else {
+      result.notes.push(
+        `Those ${t.count} charge(s) net to ${t.net.toFixed(2)} (gross ${t.gross.toFixed(2)} − fees ${t.fee.toFixed(
+          2
+        )}), which doesn't equal any payout still awaiting charges${
+          openOnes.length ? ` (${openOnes.map((o) => `${o.settlementDate}: ${o.netAmount.toFixed(2)}`).join(", ")})` : " — there are none"
+        }. Nothing was changed.`
+      );
+    }
+  }
+
+  const outcome = await reconcileParsedPayouts(parsed, imp.id);
 
   await prisma.depEvent.create({
     data: {

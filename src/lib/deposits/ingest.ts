@@ -13,6 +13,7 @@ import {
   parseStripeCharges,
   reconstructTekmetricPayouts,
   type TekmetricReconstruction,
+  type StripeCharge,
 } from "./stripe";
 import type { ExpectedDeposit } from "./types";
 
@@ -36,6 +37,13 @@ export function detectFileType(text: string): FileType {
   if (h.has("arrival date (utc)") || (h.has("statement descriptor") && h.has("trace id")))
     return "stripe_payouts";
   if (h.has("fee") && (h.has("created date (utc)") || h.has("application fee"))) return "stripe_charges";
+  // Tekmetric's PER-PAYOUT "transfers" export — the drill-down an owner runs when
+  // one payout couldn't be reconstructed. Same charge data, different column
+  // spelling: Type/ID/Created/Amount/Fees/Net (note "Fees", not "Fee", and a bare
+  // "Created"), which is why this file used to fall through to `unknown` and
+  // ingest silently did nothing.
+  if (h.has("fees") && h.has("net") && (h.has("created") || h.has("created (utc)")))
+    return "stripe_charges";
   return "unknown";
 }
 
@@ -47,6 +55,14 @@ export interface IngestResult {
   unknown: string[];
   /** Human-readable notes (e.g. "charges provided without a payouts file"). */
   notes: string[];
+  /**
+   * Charges parsed from a charges file dropped WITHOUT a payouts file. Full
+   * reconstruction needs both, but a lone per-payout export can still back-fill
+   * a payout already on file whose charges sum to its net (see
+   * `backfillPayoutFromCharges`) — which is exactly what an owner is doing when
+   * they export one stuck payout's transactions.
+   */
+  chargesOnly: StripeCharge[] | null;
 }
 
 export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
@@ -67,16 +83,30 @@ export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
   }
 
   let tekmetric: TekmetricReconstruction | null = null;
+  let chargesOnly: StripeCharge[] | null = null;
   if (payoutsText && chargesText) {
     tekmetric = reconstructTekmetricPayouts(
       parseStripePayouts(payoutsText),
       parseStripeCharges(chargesText)
     );
-  } else if (payoutsText || chargesText) {
+  } else if (chargesText) {
+    // Charges without payouts: can't reconstruct from scratch, but CAN complete a
+    // payout already on file. The caller matches it against unresolved payouts.
+    chargesOnly = parseStripeCharges(chargesText);
+    if (chargesOnly.length === 0) {
+      notes.push("That charges file had no usable charge rows — nothing to match.");
+    }
+  } else if (payoutsText) {
     notes.push(
-      "Tekmetric needs BOTH the payouts and the payments (charges) files to reconstruct deposits — only one was provided."
+      "Tekmetric needs BOTH the payouts and the payments (charges) files to reconstruct deposits — only the payouts file was provided."
     );
   }
 
-  return { paymentechDeposits, tekmetric, detected, unknown, notes };
+  if (unknown.length > 0) {
+    notes.push(
+      `Not recognized as a Chase Paymentech, Tekmetric payouts, or Tekmetric payments/transfers export: ${unknown.join(", ")}. Nothing was read from it.`
+    );
+  }
+
+  return { paymentechDeposits, tekmetric, detected, unknown, notes, chargesOnly };
 }
