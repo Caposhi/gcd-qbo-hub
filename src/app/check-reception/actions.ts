@@ -53,17 +53,6 @@ export async function ingestCheckPdfAction(formData: FormData) {
     return;
   }
 
-  let extraction;
-  try {
-    extraction = await extractChecksFromPdf(bytes);
-  } catch (err) {
-    await prisma.chkEvent.create({
-      data: { eventType: "ingest_error", message: `Could not read the PDF: ${String(err)}`.slice(0, 1800) },
-    });
-    revalidatePath(PATH);
-    return;
-  }
-
   const mappings = (await prisma.chkPayeeMapping.findMany({ where: { active: true } })) as PayeeMappingLike[];
   const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
 
@@ -71,6 +60,10 @@ export async function ingestCheckPdfAction(formData: FormData) {
   // suggest the closest vendor (fuzzy) and — when there's no learned mapping —
   // that vendor's usual category from its QBO history, the way QBO auto-fills.
   // If QBO isn't reachable we still ingest; the dropdowns just start blank.
+  // Fetched BEFORE the vision read so the known vendor names can also be
+  // handed to extractChecksFromPdf as a read-time hint: a payee whose
+  // handwriting is ambiguous between two similar names (e.g. "Nitrix" vs. an
+  // actual vendor "Witrix") should be biased toward the name that's real.
   let vendors: Awaited<ReturnType<typeof import("@/lib/checks/qbo-check").listVendors>> = [];
   let vendorCategory = new Map<string, { id: string; name: string }>();
   // Check numbers already recorded in QBO on Chase 9680 (with their amount) → so
@@ -98,6 +91,17 @@ export async function ingestCheckPdfAction(formData: FormData) {
     qboReached = true;
   } catch {
     qboReached = false;
+  }
+
+  let extraction;
+  try {
+    extraction = await extractChecksFromPdf(bytes, { knownVendorNames: vendors.map((v) => v.name) });
+  } catch (err) {
+    await prisma.chkEvent.create({
+      data: { eventType: "ingest_error", message: `Could not read the PDF: ${String(err)}`.slice(0, 1800) },
+    });
+    revalidatePath(PATH);
+    return;
   }
 
   const batch = await prisma.chkBatch.create({

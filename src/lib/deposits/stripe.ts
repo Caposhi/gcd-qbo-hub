@@ -93,7 +93,13 @@ export function parseStripeCharges(text: string): StripeCharge[] {
     );
     const status = pick(row, "Status").toLowerCase();
     if (gross === null || !created) continue;
-    if (status && !["paid", "succeeded", "captured"].includes(status)) continue;
+    // "refunded" (full refund) and "partially_refunded" still represent a real
+    // charge that landed in a payout net — the refund is already subtracted
+    // above via `refunded`. Excluding them here doesn't zero them out, it
+    // drops the row entirely, which understates every payout that included
+    // the charge and — same cascade as the missing-refund bug above — breaks
+    // every payout after it too (see stripe.test.ts's "refunded charge" case).
+    if (status && !["paid", "succeeded", "captured", "refunded", "partially_refunded"].includes(status)) continue;
     out.push({
       id: pick(row, "id", "ID"),
       createdDate: created,

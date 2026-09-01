@@ -15,8 +15,8 @@ function payoutRow(id: string, amount: number, arrival: string): string {
   return `${id},${amount},${arrival} 00:00,usd,true,${arrival} 00:00,paid`;
 }
 
-function chargeRow(id: string, created: string, amount: number, refunded: number, fee: number): string {
-  return `${id},${created} 12:00:00,${amount},${refunded},${fee},Paid`;
+function chargeRow(id: string, created: string, amount: number, refunded: number, fee: number, status = "Paid"): string {
+  return `${id},${created} 12:00:00,${amount},${refunded},${fee},${status}`;
 }
 
 describe("parseStripeCharges — refund handling (real-world bug, §20)", () => {
@@ -31,6 +31,77 @@ describe("parseStripeCharges — refund handling (real-world bug, §20)", () => 
     const csv = [CHARGES_HEADER, chargeRow("py_1", "2026-08-05", 100, 0, 2.5)].join("\n");
     const [charge] = parseStripeCharges(csv);
     expect(charge.net).toBeCloseTo(97.5, 2);
+  });
+});
+
+describe('parseStripeCharges — Status "Refunded" (real-world bug, Sept 1 CSV set)', () => {
+  it("a fully refunded charge is kept, with a NEGATIVE net (fee still applied even though the charge was reversed)", () => {
+    // Exact real row from unified_payments_1.csv: py_1U6d2o2YMG3jLolZ0JexQwBX,
+    // Amount 240.75, Amount Refunded 240.75, Fee 5.30, Status "Refunded".
+    // Before the fix, the status allowlist dropped this row entirely — not
+    // just zeroed it out, but removed a real -5.30 contribution to its payout.
+    const csv = [CHARGES_HEADER, chargeRow("py_1U6d2o2YMG3jLolZ0JexQwBX", "2026-08-20", 240.75, 240.75, 5.3, "Refunded")].join("\n");
+    const charges = parseStripeCharges(csv);
+    expect(charges).toHaveLength(1);
+    expect(charges[0].net).toBeCloseTo(-5.3, 2);
+  });
+
+  it("a partially refunded charge with Status \"partially_refunded\" is kept", () => {
+    const csv = [CHARGES_HEADER, chargeRow("py_partial", "2026-08-20", 100, 40, 2, "partially_refunded")].join("\n");
+    const [charge] = parseStripeCharges(csv);
+    expect(charge.net).toBeCloseTo(58, 2);
+  });
+
+  it("excluding the Refunded charge (pre-fix behavior) breaks the 8/21 payout and cascades to 8/24", () => {
+    // Real payouts and real charges from the reported payouts_1.csv /
+    // unified_payments_1.csv (Aug 19–20 charges). Hand-verified: the 8/19
+    // charges sum to exactly the 8/20 payout (7367.27), and the FULL 8/20
+    // charge set — INCLUDING py_1U6d2o's -5.30 net — sums to exactly the
+    // 8/21 payout (12125.71). This is the user's report: "not a single one
+    // ... found a match", for 8/21 onward.
+    const payoutsCsv = [
+      PAYOUTS_HEADER,
+      payoutRow("po_1U6JjR2YMG3jLolZnOWgAo8W", 7367.27, "2026-08-20"),
+      payoutRow("po_1U6gNa2YMG3jLolZepRemFN5", 12125.71, "2026-08-21"),
+    ].join("\n");
+    const chargesCsv = [
+      CHARGES_HEADER,
+      // 8/19 charges → settle into the 8/20 payout.
+      chargeRow("py_1U69Cw", "2026-08-19", 225.0, 0, 7.21),
+      chargeRow("py_1U6AMK", "2026-08-19", 1678.7, 0, 36.36),
+      chargeRow("py_1U6BPW", "2026-08-19", 160.49, 0, 3.57),
+      chargeRow("py_1U6Cgi", "2026-08-19", 1510.89, 0, 32.74),
+      chargeRow("py_1U6FOr", "2026-08-19", 240.75, 0, 5.3),
+      chargeRow("py_1U6Gre", "2026-08-19", 3755.39, 0, 118.77),
+      // 8/20 charges → settle into the 8/21 payout, including the refund.
+      chargeRow("py_1U6VKk", "2026-08-20", 1363.98, 0, 29.56),
+      chargeRow("py_1U6Y2v", "2026-08-20", 2894.56, 0, 62.62),
+      chargeRow("py_1U6bfI", "2026-08-20", 1161.26, 0, 25.18),
+      chargeRow("py_1U6c9k", "2026-08-20", 3801.53, 0, 82.21),
+      chargeRow("py_1U6cNA", "2026-08-20", 1500.0, 0, 32.5),
+      chargeRow("py_1U6d1u", "2026-08-20", 240.75, 0, 5.3),
+      chargeRow("py_1U6d2o2YMG3jLolZ0JexQwBX", "2026-08-20", 240.75, 240.75, 5.3, "Refunded"),
+      chargeRow("py_1U6dFk", "2026-08-20", 1437.45, 0, 31.15),
+    ].join("\n");
+    const payouts = parseStripePayouts(payoutsCsv);
+
+    // Pre-fix: the status allowlist drops py_1U6d2o entirely — the 8/20
+    // bucket sums to 12131.01 (12125.71 + the 5.30 fee it should have
+    // subtracted), overshoots the exact-sum target, and never resolves.
+    const preFixCharges = parseStripeCharges(chargesCsv).filter((c) => c.id !== "py_1U6d2o2YMG3jLolZ0JexQwBX");
+    const broken = reconstructTekmetricPayouts(payouts, preFixCharges);
+    expect(broken.unresolved.map((u) => u.payout.id)).toEqual(["po_1U6gNa2YMG3jLolZepRemFN5"]);
+    expect(broken.deposits.map((d) => d.settlementDate)).toEqual(["2026-08-20"]);
+
+    // Post-fix: the real parser keeps py_1U6d2o (net -5.30), and both
+    // payouts resolve exactly.
+    const fixedCharges = parseStripeCharges(chargesCsv);
+    const fixed = reconstructTekmetricPayouts(payouts, fixedCharges);
+    expect(fixed.unresolved).toEqual([]);
+    expect(fixed.deposits.map((d) => d.settlementDate)).toEqual(["2026-08-20", "2026-08-21"]);
+    const po21 = fixed.deposits.find((d) => d.settlementDate === "2026-08-21")!;
+    expect(po21.net).toBeCloseTo(12125.71, 2);
+    expect(po21.lines).toHaveLength(8);
   });
 });
 
