@@ -95,13 +95,36 @@ export interface NamedRef {
   name: string;
 }
 
+const LIST_PAGE_SIZE = 1000;
+
+/**
+ * Run a query across QBO's whole result set via STARTPOSITION paging, not just
+ * the first MAXRESULTS page. QBO caps a single query at 1000 rows regardless of
+ * MAXRESULTS; a shop with more than 1000 active vendors (or accounts) would
+ * silently lose whichever ones sort past that cutoff from a one-shot query —
+ * they'd exist in QBO but never appear in a dropdown built from it. `base` is
+ * the query WITHOUT any MAXRESULTS/STARTPOSITION clause; this appends them.
+ */
+async function queryAllPages<TRow = any>(ctx: QboContext, base: string, entityKey: string): Promise<TRow[]> {
+  const out: TRow[] = [];
+  let start = 1;
+  for (;;) {
+    const res = await query<{ QueryResponse?: Record<string, TRow[]> }>(
+      ctx,
+      `${base} STARTPOSITION ${start} MAXRESULTS ${LIST_PAGE_SIZE}`
+    );
+    const page = res.QueryResponse?.[entityKey] ?? [];
+    out.push(...page);
+    if (page.length < LIST_PAGE_SIZE) break;
+    start += LIST_PAGE_SIZE;
+  }
+  return out;
+}
+
 /** All active vendors (id + DisplayName) for the vendor dropdown. Read-only. */
 export async function listVendors(ctx: QboContext): Promise<NamedRef[]> {
-  const res = await query<{ QueryResponse?: { Vendor?: any[] } }>(
-    ctx,
-    "select Id, DisplayName from Vendor where Active = true MAXRESULTS 1000"
-  );
-  return (res.QueryResponse?.Vendor ?? [])
+  const rows = await queryAllPages<any>(ctx, "select Id, DisplayName from Vendor where Active = true", "Vendor");
+  return rows
     .map((v) => ({ id: String(v.Id), name: String(v.DisplayName ?? "") }))
     .filter((v) => v.name)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -123,12 +146,13 @@ const NON_POSTABLE_TYPES = new Set(["Accounts Receivable", "Accounts Payable"]);
  * loan/credit-card/owner-draw checks can still be categorized. Read-only.
  */
 export async function listCategories(ctx: QboContext): Promise<CategoryOption[]> {
-  const res = await query<{ QueryResponse?: { Account?: any[] } }>(
+  const rows = await queryAllPages<any>(
     ctx,
-    "select Id, Name, FullyQualifiedName, AccountType from Account where Active = true MAXRESULTS 1000"
+    "select Id, Name, FullyQualifiedName, AccountType from Account where Active = true",
+    "Account"
   );
   const out: CategoryOption[] = [];
-  for (const a of res.QueryResponse?.Account ?? []) {
+  for (const a of rows) {
     const accountType = String(a.AccountType ?? "");
     if (NON_POSTABLE_TYPES.has(accountType)) continue;
     out.push({

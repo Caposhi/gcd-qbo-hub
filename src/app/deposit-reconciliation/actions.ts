@@ -15,19 +15,9 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { buildProposalsFromFiles, type NamedFile } from "@/lib/deposits/ingest";
+import { payoutKey, buildPayoutIndexes, resolveMatch } from "@/lib/deposits/reconcile-match";
 
 const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
-
-/** A payout's identity: the processor's own reference when we have one
- *  (Stripe trace-id/payout-id, Paymentech batch #), else a fingerprint of
- *  date + net amount. Stable across re-ingests so re-dropping the same
- *  files — even after a parsing bug fix changes the numbers — updates the
- *  same row instead of creating a duplicate. */
-function payoutKey(processor: string, sourceRef: string | null, settlementDate: string, netAmount: number): string {
-  return sourceRef
-    ? `${processor}|${sourceRef}`
-    : `${processor}|${settlementDate}|${Math.round(netAmount * 100)}`;
-}
 
 /** One payout as freshly parsed from the dropped files, normalized to the
  *  shape reconcileParsedPayouts needs regardless of which list it came from
@@ -94,15 +84,14 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
     where: {},
     include: { lines: true },
   })) as unknown as ExistingPayout[];
-  const byKey = new Map(
-    existing.map((p) => [payoutKey(p.processor, p.sourceRef, p.settlementDate, Number(p.netAmount)), p])
-  );
+  const indexed = existing.map((p) => ({ ...p, netAmount: Number(p.netAmount) }));
+  const indexes = buildPayoutIndexes(indexed);
+  const claimedFallbacks = new Set<string>();
 
   const outcome: ReconcileOutcome = { created: 0, updated: 0, unchanged: 0, skippedPosted: 0 };
 
   for (const d of parsed) {
-    const key = payoutKey(d.processor, d.sourceRef, d.settlementDate, d.net);
-    const match = byKey.get(key);
+    const match = resolveMatch(d, indexes, claimedFallbacks);
 
     if (!match) {
       await prisma.depPayout.create({
@@ -135,6 +124,7 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
     const centsEq = (a: number, b: number) => Math.round(a * 100) === Math.round(b * 100);
     const sameTotals =
       match.status === d.status &&
+      match.sourceRef === d.sourceRef &&
       (match.deltaCents ?? 0) === d.deltaCents &&
       centsEq(Number(match.grossAmount), d.gross) &&
       centsEq(Number(match.feeAmount), d.fee) &&
@@ -146,6 +136,7 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
       continue;
     }
 
+    const sourceRefChanged = match.sourceRef !== d.sourceRef;
     await prisma.depPayout.update({
       where: { id: match.id },
       data: {
@@ -154,13 +145,22 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
         netAmount: dec(d.net),
         status: d.status,
         deltaCents: d.status === "proposed" ? 0 : d.deltaCents,
+        // Self-heal to the freshest sourceRef so the NEXT ingest's primary
+        // key-based lookup hits directly instead of needing the fallback again.
+        sourceRef: d.sourceRef,
         // Old match state (from a prior Locate run) no longer applies once the
         // reconstruction itself changed — re-running Locate is cheap and safe.
         lines: { deleteMany: {}, create: d.lines.map((l) => ({ amount: dec(l.amount), feeAmount: l.fee ? dec(l.fee) : null, brand: l.brand || null, ref: l.ref || null })) },
       },
     });
     await prisma.depEvent.create({
-      data: { payoutId: match.id, eventType: "reprocessed", message: `Updated by reprocess: ${match.status} → ${d.status}${d.status === "needs_review" ? ` (Δ ${(d.deltaCents / 100).toFixed(2)})` : ""}.` },
+      data: {
+        payoutId: match.id,
+        eventType: "reprocessed",
+        message:
+          `Updated by reprocess: ${match.status} → ${d.status}${d.status === "needs_review" ? ` (Δ ${(d.deltaCents / 100).toFixed(2)})` : ""}.` +
+          (sourceRefChanged ? ` Source ref changed ${match.sourceRef ?? "(none)"} → ${d.sourceRef ?? "(none)"} (matched by settlement date + net amount).` : ""),
+      },
     });
     outcome.updated++;
   }
@@ -324,20 +324,36 @@ export async function ingestDepositFilesAction(formData: FormData) {
 }
 
 /**
- * Remove duplicate payouts (same processor + source ref), keeping the earliest
- * — and never touching one already posted to QBO. One-time cleanup for payouts
- * created before ingest was made dedupe-aware.
+ * Remove duplicate payouts (same processor + source ref, OR same processor +
+ * settlement date + net amount under a different sourceRef — see
+ * reconcileParsedPayouts' fallback-key comment for why a real payout's
+ * sourceRef can change between exports), keeping the earliest — and never
+ * touching one already posted to QBO. One-time cleanup for payouts created
+ * before ingest was made dedupe-aware (or before it was made sourceRef-format
+ * resilient).
  */
 export async function cleanupDuplicatePayoutsAction() {
   await requirePermission("edit_mappings");
   const all = await prisma.depPayout.findMany({ orderBy: { createdAt: "asc" } });
   const seen = new Set<string>();
+  const seenByFallback = new Map<string, string>(); // fallback key → kept payout id
   const dupeIds: string[] = [];
+  const fallbackKey = (p: (typeof all)[number]) =>
+    `${p.processor}|${p.settlementDate}|${Math.round(Number(p.netAmount) * 100)}`;
   for (const p of all) {
     const key = payoutKey(p.processor, p.sourceRef, p.settlementDate, Number(p.netAmount));
-    if (p.qboDepositId) { seen.add(key); continue; } // posted — always keep
-    if (seen.has(key)) dupeIds.push(p.id);
-    else seen.add(key);
+    const fk = fallbackKey(p);
+    if (p.qboDepositId) {
+      seen.add(key);
+      seenByFallback.set(fk, p.id);
+      continue; // posted — always keep
+    }
+    if (seen.has(key) || seenByFallback.has(fk)) {
+      dupeIds.push(p.id);
+      continue;
+    }
+    seen.add(key);
+    seenByFallback.set(fk, p.id);
   }
   if (dupeIds.length) {
     await prisma.depPayout.deleteMany({ where: { id: { in: dupeIds } } }); // lines/events cascade

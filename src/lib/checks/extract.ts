@@ -24,7 +24,7 @@ export function isCheckReaderConfigured(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
 }
 
-const SYSTEM_PROMPT = `You read scanned images of business checks written by German Car Depot (an auto-repair shop) and drawn on their Chase checking account. Each page of the PDF is ONE check.
+const BASE_SYSTEM_PROMPT = `You read scanned images of business checks written by German Car Depot (an auto-repair shop) and drawn on their Chase checking account. Each page of the PDF is ONE check.
 
 For every page, transcribe exactly what the check shows. Do not guess or infer beyond what is legible.
 
@@ -37,6 +37,26 @@ Read these fields per check:
 - confidence: your honest confidence in THIS check's reading — "high" if all fields are clearly legible, "medium" if some fields required judgment, "low" if handwriting is hard to read or a key field is unclear/missing.
 
 If a field is genuinely illegible or absent, use null for that field (and lower the confidence). Never fabricate a value. Report one entry per page, in page order.`;
+
+/**
+ * Bias the payee read toward a real, known QBO vendor when handwriting is
+ * genuinely ambiguous between two similar-looking names (e.g. "Nitrix" is not
+ * a vendor German Car Depot has ever paid, but "Witrix" is — a check that
+ * reads as either should be transcribed as the one that actually exists).
+ * This is prompting context, not literal model fine-tuning: no weights
+ * change, we're just giving the read more to go on, the same way a person
+ * proofreading the same handwriting would glance at the vendor list first.
+ * Capped well under QBO's own per-page result cap so a large vendor roster
+ * can't blow the prompt's context.
+ */
+function buildSystemPrompt(knownVendorNames: string[]): string {
+  const names = [...new Set(knownVendorNames.map((n) => n.trim()).filter(Boolean))].slice(0, 3000);
+  if (names.length === 0) return BASE_SYSTEM_PROMPT;
+  return `${BASE_SYSTEM_PROMPT}
+
+For the payee field specifically: German Car Depot's known QuickBooks vendors include: ${names.join(", ")}.
+Handwriting is often ambiguous between visually similar letters (e.g. "N" vs. "W", "cl" vs. "d"). If the payee you read closely resembles one of these known vendor names — same rough length and letter shapes, differing by only a character or two — prefer transcribing it as that known vendor's exact name rather than a similar-looking name that isn't in the list. Do NOT force a match when the handwriting clearly reads as something else; a genuinely new payee is common and should be transcribed as written. This is a bias for ambiguous cases only, never a hard override of what the check actually shows.`;
+}
 
 const REPORT_TOOL: Anthropic.Tool = {
   name: "report_checks",
@@ -90,12 +110,22 @@ function coerce(raw: any, index: number): ExtractedCheck {
   };
 }
 
+export interface ExtractOptions {
+  /** Active QBO vendor display names, used only to bias ambiguous payee reads
+   *  toward a real vendor (see buildSystemPrompt). Optional — omitted or empty
+   *  falls back to the base prompt with no vendor context. */
+  knownVendorNames?: string[];
+}
+
 /**
  * Read every check in a PDF. `pdf` is the raw file bytes. Returns one
  * ExtractedCheck per page (best-effort). Throws if the reader is unconfigured,
  * the file is too large, or the model returns nothing usable.
  */
-export async function extractChecksFromPdf(pdf: Buffer | Uint8Array): Promise<CheckExtractionResult> {
+export async function extractChecksFromPdf(
+  pdf: Buffer | Uint8Array,
+  opts?: ExtractOptions
+): Promise<CheckExtractionResult> {
   if (!isCheckReaderConfigured()) {
     throw new Error("Check reader is not configured (ANTHROPIC_API_KEY is unset).");
   }
@@ -112,7 +142,7 @@ export async function extractChecksFromPdf(pdf: Buffer | Uint8Array): Promise<Ch
   const response = await client.messages.create({
     model: MODEL,
     max_tokens: 8192,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(opts?.knownVendorNames ?? []),
     tools: [REPORT_TOOL],
     tool_choice: { type: "tool", name: "report_checks" },
     messages: [
