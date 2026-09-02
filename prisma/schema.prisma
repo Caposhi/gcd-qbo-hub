@@ -235,6 +235,18 @@ model SheetRow {
   cashBalanceEnvelope Decimal?  @db.Decimal(14, 2)
   amountType          String? // amt_collected | amount_paid_out | bank_deposit
 
+  // Internal purpose override (§7/§14, dashboard-only correction). NEVER
+  // written back to the sheet, and never overwrites `purpose` above — the
+  // sync engine only substitutes this in for classification when the
+  // sheet's own Purpose cell is blank (see effectivePurpose /
+  // setPurposeOverrideAction). Exists for rows employees left blank (e.g.
+  // JR SRVCS-style internal payouts with no Purpose written) where editing
+  // the sheet after the fact isn't the point — the sheet stays a record of
+  // what was actually written, this is the owner's classification of it.
+  purposeOverride        String?
+  purposeOverrideAt      DateTime?
+  purposeOverrideByEmail String?
+
   // Idempotency & audit (§10, §11).
   normalizedFingerprint String
   originalHash          String?

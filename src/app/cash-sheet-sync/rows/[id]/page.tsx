@@ -10,6 +10,7 @@ import {
   recheckQboMatchAction,
   archiveRowAction,
   unarchiveRowAction,
+  setPurposeOverrideAction,
 } from "../../actions";
 import { qboWebUrl } from "@/lib/qbo/links";
 
@@ -73,6 +74,17 @@ export default async function RowDetailPage({ params }: { params: { id: string }
             <dt>Rcv by / paid to</dt><dd>{row.rcvByOrPaidTo}</dd>
             <dt>Name (payee)</dt><dd>{row.name}</dd>
             <dt>Purpose</dt><dd>{row.purpose}</dd>
+            {row.purposeOverride && (
+              <>
+                <dt>Purpose override</dt>
+                <dd>
+                  {row.purposeOverride}{" "}
+                  <span className="card-subtitle">
+                    (internal only, set by {row.purposeOverrideByEmail} — not written to the sheet)
+                  </span>
+                </dd>
+              </>
+            )}
             <dt>INV#</dt><dd>{row.invNumber}</dd>
             <dt>Approved By (sheet)</dt><dd>{row.approvedBy}</dd>
             <dt>Amt Collected</dt><dd>{fmt(row.amtCollected)}</dd>
@@ -184,6 +196,35 @@ export default async function RowDetailPage({ params }: { params: { id: string }
       </div>
       {!can(user.role, "approve_posting") && (
         <p className="card-subtitle" style={{ marginTop: 10 }}>Approving a posting requires the owner_admin role (§14).</p>
+      )}
+
+      {!row.purpose && !row.qboTransactionId && can(user.role, "override_purpose") && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 className="card-title" style={{ marginBottom: 8 }}>Internal purpose override</h3>
+          <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
+            The sheet's Purpose cell is blank on this row. Set an internal purpose here to classify it — it resolves
+            through the same mapping table a sheet purpose would (Mappings page), it's just never written back to the
+            sheet. Takes effect on the next sync, not immediately.
+          </p>
+          <form action={setPurposeOverrideAction.bind(null, row.id)} className="row-actions">
+            <input
+              className="input"
+              name="purposeOverride"
+              defaultValue={row.purposeOverride ?? ""}
+              placeholder='e.g. "JR SRVCS" — must match an active purpose mapping'
+              style={{ minWidth: 280 }}
+            />
+            <button className="btn primary" type="submit">
+              {row.purposeOverride ? "Update override" : "Set override"}
+            </button>
+          </form>
+          {row.purposeOverride && (
+            <form action={setPurposeOverrideAction.bind(null, row.id)} style={{ marginTop: 8 }}>
+              <input type="hidden" name="purposeOverride" value="" />
+              <button className="btn ghost" type="submit">Clear override</button>
+            </form>
+          )}
+        </div>
       )}
 
       {!row.qboTransactionId && can(user.role, "archive_row") && (

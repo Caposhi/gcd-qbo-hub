@@ -30,6 +30,11 @@ export type Permission =
   // Never permitted on a row that has a qboTransactionId — archiving only
   // hides a row from default views, it never touches QBO or deletes history.
   | "archive_row"
+  // Set/clear a row's internal purpose override (§7/§14) — a dashboard-only
+  // classification correction for rows the sheet left with a blank Purpose
+  // cell. Never edits the sheet; never overrides a purpose the sheet DOES
+  // specify. Owner-only, same trust level as editing a purpose mapping.
+  | "override_purpose"
   | "edit_mappings"
   | "change_rollout_stage"
   | "toggle_live_mode"
@@ -67,6 +72,7 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "run_sandbox_sync",
     "approve_posting",
     "archive_row",
+    "override_purpose",
     "edit_mappings",
     "change_rollout_stage",
     "toggle_live_mode",

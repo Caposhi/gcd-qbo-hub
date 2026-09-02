@@ -6,6 +6,7 @@ describe("role-gated actions (§14, §18, §20)", () => {
     for (const p of [
       "approve_posting",
       "archive_row",
+      "override_purpose",
       "edit_mappings",
       "change_rollout_stage",
       "toggle_live_mode",
@@ -19,6 +20,7 @@ describe("role-gated actions (§14, §18, §20)", () => {
   it("reviewer CANNOT approve postings or change mappings/stage (critical §20)", () => {
     expect(can("reviewer", "approve_posting")).toBe(false);
     expect(can("reviewer", "archive_row")).toBe(false);
+    expect(can("reviewer", "override_purpose")).toBe(false);
     expect(can("reviewer", "edit_mappings")).toBe(false);
     expect(can("reviewer", "change_rollout_stage")).toBe(false);
     expect(can("reviewer", "toggle_live_mode")).toBe(false);

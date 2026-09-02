@@ -71,3 +71,26 @@ export function isKnownPurpose(
 ): boolean {
   return resolvePurposeMapping(purposeRaw, mappings, amountType) !== null;
 }
+
+/**
+ * The purpose text actually used for validation/classification: the sheet's
+ * own Purpose cell wins whenever it's non-blank; only when the sheet leaves
+ * it blank does a dashboard-set internal override (SheetRow.purposeOverride,
+ * see setPurposeOverrideAction) kick in. This is deliberately a fallback, not
+ * a correction mechanism — it exists for the case where employees never
+ * write a purpose at all (e.g. an internal transfer row), not for silently
+ * overruling a purpose the sheet DOES specify (which should be fixed on the
+ * sheet, or via a purpose_mappings entry if it's just an unmapped word).
+ *
+ * The raw sheet value is still what gets persisted to SheetRow.purpose and
+ * shown as "what the sheet says" — this function only affects what
+ * validateRow/buildPostingPlan see when deciding how to classify the row.
+ */
+export function effectivePurpose(
+  sheetPurpose: string | null | undefined,
+  override: string | null | undefined
+): string {
+  const sheet = String(sheetPurpose ?? "").trim();
+  if (sheet !== "") return sheet;
+  return String(override ?? "").trim();
+}
