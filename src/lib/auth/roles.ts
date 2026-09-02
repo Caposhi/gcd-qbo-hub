@@ -35,6 +35,10 @@ export type Permission =
   // cell. Never edits the sheet; never overrides a purpose the sheet DOES
   // specify. Owner-only, same trust level as editing a purpose mapping.
   | "override_purpose"
+  // Confirm a Possible Duplicate flag is a false positive so the row can
+  // reclassify/post normally (§10). Never touches an already-posted row.
+  // Owner-only — this permanently removes a safety check for that row.
+  | "resolve_duplicate"
   | "edit_mappings"
   | "change_rollout_stage"
   | "toggle_live_mode"
@@ -73,6 +77,7 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "approve_posting",
     "archive_row",
     "override_purpose",
+    "resolve_duplicate",
     "edit_mappings",
     "change_rollout_stage",
     "toggle_live_mode",
