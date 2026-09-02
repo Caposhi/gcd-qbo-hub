@@ -703,6 +703,55 @@ export async function createAllReadyCashDepositsAction(formData: FormData) {
   revalidatePath("/cash-sheet-sync/queue");
 }
 
+/**
+ * Create a brand-new purpose mapping (§7, §14). Until now the Mappings page
+ * could only EDIT an existing mapping's account/approval/active flag — there
+ * was no way to teach the system a new purpose word at all short of a code
+ * change to seed-mappings.ts. This is that missing "add" path: any
+ * purpose_mappings row a purpose could ever need, created straight from the
+ * dashboard. Upserts by normalizedPurpose (the table's unique key) so
+ * re-submitting the same pattern updates it in place instead of erroring.
+ */
+export async function createMappingAction(formData: FormData) {
+  await requirePermission("edit_mappings");
+  const { normalizePurpose } = await import("@/lib/cashsheet/purpose");
+
+  const purposePattern = String(formData.get("purposePattern") ?? "").trim();
+  if (!purposePattern) throw new Error("Purpose text is required");
+  const normalizedPurpose = normalizePurpose(purposePattern);
+
+  const amountTypeRaw = String(formData.get("amountType") ?? "").trim();
+  const amountType = amountTypeRaw === "" ? null : amountTypeRaw;
+  const qboAction = String(formData.get("qboAction") ?? "expense").trim();
+  const qboAccountName = String(formData.get("qboAccountName") ?? "").trim() || null;
+  const qboAccountId = String(formData.get("qboAccountId") ?? "").trim() || null;
+  const auditOnly = qboAction === "audit_only" || formData.get("auditOnly") === "on";
+  const requiresPayee = formData.get("requiresPayee") === "on";
+  const requiresManualApproval = formData.get("requiresManualApproval") === "on";
+  const invoiceMatching = formData.get("invoiceMatching") === "on";
+
+  const data = {
+    purposePattern,
+    normalizedPurpose,
+    amountType,
+    qboAction,
+    qboAccountName,
+    qboAccountId,
+    postToQbo: !auditOnly,
+    auditOnly,
+    requiresPayee,
+    requiresManualApproval,
+    invoiceMatching,
+    active: true,
+  };
+  await prisma.purposeMapping.upsert({
+    where: { normalizedPurpose },
+    create: data,
+    update: data,
+  });
+  revalidatePath("/cash-sheet-sync/mappings");
+}
+
 export async function updateMappingAction(formData: FormData) {
   await requirePermission("edit_mappings");
   const id = String(formData.get("id"));

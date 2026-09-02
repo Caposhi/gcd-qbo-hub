@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
 import {
+  createMappingAction,
   updateMappingAction,
   updateAccountMappingAction,
   seedDefaultMappingsAction,
@@ -171,6 +172,44 @@ export default async function MappingsPage({
       </div>
 
       <h2>Purpose mappings</h2>
+
+      {editable && (
+        <div className="card" style={{ marginBottom: "1rem" }}>
+          <h3 className="card-title" style={{ marginBottom: 6 }}>Add a new purpose mapping</h3>
+          <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 12 }}>
+            Teach a purpose word the hub doesn't know yet — e.g. a payee name used as a stand-in Purpose (like "JR
+            SRVCS") on rows the sheet leaves blank, resolved via an internal override (row detail page). Matching is
+            exact (case/whitespace-insensitive) against this text. Leave the QBO account ID blank and fill it in
+            after — via "Auto-resolve IDs from QBO" (if the account name matches exactly) or by pasting the ID from
+            "Fetch QBO accounts" below.
+          </p>
+          <form action={createMappingAction} className="row-actions" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+            <input className="input" name="purposePattern" placeholder='Purpose text, e.g. "JR SRVCS"' required style={{ minWidth: 160 }} />
+            <select name="amountType" defaultValue="amount_paid_out" style={inputStyle}>
+              <option value="">Any amount column</option>
+              <option value="amt_collected">Amt Collected</option>
+              <option value="amount_paid_out">Amount Paid Out</option>
+              <option value="bank_deposit">Bank Deposit</option>
+            </select>
+            <select name="qboAction" defaultValue="expense" style={inputStyle}>
+              <option value="expense">Expense (money leaves Cash on hand)</option>
+              <option value="deposit">Deposit (money enters Cash on hand)</option>
+              <option value="transfer">Transfer (Bank Deposit → Chase)</option>
+              <option value="audit_only">Audit only (customer invoice cash)</option>
+            </select>
+            <input className="input" name="qboAccountName" placeholder="QBO category account name (optional for now)" style={{ minWidth: 220 }} />
+            <input className="input" name="qboAccountId" placeholder="QBO account ID (optional for now)" style={{ minWidth: 140 }} />
+            <label className="muted" style={{ fontSize: "0.85rem" }}>
+              <input type="checkbox" name="requiresPayee" /> requires payee
+            </label>
+            <label className="muted" style={{ fontSize: "0.85rem" }}>
+              <input type="checkbox" name="requiresManualApproval" /> requires manual approval
+            </label>
+            <button className="btn primary" type="submit">Add mapping</button>
+          </form>
+        </div>
+      )}
+
       <div className="table-wrap">
         <table className="gcd">
           <thead>
