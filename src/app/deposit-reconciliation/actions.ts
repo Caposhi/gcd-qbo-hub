@@ -15,7 +15,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { buildProposalsFromFiles, type NamedFile } from "@/lib/deposits/ingest";
-import { payoutKey, buildPayoutIndexes, resolveMatch } from "@/lib/deposits/reconcile-match";
+import { buildPayoutIndexes, resolveMatch, findDuplicateIds } from "@/lib/deposits/reconcile-match";
 
 const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
 
@@ -113,6 +113,16 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
     }
 
     if (match.qboDepositId) {
+      // Matched to an already-posted payout — its amounts/status/lines are
+      // immutable, never touched. But if it was found via the fallback (its
+      // stored sourceRef differs from this fresh parse's), self-heal just the
+      // sourceRef so a future ingest hits the primary key directly instead of
+      // needing the fallback — and, more importantly, so it never again
+      // reads as "no match" and creates a duplicate row for this same real
+      // payout under yet another sourceRef format.
+      if (match.sourceRef !== d.sourceRef) {
+        await prisma.depPayout.update({ where: { id: match.id }, data: { sourceRef: d.sourceRef } });
+      }
       outcome.skippedPosted++;
       continue;
     }
@@ -302,6 +312,12 @@ export async function ingestDepositFilesAction(formData: FormData) {
   }
 
   const outcome = await reconcileParsedPayouts(parsed, imp.id);
+  // Belt-and-suspenders: reconcileParsedPayouts' own fallback matching stops
+  // most duplicates from being CREATED, but a row already sitting in the DB
+  // from before that fix (or from any other path that slipped past it) still
+  // needs a sweep to actually merge away — run it on every ingest so that
+  // never needs a separate manual "Clean up duplicates" click.
+  const duplicatesRemoved = await dedupePayouts();
 
   await prisma.depEvent.create({
     data: {
@@ -310,6 +326,7 @@ export async function ingestDepositFilesAction(formData: FormData) {
         `${isReprocess ? "Reprocessed" : "Ingested"} ${named.map((f) => f.name).join(", ")}: ` +
         `${outcome.created} created, ${outcome.updated} updated, ${outcome.unchanged} unchanged` +
         (outcome.skippedPosted ? `, ${outcome.skippedPosted} skipped (already posted to QBO)` : "") +
+        (duplicatesRemoved ? `, ${duplicatesRemoved} duplicate(s) removed` : "") +
         ` · by ${user.email}.`,
     },
   });
@@ -324,42 +341,36 @@ export async function ingestDepositFilesAction(formData: FormData) {
 }
 
 /**
- * Remove duplicate payouts (same processor + source ref, OR same processor +
- * settlement date + net amount under a different sourceRef — see
- * reconcileParsedPayouts' fallback-key comment for why a real payout's
- * sourceRef can change between exports), keeping the earliest — and never
- * touching one already posted to QBO. One-time cleanup for payouts created
- * before ingest was made dedupe-aware (or before it was made sourceRef-format
- * resilient).
+ * Find and remove duplicate payouts: same processor + source ref, OR same
+ * processor + settlement date + net amount under a DIFFERENT sourceRef (see
+ * reconcile-match.ts's buildPayoutIndexes comment for why a real payout's
+ * sourceRef can change between exports of the same processor file) — keeping
+ * the earliest, and never touching one already posted to QBO. Shared core
+ * for both the manual "Clean up duplicates" button and the automatic pass
+ * ingestDepositFilesAction runs after every ingest: reconcileParsedPayouts'
+ * own fallback matching prevents most NEW duplicates going forward, but it
+ * only ever looks at the fresh parse against what's already in the DB — it
+ * can't retroactively merge two rows for the same real payout that were
+ * already created before a sourceRef-format change was noticed. Running this
+ * after every ingest means that never requires a separate manual step.
  */
-export async function cleanupDuplicatePayoutsAction() {
-  await requirePermission("edit_mappings");
+async function dedupePayouts(): Promise<number> {
   const all = await prisma.depPayout.findMany({ orderBy: { createdAt: "asc" } });
-  const seen = new Set<string>();
-  const seenByFallback = new Map<string, string>(); // fallback key → kept payout id
-  const dupeIds: string[] = [];
-  const fallbackKey = (p: (typeof all)[number]) =>
-    `${p.processor}|${p.settlementDate}|${Math.round(Number(p.netAmount) * 100)}`;
-  for (const p of all) {
-    const key = payoutKey(p.processor, p.sourceRef, p.settlementDate, Number(p.netAmount));
-    const fk = fallbackKey(p);
-    if (p.qboDepositId) {
-      seen.add(key);
-      seenByFallback.set(fk, p.id);
-      continue; // posted — always keep
-    }
-    if (seen.has(key) || seenByFallback.has(fk)) {
-      dupeIds.push(p.id);
-      continue;
-    }
-    seen.add(key);
-    seenByFallback.set(fk, p.id);
-  }
+  const dupeIds = findDuplicateIds(all.map((p) => ({ ...p, netAmount: Number(p.netAmount) })));
   if (dupeIds.length) {
     await prisma.depPayout.deleteMany({ where: { id: { in: dupeIds } } }); // lines/events cascade
   }
+  return dupeIds.length;
+}
+
+/** Manual "Clean up duplicates" button — one-time sweep for payouts created
+ *  before ingest was made dedupe-aware, or in case anything ever slips past
+ *  the automatic post-ingest pass. */
+export async function cleanupDuplicatePayoutsAction() {
+  await requirePermission("edit_mappings");
+  const removed = await dedupePayouts();
   await prisma.depEvent.create({
-    data: { eventType: "dedupe", message: `Removed ${dupeIds.length} duplicate payout(s).` },
+    data: { eventType: "dedupe", message: `Removed ${removed} duplicate payout(s).` },
   });
   revalidatePath("/deposit-reconciliation");
 }

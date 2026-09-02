@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { payoutKey, buildPayoutIndexes, resolveMatch, type MatchCandidate } from "@/lib/deposits/reconcile-match";
+import { payoutKey, buildPayoutIndexes, resolveMatch, findDuplicateIds, type MatchCandidate } from "@/lib/deposits/reconcile-match";
 
 interface Row extends MatchCandidate {
   id: string;
@@ -46,24 +46,45 @@ describe("resolveMatch — sourceRef-instability duplicate bug (real-world, Sept
     expect(match?.id).toBe("r1");
   });
 
-  it("does NOT fall back onto an already-posted row (posted history is immutable)", () => {
-    // A posted row must still be found by its own exact key (so a re-ingest
-    // correctly counts it as "skipped, already posted"), but must never be a
-    // fallback TARGET for a differently-keyed payout — that would silently
-    // pretend a new/different payout is already handled.
-    const existing = [row("r1", { sourceRef: "old-ref", settlementDate: "2026-08-20", netAmount: 7367.27, qboDepositId: "qbo-1" })];
+  it("DOES fall back onto an already-posted row (real-world bug: a posted payout re-parsed under a new sourceRef format created a duplicate)", () => {
+    // This is the exact screenshot bug: the 2026-08-20 payout was posted
+    // under sourceRef "111000022160628" (a bank trace id, from an export
+    // that had a Trace ID column). A later re-ingest's payouts_1.csv has no
+    // Trace ID column, so the fresh parse's sourceRef falls back to the raw
+    // po_… id. The OLD behavior excluded posted rows from the fallback pool
+    // (reasoning: "posted history is immutable, never a fallback target"),
+    // so this fresh parse found NO match at all and created a second,
+    // duplicate "needs review" row for the same real payout. Posted rows
+    // must be valid fallback targets — the caller only ever SKIPS a posted
+    // match (see reconcileParsedPayouts), it never overwrites it, so this is
+    // safe and is what actually prevents the duplicate.
+    const existing = [row("r1", { sourceRef: "111000022160628", settlementDate: "2026-08-20", netAmount: 7367.27, qboDepositId: "qbo-1" })];
     const indexes = buildPayoutIndexes(existing);
     const match = resolveMatch(
-      { processor: "tekmetric", sourceRef: "po_new", settlementDate: "2026-08-20", net: 7367.27 },
+      { processor: "tekmetric", sourceRef: "po_1U6JjR2YMG3jLolZnOWgAo8W", settlementDate: "2026-08-20", net: 7367.27 },
+      indexes,
+      new Set()
+    );
+    expect(match?.id).toBe("r1");
+  });
+
+  it("does not guess across an ambiguous fallback collision (two different payouts, same date+amount)", () => {
+    const existing = [
+      row("r1", { sourceRef: "ref-a", settlementDate: "2026-08-20", netAmount: 500 }),
+      row("r2", { sourceRef: "ref-b", settlementDate: "2026-08-20", netAmount: 500 }),
+    ];
+    const indexes = buildPayoutIndexes(existing);
+    const match = resolveMatch(
+      { processor: "tekmetric", sourceRef: "ref-c", settlementDate: "2026-08-20", net: 500 },
       indexes,
       new Set()
     );
     expect(match).toBeUndefined();
   });
 
-  it("does not guess across an ambiguous fallback collision (two different payouts, same date+amount)", () => {
+  it("does not guess across an ambiguous collision even when one candidate is posted", () => {
     const existing = [
-      row("r1", { sourceRef: "ref-a", settlementDate: "2026-08-20", netAmount: 500 }),
+      row("r1", { sourceRef: "ref-a", settlementDate: "2026-08-20", netAmount: 500, qboDepositId: "qbo-1" }),
       row("r2", { sourceRef: "ref-b", settlementDate: "2026-08-20", netAmount: 500 }),
     ];
     const indexes = buildPayoutIndexes(existing);
@@ -94,6 +115,46 @@ describe("resolveMatch — sourceRef-instability duplicate bug (real-world, Sept
       new Set()
     );
     expect(match).toBeUndefined();
+  });
+});
+
+describe("findDuplicateIds — cleanup of a duplicate already sitting in the DB (real-world, Sept 1 report)", () => {
+  it("removes a needs_review duplicate created for an already-posted payout under a different sourceRef", () => {
+    // Exact screenshot scenario: the real 2026-08-20 payout was posted
+    // ("created") under the bank trace id, then a later re-ingest (before
+    // the reconcile-time fix landed) created a second "needs_review" row
+    // under the raw po_… id because that export had no Trace ID column.
+    const posted = row("posted-1", {
+      id: "posted-1",
+      sourceRef: "111000022160628",
+      settlementDate: "2026-08-20",
+      netAmount: 7367.27,
+      qboDepositId: "qbo-dep-1",
+    });
+    const duplicate = row("dup-1", {
+      id: "dup-1",
+      sourceRef: "po_1U6JjR2YMG3jLolZnOWgAo8W",
+      settlementDate: "2026-08-20",
+      netAmount: 7367.27,
+      qboDepositId: null,
+    });
+    const dupeIds = findDuplicateIds([posted, duplicate]); // oldest first: posted was created earlier
+    expect(dupeIds).toEqual(["dup-1"]);
+  });
+
+  it("never removes a posted row, even if it were somehow processed after its duplicate", () => {
+    const duplicate = row("dup-1", { id: "dup-1", sourceRef: "po_new", settlementDate: "2026-08-20", netAmount: 7367.27, qboDepositId: null });
+    const posted = row("posted-1", { id: "posted-1", sourceRef: "trace-1", settlementDate: "2026-08-20", netAmount: 7367.27, qboDepositId: "qbo-dep-1" });
+    // Posted processed second (unusual ordering, but the guard must hold regardless).
+    const dupeIds = findDuplicateIds([duplicate, posted]);
+    expect(dupeIds).not.toContain("posted-1");
+  });
+
+  it("leaves distinct payouts (different date or amount) alone", () => {
+    const a = row("a", { id: "a", sourceRef: "ref-a", settlementDate: "2026-08-20", netAmount: 100 });
+    const b = row("b", { id: "b", sourceRef: "ref-b", settlementDate: "2026-08-21", netAmount: 100 });
+    const c = row("c", { id: "c", sourceRef: "ref-c", settlementDate: "2026-08-20", netAmount: 200 });
+    expect(findDuplicateIds([a, b, c])).toEqual([]);
   });
 });
 
