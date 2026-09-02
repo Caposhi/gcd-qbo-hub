@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizePurpose, resolvePurposeMapping, isKnownPurpose } from "@/lib/cashsheet/purpose";
+import { normalizePurpose, resolvePurposeMapping, isKnownPurpose, effectivePurpose } from "@/lib/cashsheet/purpose";
 import { buildSeedPurposeMappings } from "@/lib/cashsheet/seed-mappings";
 
 const MAPPINGS = buildSeedPurposeMappings();
@@ -35,5 +35,33 @@ describe("purpose normalization & mapping (§5, §7)", () => {
   it("ignores inactive mappings", () => {
     const inactive = MAPPINGS.map((m) => ({ ...m, active: false }));
     expect(resolvePurposeMapping("PART", inactive)).toBeNull();
+  });
+});
+
+describe("effectivePurpose — internal override fallback (real-world: JR SRVCS blank-purpose rows)", () => {
+  it("the sheet's own purpose wins when it's non-blank", () => {
+    expect(effectivePurpose("LOAN", "Should never be seen")).toBe("LOAN");
+  });
+
+  it("falls back to the override only when the sheet purpose is blank", () => {
+    expect(effectivePurpose("", "JR SRVCS")).toBe("JR SRVCS");
+    expect(effectivePurpose(null, "JR SRVCS")).toBe("JR SRVCS");
+    expect(effectivePurpose(undefined, "JR SRVCS")).toBe("JR SRVCS");
+  });
+
+  it("whitespace-only sheet purpose counts as blank", () => {
+    expect(effectivePurpose("   ", "JR SRVCS")).toBe("JR SRVCS");
+  });
+
+  it("blank sheet purpose with no override is still blank", () => {
+    expect(effectivePurpose("", null)).toBe("");
+    expect(effectivePurpose("", undefined)).toBe("");
+  });
+
+  it("an override resolves through the normal mapping table exactly like a sheet purpose would", () => {
+    // Confirms the override is just a substitute input to the SAME resolution
+    // path — not a bypass — so it still needs a real active mapping.
+    expect(resolvePurposeMapping(effectivePurpose("", "Employee Loan"), MAPPINGS)?.requiresPayee).toBe(true);
+    expect(resolvePurposeMapping(effectivePurpose("", "Some Made Up Thing"), MAPPINGS)).toBeNull();
   });
 });

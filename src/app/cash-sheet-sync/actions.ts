@@ -116,6 +116,40 @@ export async function approveRowAction(rowId: string) {
   revalidatePath("/cash-sheet-sync/queue");
 }
 
+/**
+ * Set (or clear) a row's internal purpose override (§7/§14). This is a
+ * dashboard-only classification aid — it NEVER writes to the Google Sheet
+ * and never overrides a purpose the sheet actually specifies; the sync
+ * engine only substitutes it in for validation/classification when the
+ * sheet's own Purpose cell is blank (see purpose.ts's effectivePurpose).
+ * Takes effect on the NEXT sync — this only stores the value, it doesn't
+ * reclassify the row itself, so the row's status won't change until you
+ * run a sync (or wait for the nightly one).
+ */
+export async function setPurposeOverrideAction(rowId: string, formData: FormData) {
+  const user = await requirePermission("override_purpose");
+  const value = String(formData.get("purposeOverride") ?? "").trim();
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: {
+      purposeOverride: value || null,
+      purposeOverrideAt: value ? new Date() : null,
+      purposeOverrideByEmail: value ? user.email : null,
+    },
+  });
+  await prisma.rowEvent.create({
+    data: {
+      sheetRowId: rowId,
+      eventType: value ? "purpose_override_set" : "purpose_override_cleared",
+      eventMessage: value
+        ? `Internal purpose override set to "${value}" by ${user.email} — applies on the next sync.`
+        : `Internal purpose override cleared by ${user.email}.`,
+    },
+  });
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+  revalidatePath("/cash-sheet-sync/queue");
+}
+
 export async function markReviewedAction(rowId: string) {
   const user = await requirePermission("mark_warning_reviewed");
   await prisma.sheetRow.update({

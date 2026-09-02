@@ -3,7 +3,7 @@ import {
   diffSnapshots,
   isChangedAfterPosting,
   findRemovedAfterPosting,
-  findSupersededSyntheticRows,
+  findSupersededRows,
 } from "@/lib/cashsheet/detection";
 
 describe("changed-after-posting detection (§11)", () => {
@@ -71,18 +71,34 @@ describe("removed-after-posting detection (§11)", () => {
   });
 });
 
-describe("superseded-synthetic-row detection (§4, §10)", () => {
+describe("superseded-row detection (§4, §10)", () => {
   it("flags a synthetic row whose content no longer appears in the scan", () => {
     // e.g. a PR row edited from $960/07-17 to $980/07-31 before it captured a
     // stable UUID — the old fingerprint's synthetic id vanishes from the scan.
     const known = ["syn-abc123", "syn-def456"];
     const seen = new Set(["syn-def456"]); // only the edited (new) identity remains
-    expect(findSupersededSyntheticRows(known, seen)).toEqual(["syn-abc123"]);
+    expect(findSupersededRows(known, seen)).toEqual(["syn-abc123"]);
   });
 
   it("a synthetic row whose content is untouched is NOT superseded", () => {
     const known = ["syn-abc123"];
     const seen = ["syn-abc123"];
-    expect(findSupersededSyntheticRows(known, seen)).toEqual([]);
+    expect(findSupersededRows(known, seen)).toEqual([]);
+  });
+
+  it("also flags a real-UUID (already-ID'd), never-posted row whose physical row was deleted — real-world gap: a duplicate/flagged row that vanishes from the sheet", () => {
+    // Distinct from the synthetic case: this row already has a stable
+    // GCD_QBO_Row_ID (not "syn-" prefixed) — e.g. it was flagged Possible
+    // Duplicate or Error, then the user deleted or replaced that physical
+    // row in the sheet. Same set-diff logic applies regardless of id format.
+    const known = ["gcdqbo-abc123"];
+    const seen = new Set<string>(); // no longer anywhere in the tab
+    expect(findSupersededRows(known, seen)).toEqual(["gcdqbo-abc123"]);
+  });
+
+  it("a real-UUID row still present in the sheet is NOT superseded", () => {
+    const known = ["gcdqbo-abc123"];
+    const seen = new Set(["gcdqbo-abc123"]);
+    expect(findSupersededRows(known, seen)).toEqual([]);
   });
 });

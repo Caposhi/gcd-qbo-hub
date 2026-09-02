@@ -13,6 +13,10 @@
  *   - a row already carrying a QBO transaction id is never re-posted (§10).
  *   - QBO transactions are never edited or deleted (§2, §22) — we only READ them
  *     for match/duplicate checks and detect drift.
+ *   - a failed POST attempt is never silently swallowed: it's attributed to
+ *     the row (status + a linked event), never left indistinguishable from a
+ *     row that simply hasn't been attempted yet (see the try/catch around
+ *     postPlan below).
  */
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
@@ -22,7 +26,7 @@ import { parseRow, isBlankRow, isSummaryRow, isTransactionCandidate, validateRow
 import { computeFingerprint, computeRowHash, rowSnapshot } from "./fingerprint";
 import { extractRowUuid, generateRowUuid, CONTROL_KEYS, isValidRowUuid } from "./uuid";
 import { buildPostingPlan, type AccountMappingLike } from "./classify";
-import type { MappingLike } from "./purpose";
+import { effectivePurpose, type MappingLike } from "./purpose";
 import {
   findDuplicateRowIds,
   findPossibleDuplicate,
@@ -35,7 +39,7 @@ import {
   isChangedAfterPosting,
   diffSnapshots,
   findRemovedAfterPosting,
-  findSupersededSyntheticRows,
+  findSupersededRows,
 } from "./detection";
 import { canPostRow, modeForStage, environmentForStage, type RolloutStage, type SyncMode } from "./rollout";
 import { RowStatus } from "./status";
@@ -73,9 +77,9 @@ export interface RunSummary {
   duplicateRowIds: number;
   changedAfterPosting: number;
   removedAfterPosting: number;
-  /** Never-posted synthetic rows auto-archived because their content no
-   *  longer appears in the sheet (§4, §10) — see findSupersededSyntheticRows. */
-  supersededSynthetic: number;
+  /** Never-posted rows (synthetic OR real-UUID) auto-archived because their
+   *  content no longer appears in the sheet (§4, §10) — see findSupersededRows. */
+  superseded: number;
   /** Rows whose cell values differ from the previous daily sync (§11). */
   rowsChangedSinceLastSync: number;
   tabsScanned: string[];
@@ -129,7 +133,7 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     duplicateRowIds: 0,
     changedAfterPosting: 0,
     removedAfterPosting: 0,
-    supersededSynthetic: 0,
+    superseded: 0,
     rowsChangedSinceLastSync: 0,
     tabsScanned: [],
   };
@@ -300,6 +304,11 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
   });
 
   // ---- 3. Per-row upsert + classify + gate + post ------------------------
+  // The QBO-posting call itself is caught INSIDE processRow (see the
+  // dedicated try/catch around postPlan there), so it's attributed to the
+  // row. This outer catch is the last-resort net for anything unexpected
+  // that happens before a row even has a saved id to attribute a failure to
+  // (e.g. a DB error on the initial lookup) — it still never aborts the run.
   for (const s of scanned) {
     try {
       await processRow(s, {
@@ -342,38 +351,57 @@ export async function runSync(options: RunOptions = {}): Promise<RunSummary> {
     }
   }
 
-  // ---- 4a. Superseded-synthetic-row detection (§4, §10) ------------------
-  // A never-posted row that hasn't captured a stable UUID yet is keyed by a
-  // content fingerprint (uuid.ts). Edit that content (fix a date, a typo, an
-  // amount) before the UUID lands, and the fingerprint changes — the engine
-  // then sees what looks like a brand-new row, and the OLD one is orphaned
-  // forever with nothing to do, looking identical to a real pending row in
-  // the Queue (this is exactly how the $960/07-17 and $980/07-30 "ghost" PR
-  // rows happened). Auto-mark + auto-archive these rather than alert anyone —
-  // by construction there is no action to take on one.
-  const syntheticByTab = new Map<string, { id: string; rowUuid: string; status: string }[]>();
+  // ---- 4a. Superseded-row detection (§4, §10) -----------------------------
+  // A never-posted row that vanishes from a full tab scan has no QBO side
+  // effect to protect, so there is nothing for a human to act on — auto-mark
+  // + auto-archive it rather than alert anyone. Two shapes, same treatment:
+  //   - Hasn't captured a stable UUID yet (still `syn-` keyed by content
+  //     fingerprint): edit that content (fix a date, a typo, an amount)
+  //     before the UUID lands, and the fingerprint changes — the engine then
+  //     sees what looks like a brand-new row, and the OLD one is orphaned
+  //     forever, looking identical to a real pending row in the Queue (this
+  //     is exactly how the $960/07-17 and $980/07-30 "ghost" PR rows
+  //     happened).
+  //   - ALREADY has a stable UUID but is stuck in review (Error, Possible
+  //     Duplicate, Unknown Purpose, ...) and its physical row was later
+  //     deleted from the sheet. Previously an unhandled gap — real-UUID rows
+  //     were excluded from this detection entirely, so a resolved/removed
+  //     duplicate just sat in the Queue forever with nothing to do about it.
+  // Not applied to a row currently ReadyToPost/awaiting approval — that's a
+  // live posting decision in flight, not stale review debris; only statuses
+  // that mean "review needed, nothing pending to post" are eligible.
+  const supersedeCandidateStatuses = [
+    RowStatus.Error,
+    RowStatus.PossibleDuplicate,
+    RowStatus.DuplicateRowId,
+    RowStatus.UnknownPurpose,
+    RowStatus.MissingAccountMapping,
+    RowStatus.MissingPayeeMapping,
+    RowStatus.AwaitingQboMatch,
+  ];
+  const supersedeByTab = new Map<string, { id: string; rowUuid: string; status: string }[]>();
   if (monthTabs.length) {
     const candidates = await prisma.sheetRow.findMany({
       where: {
         spreadsheetId,
         tabName: { in: monthTabs.map((t) => t.title) },
-        rowUuid: { startsWith: "syn-" },
         qboTransactionId: null,
         archived: false,
+        OR: [{ rowUuid: { startsWith: "syn-" } }, { status: { in: supersedeCandidateStatuses } }],
       },
       select: { id: true, rowUuid: true, tabName: true, status: true },
     });
     for (const c of candidates) {
-      const list = syntheticByTab.get(c.tabName) ?? [];
+      const list = supersedeByTab.get(c.tabName) ?? [];
       list.push({ id: c.id, rowUuid: c.rowUuid, status: c.status });
-      syntheticByTab.set(c.tabName, list);
+      supersedeByTab.set(c.tabName, list);
     }
   }
-  for (const [tabName, rows] of syntheticByTab) {
+  for (const [tabName, rows] of supersedeByTab) {
     const seen = seenUuidsByTab.get(tabName);
     if (!seen) continue; // tab wasn't scanned this run → don't false-flag
     const supersededUuids = new Set(
-      findSupersededSyntheticRows(
+      findSupersededRows(
         rows.map((r) => r.rowUuid),
         seen
       )
@@ -560,7 +588,16 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
     return;
   }
 
-  const validation = validateRow(row, ctx.startDate);
+  // Dashboard-set internal purpose override (§14 owner-only correction, see
+  // setPurposeOverrideAction): only takes effect when the sheet's own Purpose
+  // cell is blank — it can never mask a purpose the sheet actually specifies.
+  // `classifyRow` is used for validation/classification ONLY; `baseData`
+  // above (already built) keeps the raw sheet purpose, so the DB's "what does
+  // the sheet say" field is never corrupted by an override.
+  const effPurpose = effectivePurpose(row.purpose, existing?.purposeOverride);
+  const classifyRow: ParsedRow = effPurpose === row.purpose ? row : { ...row, purpose: effPurpose };
+
+  const validation = validateRow(classifyRow, ctx.startDate);
   if (!validation.valid) {
     await upsertRow(existing?.id, baseData, RowStatus.Error, validation.errors.join("; "));
     ctx.summary.rowsError++;
@@ -571,6 +608,7 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   if (!s.synthetic && ctx.dupRowIds.has(s.rowUuid)) {
     await upsertRow(existing?.id, baseData, RowStatus.DuplicateRowId, "Hidden row id appears on multiple rows");
     await recordEvent(ctx.run.id, existing?.id ?? null, "duplicate_row_id", `Row UUID ${s.rowUuid} duplicated`);
+    ctx.summary.duplicateRowIds++;
     ctx.summary.rowsWarning++;
     return;
   }
@@ -611,7 +649,7 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
     return;
   }
 
-  const plan = buildPostingPlan(row, ctx.mappings, ctx.accounts);
+  const plan = buildPostingPlan(classifyRow, ctx.mappings, ctx.accounts);
 
   // Save the classified status first.
   const saved = await upsertRow(existing?.id, baseData, plan.status, plan.warnings.join("; ") || null);
@@ -672,7 +710,27 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   }
 
   // ---- Post to QBO ----
-  const result = await postPlan(plan, row, tabName, s.rowUuid, gate.environment!);
+  // A post failure (QBO API/network/auth error) must never be silently
+  // swallowed by the outer per-row try/catch (engine.ts's main loop): that
+  // catch has no DB row id and never touches row status, so the row would
+  // stay whatever plan.status left it as (typically Ready To Post) —
+  // indistinguishable from a row that hasn't been attempted at all. Caught
+  // here instead, where `saved.id` is in scope, so the real reason is
+  // attributed to the row and visible on its own detail page, not just
+  // buried in the run-level event stream.
+  let result;
+  try {
+    result = await postPlan(plan, classifyRow, tabName, s.rowUuid, gate.environment!);
+  } catch (err) {
+    const message = `QBO post failed: ${String(err)}`.slice(0, 1800);
+    await prisma.sheetRow.update({
+      where: { id: saved.id },
+      data: { status: RowStatus.Error, statusReason: message },
+    });
+    await recordEvent(ctx.run.id, saved.id, "post_failed", message);
+    ctx.summary.rowsError++;
+    return;
+  }
   await prisma.$transaction([
     prisma.qboTransaction.create({
       data: {
@@ -744,15 +802,17 @@ async function handleRemoved(spreadsheetId: string, rowUuid: string, runId: stri
 }
 
 /**
- * Mark a synthetic, never-posted row Superseded and auto-archive it (§4,
- * §10) — see findSupersededSyntheticRows for why this is safe to do silently
- * (no alert, unlike handleRemoved): a never-posted row has no QBO side effect
- * to worry about, so there is nothing for a human to act on. `archivedBy*`
- * fields are left null to distinguish an engine auto-archive from a manual
- * one (see archiveRowAction).
+ * Mark a never-posted row Superseded and auto-archive it (§4, §10) — see
+ * findSupersededRows for why this is safe to do silently (no alert, unlike
+ * handleRemoved): a never-posted row has no QBO side effect to worry about,
+ * so there is nothing for a human to act on. `archivedBy*` fields are left
+ * null to distinguish an engine auto-archive from a manual one (see
+ * archiveRowAction). The previous status (e.g. "Possible Duplicate") is kept
+ * in the reason text so the audit trail still shows what this row was stuck
+ * on before it disappeared from the sheet.
  */
 async function handleSuperseded(rowId: string, previousStatus: string, runId: string, summary: RunSummary) {
-  const reason = `Superseded (was: ${previousStatus}) — row content no longer found in a full tab scan, likely edited before this row captured a stable ID.`;
+  const reason = `Superseded (was: ${previousStatus}) — row content no longer found in a full tab scan, likely edited/deleted, or replaced by a corrected row.`;
   await prisma.sheetRow.update({
     where: { id: rowId },
     data: {
@@ -764,7 +824,7 @@ async function handleSuperseded(rowId: string, previousStatus: string, runId: st
     },
   });
   await recordEvent(runId, rowId, "superseded", reason);
-  summary.supersededSynthetic++;
+  summary.superseded++;
 }
 
 async function loadMappings(): Promise<MappingLike[]> {
@@ -902,7 +962,7 @@ async function sendDailySummary(summary: RunSummary) {
     `Duplicate row ids: ${summary.duplicateRowIds}`,
     `Changed after post:${summary.changedAfterPosting}`,
     `Removed after post:${summary.removedAfterPosting}`,
-    `Superseded (auto-archived):${summary.supersededSynthetic}`,
+    `Superseded (auto-archived):${summary.superseded}`,
     `Edited since last sync:${summary.rowsChangedSinceLastSync}`,
     "",
     appUrl ? `Dashboard: ${appUrl}/cash-sheet-sync` : "",

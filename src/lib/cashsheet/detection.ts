@@ -72,20 +72,25 @@ export function findRemovedAfterPosting(postedUuids: string[], seenUuids: Iterab
 }
 
 /**
- * Synthetic, never-posted rows whose content no longer appears anywhere in a
- * full tab scan (§4, §10) — the counterpart to findRemovedAfterPosting for
- * rows that were never posted at all. Same diff shape, very different
- * meaning: a removed POSTED row is a critical alert (someone may be hiding a
- * discrepancy); an orphaned unposted synthetic row almost always just means
- * the sheet was edited (date/amount/name correction) before this row
- * captured a stable GCD_QBO_Row_ID, leaving the old content behind under its
- * old fingerprint-keyed identity with nothing to do — the engine auto-marks
- * it Superseded and archives it rather than alerting anyone (see engine.ts).
+ * Never-posted rows whose content no longer appears anywhere in a full tab
+ * scan (§4, §10) — the counterpart to findRemovedAfterPosting for rows that
+ * were never posted at all. Same diff shape, very different meaning: a
+ * removed POSTED row is a critical alert (someone may be hiding a
+ * discrepancy); an orphaned unposted row has no QBO side effect to protect,
+ * so there is nothing for a human to act on — the engine auto-marks it
+ * Superseded and archives it rather than alerting anyone (see engine.ts).
+ *
+ * Covers TWO distinct real-world shapes under the same set-diff, both
+ * "content vanished before this identity was ever posted":
+ *   - A synthetic (`syn-`) row: the sheet was edited (date/amount/name
+ *     correction) before it captured a stable GCD_QBO_Row_ID, leaving the
+ *     old content behind under its old fingerprint-keyed identity.
+ *   - A real-UUID row (already has a stable id) that's stuck in review
+ *     (Error, Possible Duplicate, Unknown Purpose, ...) whose physical row
+ *     was later deleted from the sheet — previously an unhandled gap: it
+ *     just sat in the Queue forever with nothing to resolve it.
  */
-export function findSupersededSyntheticRows(
-  knownSyntheticUuids: string[],
-  seenUuids: Iterable<string>
-): string[] {
+export function findSupersededRows(knownUuids: string[], seenUuids: Iterable<string>): string[] {
   const seen = seenUuids instanceof Set ? seenUuids : new Set(seenUuids);
-  return knownSyntheticUuids.filter((u) => !seen.has(u));
+  return knownUuids.filter((u) => !seen.has(u));
 }
