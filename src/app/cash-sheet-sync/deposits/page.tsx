@@ -7,6 +7,7 @@ import { DateRangeFilter } from "../../components/DateRangeFilter";
 import { RowStatus } from "@/lib/cashsheet/status";
 import {
   findCashDepositCandidates,
+  findArchivedCashDepositCandidates,
   resolveDepositAccounts,
   alreadyHasDeposit,
 } from "@/lib/cashsheet/cash-deposit-service";
@@ -16,6 +17,7 @@ import {
   createCashDepositAction,
   createAllReadyCashDepositsAction,
   archiveRowAction,
+  unarchiveRowAction,
 } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -52,7 +54,11 @@ export default async function CashDepositsPage({
   const resolvedRange = resolveDateRange(activeRange || undefined, { customFrom, customTo });
   const dateWhere = dateRangeWhere(resolvedRange);
 
-  const [rows, accounts] = await Promise.all([findCashDepositCandidates(dateWhere), resolveDepositAccounts()]);
+  const [rows, archivedRows, accounts] = await Promise.all([
+    findCashDepositCandidates(dateWhere),
+    findArchivedCashDepositCandidates(dateWhere),
+    resolveDepositAccounts(),
+  ]);
   const rowIds = rows.map((r) => r.id);
 
   // Latest plan/created event per row (for display).
@@ -382,6 +388,59 @@ export default async function CashDepositsPage({
           </details>
         </>
       )}
+
+      <details style={{ marginTop: 16 }} open={archivedRows.length > 0}>
+        <summary style={{ cursor: "pointer", fontSize: 16, fontWeight: 600 }}>
+          Archived ({archivedRows.length})
+        </summary>
+        <p className="card-subtitle" style={{ marginTop: 6 }}>
+          Deposit-shaped rows (INV#/RO + Collected amount) that were archived — auto-superseded, or manually archived
+          from this page or the row detail page. Archiving never touches QBO; if one was archived by mistake (e.g.
+          before running Locate), unarchive it to bring it back into the lists above.
+        </p>
+        {archivedRows.length === 0 ? (
+          <p className="card-subtitle">None.</p>
+        ) : (
+          <div className="table-wrap" style={{ marginTop: 10 }}>
+            <table className="gcd">
+              <thead>
+                <tr>
+                  <th>Tab</th><th>Row</th><th>Date</th><th>Name</th><th>INV#/RO</th>
+                  <th className="num">Collected</th><th>Archived</th>{canArchive && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {archivedRows.map((r) => (
+                  <tr key={r.id}>
+                    <td>{r.tabName}</td>
+                    <td><Link href={`/cash-sheet-sync/rows/${r.id}`}>{r.rowNumberLastSeen}</Link></td>
+                    <td>{r.date ? r.date.toISOString().slice(0, 10) : ""}</td>
+                    <td>{r.name}</td>
+                    <td>{r.invNumber}</td>
+                    <td>{money(r.amtCollected)}</td>
+                    <td style={{ fontSize: "0.8rem" }}>
+                      {r.archivedAt ? r.archivedAt.toISOString().slice(0, 10) : ""}{" "}
+                      <span className="muted">
+                        by {r.archivedByEmail ?? "the sync engine (auto)"}
+                        {r.archivedReason ? ` — ${r.archivedReason}` : ""}
+                      </span>
+                    </td>
+                    {canArchive && (
+                      <td>
+                        <form action={unarchiveRowAction.bind(null, r.id)}>
+                          <button className="btn ghost" type="submit" style={{ fontSize: "0.75rem", padding: "4px 8px" }}>
+                            Unarchive
+                          </button>
+                        </form>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </details>
 
       <p className="muted" style={{ marginTop: "1rem", fontSize: "0.85rem" }}>
         Each deposit posts into Cash on hand and clears the customer payment out of Undeposited Funds (it does not touch
