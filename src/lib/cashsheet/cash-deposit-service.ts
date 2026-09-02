@@ -59,6 +59,29 @@ export async function findCashDepositCandidates(range?: { gte?: Date; lte?: Date
 }
 
 /**
+ * Same "deposit-shaped" criteria as findCashDepositCandidates (an INV#/RO
+ * plus a Collected amount), but for rows that HAVE been archived — surfaced
+ * on the Deposits page so an accidental archive (e.g. archiving a row before
+ * running Locate) is visible and reversible instead of just silently
+ * disappearing from the candidate list. Unlike the active query, this
+ * doesn't filter by status — an archived row could have been archived from
+ * any status, and the only question here is "can I get this row back?".
+ * Newest-archived first, since a recent accidental archive is the one most
+ * worth surfacing.
+ */
+export async function findArchivedCashDepositCandidates(range?: { gte?: Date; lte?: Date }) {
+  return prisma.sheetRow.findMany({
+    where: {
+      invNumber: { not: null },
+      amtCollected: { not: null },
+      archived: true,
+      ...(range ? { date: range } : {}),
+    },
+    orderBy: [{ archivedAt: "desc" }],
+  });
+}
+
+/**
  * Write-time guard, independent of the row's current status (§10): does this
  * row's INV# already have a QBO outcome under a DIFFERENT row? This is the
  * same re-identification check the sync engine runs on every sync, repeated

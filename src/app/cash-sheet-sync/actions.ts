@@ -122,9 +122,14 @@ export async function approveRowAction(rowId: string) {
  * and never overrides a purpose the sheet actually specifies; the sync
  * engine only substitutes it in for validation/classification when the
  * sheet's own Purpose cell is blank (see purpose.ts's effectivePurpose).
- * Takes effect on the NEXT sync — this only stores the value, it doesn't
- * reclassify the row itself, so the row's status won't change until you
- * run a sync (or wait for the nightly one).
+ *
+ * Immediately runs a forced DRY RUN afterward — the same full-sheet
+ * reclassification "Run dry-run now" does — so the row's status reflects
+ * the override right away instead of leaving you staring at a stale "Error"
+ * with no feedback on whether it actually worked. A dry run NEVER posts to
+ * QBO (§12/§19), so this can't have any live-posting side effect; getting
+ * this row actually posted still requires a deliberate "Run sync now" (or
+ * the nightly cron), same as any other row.
  */
 export async function setPurposeOverrideAction(rowId: string, formData: FormData) {
   const user = await requirePermission("override_purpose");
@@ -142,12 +147,22 @@ export async function setPurposeOverrideAction(rowId: string, formData: FormData
       sheetRowId: rowId,
       eventType: value ? "purpose_override_set" : "purpose_override_cleared",
       eventMessage: value
-        ? `Internal purpose override set to "${value}" by ${user.email} — applies on the next sync.`
+        ? `Internal purpose override set to "${value}" by ${user.email}.`
         : `Internal purpose override cleared by ${user.email}.`,
     },
   });
+  // Best-effort: if the reclassification preview fails for any reason (e.g. a
+  // transient Sheets/QBO read), the override itself is still saved — it'll
+  // simply take effect on the next real sync instead of showing an instant
+  // preview.
+  try {
+    await runSync({ forceDryRun: true, triggeredBy: user.email });
+  } catch {
+    // ignored — see comment above
+  }
   revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
   revalidatePath("/cash-sheet-sync/queue");
+  revalidatePath("/cash-sheet-sync");
 }
 
 export async function markReviewedAction(rowId: string) {

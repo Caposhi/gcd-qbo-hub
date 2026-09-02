@@ -204,7 +204,9 @@ export default async function RowDetailPage({ params }: { params: { id: string }
           <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
             The sheet's Purpose cell is blank on this row. Set an internal purpose here to classify it — it resolves
             through the same mapping table a sheet purpose would (Mappings page), it's just never written back to the
-            sheet. Takes effect on the next sync, not immediately.
+            sheet. Saving runs a dry-run reclassification right away so you can see whether it worked (e.g. moved to
+            Unknown Purpose means the purpose text still needs a mapping) — a dry run never posts to QBO, so actually
+            posting this row still needs a deliberate "Run sync now".
           </p>
           <form action={setPurposeOverrideAction.bind(null, row.id)} className="row-actions">
             <input
