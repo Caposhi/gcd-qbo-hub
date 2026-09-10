@@ -194,6 +194,24 @@ export function comparisonRange(
   return { start: iso(ps.y, ps.m0, ps.d), end: iso(pe.y, pe.m0, pe.d) };
 }
 
+/**
+ * Adjust a resolved range for a point-in-time report (Aged A/R, Aged A/P):
+ * QBO computes those "as of" a single `report_date` (`report_date - due_date`
+ * = days overdue), unlike P&L/Balance Sheet's start/end ranges. A preset like
+ * "This Month" resolves `range.end` to the LAST DAY OF THE CURRENT MONTH — a
+ * future date until the month is over — which would ask QBO for aging as of a
+ * date that hasn't happened yet, aging every open invoice further out than it
+ * actually is today and shifting dollars into later buckets than reality.
+ * Clamp to `now` whenever the resolved range ends in the future; a genuinely
+ * past end (last month, a historical comparison period) is left untouched
+ * since "as of end of last month" is meaningful and unambiguous.
+ */
+export function agingAsOfRange(range: DateRange, now: Date): DateRange {
+  const { y, m0, d } = partsOf(now);
+  const today = iso(y, m0, d);
+  return range.end > today ? { start: range.start, end: today } : range;
+}
+
 export function isRangePreset(v: unknown): v is RangePreset {
   return (
     v === "this_month" ||

@@ -8,10 +8,36 @@
  */
 import { RefreshCw } from "lucide-react";
 import { loadReporting, type ReportFilters } from "@/lib/projections/report-service";
+import { getQboEnvironment, getRolloutStage } from "@/lib/config-store";
 import { formatValue, formatDelta, money } from "./format";
 import { FilterBar, type FilterState } from "./FilterBar";
 import { TrendChart, CategoryChart, AgingChart } from "./Charts";
 import { refreshReportSnapshotsAction } from "../actions";
+
+/**
+ * Every figure on this page — including A/R & A/P aging — is read from
+ * whichever QBO environment the Cash Sheet Sync rollout stage currently
+ * resolves to (§12: read env is derived from the rollout stage, not a
+ * separate flag). That's correct for gating posting safety, but it means a
+ * shop still on `dry_run`/`sandbox_*` sees SANDBOX numbers here with nothing
+ * on the page to say so — exactly the kind of silent mismatch that made this
+ * report look "off" against real QBO/Tekmetric data. Make it impossible to
+ * miss.
+ */
+async function EnvironmentBanner() {
+  const [env, stage] = await Promise.all([getQboEnvironment(), getRolloutStage()]);
+  if (env === "live") return null;
+  return (
+    <div className="notice danger" style={{ marginBottom: "1rem" }}>
+      <strong>⚠ Sandbox data.</strong> The Cash Sheet Sync rollout stage is{" "}
+      <code>{stage}</code>, so every figure below — including A/R &amp; A/P aging — is read
+      from QuickBooks <strong>Sandbox</strong>, not your real company file. It will not match
+      QBO's own reports or Tekmetric. Advance the rollout stage to{" "}
+      <code>live_manual</code>/<code>live_auto</code> at{" "}
+      <a href="/cash-sheet-sync/settings">Settings &amp; rollout</a> to read live data here.
+    </div>
+  );
+}
 
 function KpiTiles({ kpis }: { kpis: import("@/lib/projections/reports").Kpi[] }) {
   return (
@@ -63,6 +89,7 @@ export async function ReportingPanel({
   if (!data.connected) {
     return (
       <>
+        <EnvironmentBanner />
         <FilterBar state={filterState} />
         {data.reason === "reconnect_required" ? (
           <div className="notice danger" style={{ marginTop: "1rem" }}>
@@ -86,6 +113,7 @@ export async function ReportingPanel({
 
   return (
     <>
+      <EnvironmentBanner />
       <div
         style={{
           display: "flex",

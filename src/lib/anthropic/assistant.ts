@@ -29,6 +29,7 @@ import {
 import {
   resolveRange,
   comparisonRange,
+  agingAsOfRange,
   deriveKpis,
   parseReportPayload,
   sum,
@@ -329,15 +330,20 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
         input.comparisonEndDate as string | undefined
       );
 
+      // Aging is cached under the "as of" range report-service.ts actually
+      // fetched (see agingAsOfRange) — never a future date — so look it up
+      // the same way, not under the raw P&L-style range/priorRange.
+      const arApRange = agingAsOfRange(range, new Date());
+      const arApPriorRange = agingAsOfRange(priorRange, new Date());
       const [pnl, pnlPrev, bs, bsPrev, ar, arPrev, ap, apPrev, cust, item] = await Promise.all([
         readCachedReport<PnlNormalized>("pnl", range, method),
         readCachedReport<PnlNormalized>("pnl", priorRange, method),
         readCachedReport<BalanceSheetNormalized>("balance_sheet", range, method),
         readCachedReport<BalanceSheetNormalized>("balance_sheet", priorRange, method),
-        readCachedReport<AgingNormalized>("ar_aging", range, method),
-        readCachedReport<AgingNormalized>("ar_aging", priorRange, method),
-        readCachedReport<AgingNormalized>("ap_aging", range, method),
-        readCachedReport<AgingNormalized>("ap_aging", priorRange, method),
+        readCachedReport<AgingNormalized>("ar_aging", arApRange, method),
+        readCachedReport<AgingNormalized>("ar_aging", arApPriorRange, method),
+        readCachedReport<AgingNormalized>("ap_aging", arApRange, method),
+        readCachedReport<AgingNormalized>("ap_aging", arApPriorRange, method),
         readCachedReport<SalesNormalized>("customer_sales", range, method),
         readCachedReport<SalesNormalized>("item_sales", range, method),
       ]);
@@ -385,7 +391,10 @@ async function runTool(name: string, input: Record<string, unknown>): Promise<un
     case "get_ar_aging_detail": {
       const preset = RANGE_PRESET_VALUES.has(input.preset as string) ? (input.preset as ReportRangePreset) : "this_month";
       const method: AccountingMethod = input.method === "cash" ? "cash" : "accrual";
-      const range = resolveRange(preset, new Date(), input.startDate as string | undefined, input.endDate as string | undefined);
+      const range = agingAsOfRange(
+        resolveRange(preset, new Date(), input.startDate as string | undefined, input.endDate as string | undefined),
+        new Date()
+      );
       const ar = await readCachedReport<AgingNormalized>("ar_aging", range, method);
       if (!ar) {
         return {
