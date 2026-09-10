@@ -27,6 +27,7 @@ import {
   sum,
   resolveRange,
   comparisonRange,
+  agingAsOfRange,
   rollupSeries,
   type ReportType,
   type AccountingMethod,
@@ -264,6 +265,9 @@ export async function loadReporting(
   }
 
   const shared: GetSnapshotOptions = { method, ctx, forceRefresh: opts.forceRefresh };
+  // Aging is "as of" a single date, never in the future (see agingAsOfRange).
+  const arApRange = agingAsOfRange(range, now);
+  const arApComparison = agingAsOfRange(comparison, now);
   try {
     const [pnlR, pnlPrevR, bsR, bsPrevR, arR, arPrevR, apR, apPrevR, custR, itemR] =
       await Promise.all([
@@ -271,10 +275,10 @@ export async function loadReporting(
         getReportSnapshot("pnl", comparison, shared),
         getReportSnapshot("balance_sheet", range, shared),
         getReportSnapshot("balance_sheet", comparison, shared),
-        getReportSnapshot("ar_aging", range, shared),
-        getReportSnapshot("ar_aging", comparison, shared),
-        getReportSnapshot("ap_aging", range, shared),
-        getReportSnapshot("ap_aging", comparison, shared),
+        getReportSnapshot("ar_aging", arApRange, shared),
+        getReportSnapshot("ar_aging", arApComparison, shared),
+        getReportSnapshot("ap_aging", arApRange, shared),
+        getReportSnapshot("ap_aging", arApComparison, shared),
         getReportSnapshot("customer_sales", range, shared),
         getReportSnapshot("item_sales", range, shared),
       ]);

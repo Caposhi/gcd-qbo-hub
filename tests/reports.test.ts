@@ -13,6 +13,7 @@ import {
   deriveKpis,
   resolveRange,
   comparisonRange,
+  agingAsOfRange,
   rollupSeries,
   parseReportPayload,
 } from "@/lib/projections/reports";
@@ -419,6 +420,26 @@ describe("comparisonRange", () => {
     // the existing prior_year comparison, no new comparison mode required.
     const q2_2026 = resolveRange("custom", new Date(), "2026-04-01", "2026-06-30");
     expect(comparisonRange(q2_2026, "prior_year")).toEqual({ start: "2025-04-01", end: "2025-06-30" });
+  });
+});
+
+describe("agingAsOfRange", () => {
+  it("clamps a future range end (e.g. 'this month' before month-end) to today", () => {
+    const now = new Date("2026-07-09T12:00:00Z");
+    const range = resolveRange("this_month", now); // { start: 2026-07-01, end: 2026-07-31 }
+    expect(agingAsOfRange(range, now)).toEqual({ start: "2026-07-01", end: "2026-07-09" });
+  });
+
+  it("leaves a past range end untouched (e.g. 'last month', a historical comparison)", () => {
+    const now = new Date("2026-07-09T12:00:00Z");
+    const range = { start: "2026-06-01", end: "2026-06-30" };
+    expect(agingAsOfRange(range, now)).toEqual(range);
+  });
+
+  it("leaves a range ending exactly today untouched", () => {
+    const now = new Date("2026-07-31T12:00:00Z");
+    const range = resolveRange("this_month", now);
+    expect(agingAsOfRange(range, now)).toEqual({ start: "2026-07-01", end: "2026-07-31" });
   });
 });
 
