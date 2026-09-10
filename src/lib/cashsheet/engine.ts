@@ -613,10 +613,31 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
     return;
   }
 
+  // Both possible-duplicate checks below are skipped once a human has
+  // reviewed the flag and confirmed it's a false positive (see
+  // dismissDuplicateAction / setPurposeOverrideAction's sibling in
+  // actions.ts). Without this, a dismissal would just get re-flagged on the
+  // very next sync — the fingerprint/INV# match that triggered it in the
+  // first place doesn't go away on its own, so "not a duplicate" has to
+  // actually suppress the check, not just clear the status once.
+  const duplicateChecksDismissed = !!existing?.duplicateDismissedAt;
+
   // Possible duplicate vs already-posted rows (§10).
-  const dup = findPossibleDuplicate(s.synthetic ? null : s.rowUuid, s.fingerprint, ctx.postedRefs);
+  const dup = duplicateChecksDismissed
+    ? null
+    : findPossibleDuplicate(s.synthetic ? null : s.rowUuid, s.fingerprint, ctx.postedRefs);
   if (dup) {
-    await upsertRow(existing?.id, baseData, RowStatus.PossibleDuplicate, `Matches posted QBO txn ${dup.qboTransactionId}`);
+    const saved = await upsertRow(
+      existing?.id,
+      baseData,
+      RowStatus.PossibleDuplicate,
+      `Matches posted QBO txn ${dup.qboTransactionId}`
+    );
+    // Structured (not just a message string) so the row detail page can look
+    // up and display the actual matched row without parsing statusReason.
+    await recordEvent(ctx.run.id, saved.id, "possible_duplicate", `Fingerprint matches posted QBO txn ${dup.qboTransactionId}`, {
+      matchedQboTransactionId: dup.qboTransactionId,
+    });
     ctx.summary.possibleDuplicates++;
     return;
   }
@@ -627,11 +648,13 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
   // fingerprint check above cannot catch (the fingerprint genuinely changed).
   // Never auto-post/re-sweep here — route to review instead, exactly like the
   // fingerprint duplicate case above.
-  const invSibling = findInvNumberSibling(
-    { id: existing?.id ?? "", tabName, invNumber: row.invNumber || null },
-    RESOLVED_INV_STATUSES,
-    ctx.invResolvedRows
-  );
+  const invSibling = duplicateChecksDismissed
+    ? null
+    : findInvNumberSibling(
+        { id: existing?.id ?? "", tabName, invNumber: row.invNumber || null },
+        RESOLVED_INV_STATUSES,
+        ctx.invResolvedRows
+      );
   if (invSibling) {
     const saved = await upsertRow(
       existing?.id,
@@ -643,7 +666,8 @@ async function processRow(s: Scanned, ctx: RowCtx): Promise<void> {
       ctx.run.id,
       saved.id,
       "inv_reidentified_duplicate",
-      `INV# ${row.invNumber} already resolved as ${invSibling.status} on row ${invSibling.id}`
+      `INV# ${row.invNumber} already resolved as ${invSibling.status} on row ${invSibling.id}`,
+      { matchedRowId: invSibling.id }
     );
     ctx.summary.possibleDuplicates++;
     return;

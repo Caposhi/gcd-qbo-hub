@@ -165,6 +165,47 @@ export async function setPurposeOverrideAction(rowId: string, formData: FormData
   revalidatePath("/cash-sheet-sync");
 }
 
+/**
+ * Confirm a Possible Duplicate flag is a false positive (§10). Unlike
+ * markReviewedAction (which only acknowledges a warning and leaves the row
+ * permanently out of the posting path), this actually removes the specific
+ * check that flagged it — the row goes on to reclassify and can post
+ * normally on a real sync, exactly like any row that was never flagged.
+ * Never touches an already-posted row: dismissal is only reachable from a
+ * never-posted status in the first place.
+ *
+ * Immediately runs a forced dry-run afterward, same as setPurposeOverrideAction
+ * — instant feedback on what the row reclassifies to, no live-posting side
+ * effect (a dry run never posts).
+ */
+export async function dismissDuplicateAction(rowId: string) {
+  const user = await requirePermission("resolve_duplicate");
+  const row = await prisma.sheetRow.findUnique({ where: { id: rowId } });
+  if (!row) throw new Error("Row not found");
+  if (row.qboTransactionId) {
+    throw new Error("This row already has a QBO transaction — nothing to dismiss.");
+  }
+  await prisma.sheetRow.update({
+    where: { id: rowId },
+    data: { duplicateDismissedAt: new Date(), duplicateDismissedByEmail: user.email },
+  });
+  await prisma.rowEvent.create({
+    data: {
+      sheetRowId: rowId,
+      eventType: "duplicate_dismissed",
+      eventMessage: `Duplicate flag dismissed as a false positive by ${user.email} — will reclassify normally.`,
+    },
+  });
+  try {
+    await runSync({ forceDryRun: true, triggeredBy: user.email });
+  } catch {
+    // ignored — see setPurposeOverrideAction's identical comment
+  }
+  revalidatePath(`/cash-sheet-sync/rows/${rowId}`);
+  revalidatePath("/cash-sheet-sync/queue");
+  revalidatePath("/cash-sheet-sync");
+}
+
 export async function markReviewedAction(rowId: string) {
   const user = await requirePermission("mark_warning_reviewed");
   await prisma.sheetRow.update({

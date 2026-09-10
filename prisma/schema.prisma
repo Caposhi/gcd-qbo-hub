@@ -270,6 +270,18 @@ model SheetRow {
   archivedByEmail     String? // null when archived automatically by the engine
   archivedReason      String?
 
+  // Duplicate-flag dismissal (§10 hygiene, owner_admin only, see
+  // dismissDuplicateAction): a human reviewed a Possible Duplicate flag
+  // (fingerprint or INV# match against an already-posted row) and confirmed
+  // this row is a genuinely distinct transaction. Once set, the sync engine
+  // skips BOTH duplicate checks for this row's identity going forward — it
+  // reclassifies and can post normally, like any other row — so this is
+  // permanent by design (the whole point is to stop it being re-flagged
+  // every sync). Never touches an already-posted row (dismissal is only
+  // reachable from a never-posted status).
+  duplicateDismissedAt      DateTime?
+  duplicateDismissedByEmail String?
+
   // Review/approval workflow (§12, §14). A reviewer can mark a warning
   // reviewed; only an owner_admin can approve a row for posting. `approvedAt`
   // is what the rollout gate reads at a manual stage.

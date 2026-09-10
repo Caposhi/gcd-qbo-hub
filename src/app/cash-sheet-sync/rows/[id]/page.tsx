@@ -11,6 +11,7 @@ import {
   archiveRowAction,
   unarchiveRowAction,
   setPurposeOverrideAction,
+  dismissDuplicateAction,
 } from "../../actions";
 import { qboWebUrl } from "@/lib/qbo/links";
 
@@ -34,6 +35,23 @@ export default async function RowDetailPage({ params }: { params: { id: string }
   const changeEvents = row.events.filter(
     (e) => e.eventType === "row_changed" || e.eventType === "changed_after_posting"
   );
+
+  // Possible Duplicate review (§10): find WHICH row/QBO transaction this one
+  // was flagged against, so "is this actually a dupe?" is answerable without
+  // leaving the page. The most recent flagging event carries it structurally
+  // (matchedQboTransactionId or matchedRowId) rather than parsing statusReason.
+  let matchedRow: Awaited<ReturnType<typeof prisma.sheetRow.findUnique>> = null;
+  if (row.status === "Possible Duplicate") {
+    const flagEvent = row.events.find(
+      (e) => e.eventType === "possible_duplicate" || e.eventType === "inv_reidentified_duplicate"
+    );
+    const diff = flagEvent?.diffJson as { matchedQboTransactionId?: string; matchedRowId?: string } | null;
+    if (diff?.matchedRowId) {
+      matchedRow = await prisma.sheetRow.findUnique({ where: { id: diff.matchedRowId } });
+    } else if (diff?.matchedQboTransactionId) {
+      matchedRow = await prisma.sheetRow.findUnique({ where: { qboTransactionId: diff.matchedQboTransactionId } });
+    }
+  }
 
   return (
     <>
@@ -123,6 +141,39 @@ export default async function RowDetailPage({ params }: { params: { id: string }
             </div>
           );
         })()}
+
+        {row.status === "Possible Duplicate" && (
+          <div className="card">
+            <h3 className="card-title" style={{ marginBottom: 12 }}>Possibly duplicates</h3>
+            {matchedRow ? (
+              <>
+                <dl className="kv">
+                  <dt>Row</dt>
+                  <dd>
+                    <Link href={`/cash-sheet-sync/rows/${matchedRow.id}`}>
+                      {matchedRow.tabName} · Row {matchedRow.rowNumberLastSeen}
+                    </Link>
+                  </dd>
+                  <dt>Date</dt><dd>{matchedRow.date?.toISOString().slice(0, 10)}</dd>
+                  <dt>Name (payee)</dt><dd>{matchedRow.name}</dd>
+                  <dt>Amount</dt>
+                  <dd>{fmt(matchedRow.amtCollected) || fmt(matchedRow.amountPaidOut) || fmt(matchedRow.bankDeposit)}</dd>
+                  <dt>QBO Transaction</dt><dd>{matchedRow.qboTransactionId}</dd>
+                </dl>
+                <p className="card-subtitle" style={{ marginTop: 10, marginBottom: 0 }}>
+                  Compare this against the current snapshot above — same date/name/amount is what triggered the flag.
+                  If it's genuinely the same transaction, archive this row below. If it's a different transaction that
+                  coincidentally matches, dismiss the flag below to let it process normally.
+                </p>
+              </>
+            ) : (
+              <p className="card-subtitle">
+                {row.statusReason} — the matched row/transaction couldn&apos;t be looked up automatically (older flag,
+                or it was since deleted). Check <code>{row.statusReason}</code> against QBO directly.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {changeEvents.length > 0 && (
@@ -225,6 +276,31 @@ export default async function RowDetailPage({ params }: { params: { id: string }
               <input type="hidden" name="purposeOverride" value="" />
               <button className="btn ghost" type="submit">Clear override</button>
             </form>
+          )}
+        </div>
+      )}
+
+      {row.status === "Possible Duplicate" && !row.qboTransactionId && can(user.role, "resolve_duplicate") && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 className="card-title" style={{ marginBottom: 8 }}>Resolve duplicate flag</h3>
+          {row.duplicateDismissedAt ? (
+            <p className="card-subtitle" style={{ margin: 0 }}>
+              Dismissed as <strong>not a duplicate</strong> on {row.duplicateDismissedAt.toISOString().slice(0, 16).replace("T", " ")} by{" "}
+              {row.duplicateDismissedByEmail} — this row reclassifies and can post normally now. If it still shows
+              Possible Duplicate above, run a sync to pick up the change.
+            </p>
+          ) : (
+            <>
+              <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
+                Compare against the matched row above, then decide: if this really is the same transaction, use{" "}
+                <strong>Archive</strong> below to hide it (never posts). If it's a different, genuine transaction that
+                just happens to match, dismiss the flag — the row goes on to reclassify and post normally, and this
+                specific match is never re-flagged again.
+              </p>
+              <form action={dismissDuplicateAction.bind(null, row.id)} className="row-actions">
+                <button className="btn primary" type="submit">Not a duplicate — process normally</button>
+              </form>
+            </>
           )}
         </div>
       )}
