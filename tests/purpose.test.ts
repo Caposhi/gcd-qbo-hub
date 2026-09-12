@@ -20,6 +20,18 @@ describe("purpose normalization & mapping (§5, §7)", () => {
     expect(resolvePurposeMapping("INV", MAPPINGS)?.auditOnly).toBe(true);
   });
 
+  it("JR SRVCS and bare LOAN resolve (real-world additions from the Sept reconciliation)", () => {
+    // JR SRVCS: outside-services payee paid from the envelope, same account
+    // as contract labor (JOSE PR/PR/PAYROLL/LABOR).
+    expect(resolvePurposeMapping("JR SRVCS", MAPPINGS)?.qboAccountName).toBe(
+      "Cost of Goods Sold:LABOR Wages:OWNER - Contract Labor"
+    );
+    // LOAN: scrap-metal cash booked as an owner loan (not income) — same
+    // account as the existing LOAN TO COMP/SHAREHOLDER LOAN patterns.
+    expect(resolvePurposeMapping("LOAN", MAPPINGS)?.qboAccountName).toBe("Due To/From Shareholder");
+    expect(resolvePurposeMapping("loan", MAPPINGS)?.qboAccountName).toBe("Due To/From Shareholder");
+  });
+
   it("employee loan mapping requires payee and manual approval", () => {
     const m = resolvePurposeMapping("Employee Loan", MAPPINGS);
     expect(m?.requiresPayee).toBe(true);

@@ -40,7 +40,10 @@ interface SeedGroup {
 const GROUPS: SeedGroup[] = [
   {
     // OWNER contract labor / payroll paid from the envelope (§6A, §7).
-    patterns: ["PR", "JOSE PR", "PAYROLL", "LABOR"],
+    // JR SRVCS is an outside-services payee GCD pays from the envelope,
+    // categorized the same as contract labor (confirmed against the live
+    // company's chart of accounts — resolves to the same account as PR/LABOR).
+    patterns: ["PR", "JOSE PR", "PAYROLL", "LABOR", "JR SRVCS"],
     amountType: "amount_paid_out",
     qboAction: "expense",
     qboAccountName: "Cost of Goods Sold:LABOR Wages:OWNER - Contract Labor",
@@ -79,7 +82,11 @@ const GROUPS: SeedGroup[] = [
     postToQbo: true,
   },
   {
-    patterns: ["LOAN TO COMP", "LOAN TO COMPANY", "SHAREHOLDER LOAN"],
+    // "LOAN" (bare) is scrap-metal cash the shop keeps and uses, booked as an
+    // owner loan rather than income at the business's own choice — same
+    // account as LOAN TO COMP/SHAREHOLDER LOAN, just a shorter label the
+    // sheet also uses for it.
+    patterns: ["LOAN TO COMP", "LOAN TO COMPANY", "SHAREHOLDER LOAN", "LOAN"],
     amountType: "amt_collected",
     qboAction: "deposit",
     qboAccountName: "Due To/From Shareholder",
