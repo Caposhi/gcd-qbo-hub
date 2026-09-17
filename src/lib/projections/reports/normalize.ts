@@ -38,6 +38,18 @@ export type AccountingMethod = "accrual" | "cash";
 export interface LineSeries {
   label: string;
   id?: string;
+  /**
+   * The row's own section path (e.g. `["Expenses", "Payroll Expenses",
+   * "Payroll Taxes"]`), so a caller can match a named subsection even when
+   * none of its individual leaf accounts mention that name in their own
+   * label — a real chart of accounts nests "940 Expenses," "941 Expenses,"
+   * and "State Unemployment Expenses" under a "Payroll Taxes" subsection
+   * whose own rolled-up total is a `section_summary` row (never included
+   * here — see `detailLines`), so only the group path says "payroll tax"
+   * at all. Absent on income lines and older callers, so every check
+   * against it must tolerate `undefined`.
+   */
+  group?: string[];
   values: number[];
 }
 
@@ -207,7 +219,7 @@ function detailLines(report: QboReport, groupCode: string): LineSeries[] {
         // carry their own distinct group code, not this section's.
         r.label.trim() !== ""
     )
-    .map((r) => ({ label: r.label, id: r.id, values: periodValues(report, r) }));
+    .map((r) => ({ label: r.label, id: r.id, group: r.group, values: periodValues(report, r) }));
 }
 
 /** True when the report actually carries a row for this group code. */
