@@ -12,7 +12,7 @@ Removing a secret from the current tree does not remove it from Git history. If 
 
 Human access uses SendGrid-delivered NextAuth magic links, allowed-domain checks, and database roles. Owner-only operations include live/write controls, mappings, QBO connect, user management, AI council runs, refreshes, and overrides. Review server-side permissions whenever adding a route or action; hiding UI is insufficient.
 
-Machine endpoints use shared bearer secrets and therefore collapse attribution to a service identity. Cron and Arcade secrets must be distinct. Console state/stream fail open when `CONSOLE_TOKEN` is empty; treat a nonempty token as mandatory. The public manifest and home page disclose limited system metadata by design.
+Machine endpoints use shared bearer secrets and therefore collapse attribution to a service identity. Cron, Arcade, and gcd-attribution (`ATTRIBUTION_BRIDGE_SECRET`) secrets must all be distinct from one another — a second calling service gets its own credential rather than reusing another service's, so a compromise or rotation on one bridge doesn't touch the others. Console state/stream fail open when `CONSOLE_TOKEN` is empty; treat a nonempty token as mandatory. The public manifest and home page disclose limited system metadata by design.
 
 ## Personal and financial data
 

@@ -75,7 +75,7 @@ Public or separately authenticated routes:
 - `/api/auth/*`, `/auth/*`, and legal pages support login and policy display.
 - `/api/qbo/connect` and `/api/qbo/callback` implement the authorized OAuth flow.
 - `/api/cron/*` requires `Authorization: Bearer <CRON_SECRET>` and fails closed when unset.
-- `/api/external/*` requires `ARCADE_BRIDGE_SECRET` and fails closed when unset. Its assistant POST can incur AI cost and persist data; reporting POST forces a live QBO report refresh.
+- `/api/external/*` requires `ARCADE_BRIDGE_SECRET` and fails closed when unset. Its assistant POST can incur AI cost and persist data; reporting POST forces a live QBO report refresh. The exception is `/api/external/labor-rate`, gated on its own `ATTRIBUTION_BRIDGE_SECRET` instead — a read-only bridge for gcd-attribution's TP1-d labor-cost-rate admin, never posts or forces a refresh.
 - `/console/manifest` is public with permissive CORS. `/console/state` and `/console/stream` are protected only when `CONSOLE_TOKEN` is nonempty; the query-string `key` fallback can leak via request logs. Console telemetry is operationally sensitive.
 
 ## Authentication and trust boundaries

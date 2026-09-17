@@ -22,6 +22,7 @@
 |---|---|---|
 | `CRON_SECRET` | Required by both cron routes; unset fails closed | Match cron services; rotate together |
 | `ARCADE_BRIDGE_SECRET` | Required by `/api/external/*`; unset fails closed | Match Arcade server only; never browser-side |
+| `ATTRIBUTION_BRIDGE_SECRET` | Required by `/api/external/labor-rate`; unset fails closed | Match gcd-attribution server only; distinct from `ARCADE_BRIDGE_SECRET`, never browser-side |
 | `CONSOLE_TOKEN` | Optional in code | **Unset makes state/stream public**; set in every shared environment |
 | `SYNC_TZ` | Timestamp/business-time setting | Schedule itself remains UTC in `render.yaml` |
 
