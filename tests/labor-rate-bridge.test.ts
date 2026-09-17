@@ -81,6 +81,35 @@ describe("deriveLaborRateInputs", () => {
     expect(result.quickbooksPayrollCents).toBeNull();
   });
 
+  it("sums a subsection's leaf accounts by group path when none of them say the section's own name", () => {
+    // Regression for the real gap this bridge hit in production: "Payroll
+    // Taxes" is a subsection whose three leaf accounts (940/941/State
+    // Unemployment Expenses) never mention "payroll" in their own label —
+    // only their parent group does. Verified against production with
+    // `npm run qbo:diagnose-payroll`: the three leaves sum to $47,206.63,
+    // matching "Total Payroll Taxes" (a section_summary row this bridge
+    // never sees) to the penny.
+    const result = deriveLaborRateInputs(
+      fixturePnl({
+        expenseLines: [
+          { label: "STAFF wages", values: [297989.32] },
+          { label: "OWNER Salary", values: [108800.00] },
+          { label: "940 Expenses", group: ["Expenses", "Payroll Expenses", "Payroll Taxes"], values: [520.65] },
+          { label: "941 Expenses", group: ["Expenses", "Payroll Expenses", "Payroll Taxes"], values: [46599.15] },
+          {
+            label: "State Unemployment Expenses",
+            group: ["Expenses", "Payroll Expenses", "Payroll Taxes"],
+            values: [86.83],
+          },
+          { label: "Payroll Fees", values: [6185.55] },
+          { label: "Retirement Plan", values: [8853.46] },
+        ],
+      })
+    );
+
+    expect(result.payrollTaxesCents).toBe(4720663);
+  });
+
   it("does not divide by zero when the wage base is zero", () => {
     const result = deriveLaborRateInputs(
       fixturePnl({

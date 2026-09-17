@@ -20,6 +20,7 @@ import {
 import {
   PNL_MONTHLY,
   PNL_REALWORLD,
+  PNL_NESTED_PAYROLL_TAXES,
   BALANCE_SHEET,
   AR_AGING,
   CUSTOMER_SALES,
@@ -149,6 +150,34 @@ describe("normalizePnl — real-world QBO shapes (regression for the live bugs)"
     expect(byKey.gross_profit.value).toBe(75000);
     expect(byKey.net_income.value).toBe(65918.97);
     expect(byKey.operating_expenses.value).toBe(9081.03);
+  });
+});
+
+describe("normalizePnl — nested subsection whose own leaf labels don't name it", () => {
+  // Regression for the labor-rate bridge's missing "payroll taxes": Payroll
+  // Taxes is itself a subsection three levels deep, and its three leaf
+  // accounts ("940 Expenses," "941 Expenses," "State Unemployment Expenses")
+  // never say "payroll" themselves — only their parent group does, and that
+  // group's own rolled-up total is a section_summary row detailLines()
+  // deliberately excludes. Verified against production with
+  // `npm run qbo:diagnose-payroll`.
+  const pnl = normalizePnl(parseQboReport(PNL_NESTED_PAYROLL_TAXES));
+
+  it("carries each leaf line's section path, not just its own label", () => {
+    const line940 = pnl.expenseLines.find((l) => l.label === "940 Expenses")!;
+    expect(line940.group).toEqual(["Expenses", "Payroll Expenses", "Payroll Taxes"]);
+  });
+
+  it("lists every leaf under the subsection, never the subsection's own rollup", () => {
+    expect(pnl.expenseLines.map((l) => l.label)).toEqual([
+      "OWNER Salary",
+      "Payroll Fees",
+      "940 Expenses",
+      "941 Expenses",
+      "State Unemployment Expenses",
+      "Retirement Plan",
+      "STAFF wages",
+    ]);
   });
 });
 

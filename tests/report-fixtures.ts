@@ -247,6 +247,76 @@ export const PNL_REALWORLD = {
 };
 
 /**
+ * The real GCD chart-of-accounts shape that defeated the labor-rate bridge's
+ * payroll-taxes lookup: "Payroll Taxes" is itself a THREE-level-deep
+ * subsection (Expenses > Payroll Expenses > Payroll Taxes), and none of its
+ * three leaf accounts ("940 Expenses," "941 Expenses," "State Unemployment
+ * Expenses") say "payroll" in their own label — only the subsection's own
+ * rolled-up total does, and that total is a `section_summary` row that
+ * `detailLines()` deliberately excludes (it only emits leaf `data` rows).
+ * Verified against production via `npm run qbo:diagnose-payroll`: the three
+ * leaves sum to $47,206.63, matching "Total Payroll Taxes" to the penny.
+ */
+export const PNL_NESTED_PAYROLL_TAXES = {
+  Header: {
+    ReportName: "ProfitAndLoss",
+    StartPeriod: "2025-09-01",
+    EndPeriod: "2026-08-31",
+    Currency: "USD",
+  },
+  Columns: {
+    Column: [
+      { ColTitle: "", ColType: "Account" },
+      { ColTitle: "Total", ColType: "Money", MetaData: [{ Name: "ColKey", Value: "total" }] },
+    ],
+  },
+  Rows: {
+    Row: [
+      {
+        Header: { ColData: [{ value: "Expenses" }, { value: "" }] },
+        Rows: {
+          Row: [
+            {
+              Header: { ColData: [{ value: "Payroll Expenses" }, { value: "" }] },
+              Rows: {
+                Row: [
+                  { ColData: [{ value: "OWNER Salary", id: "74" }, { value: "108800.00" }], type: "Data" },
+                  { ColData: [{ value: "Payroll Fees", id: "193" }, { value: "6185.55" }], type: "Data" },
+                  {
+                    Header: { ColData: [{ value: "Payroll Taxes" }, { value: "" }] },
+                    Rows: {
+                      Row: [
+                        { ColData: [{ value: "940 Expenses", id: "113" }, { value: "520.65" }], type: "Data" },
+                        { ColData: [{ value: "941 Expenses", id: "112" }, { value: "46599.15" }], type: "Data" },
+                        { ColData: [{ value: "State Unemployment Expenses", id: "114" }, { value: "86.83" }], type: "Data" },
+                      ],
+                    },
+                    Summary: { ColData: [{ value: "Total Payroll Taxes" }, { value: "47206.63" }] },
+                    type: "Section",
+                  },
+                  { ColData: [{ value: "Retirement Plan", id: "168" }, { value: "8853.46" }], type: "Data" },
+                  { ColData: [{ value: "STAFF wages", id: "69" }, { value: "297989.32" }], type: "Data" },
+                ],
+              },
+              Summary: { ColData: [{ value: "Total Payroll Expenses" }, { value: "469034.96" }] },
+              type: "Section",
+            },
+          ],
+        },
+        Summary: { ColData: [{ value: "Total Expenses" }, { value: "469034.96" }] },
+        type: "Section",
+        group: "Expenses",
+      },
+      {
+        Summary: { ColData: [{ value: "Net Income" }, { value: "-469034.96" }] },
+        type: "Section",
+        group: "NetIncome",
+      },
+    ],
+  },
+};
+
+/**
  * Sales by Item where the only money columns are "Sales" and "Avg Price" (no
  * "Amount"/"Total" title and no grand-total column). The pre-fix picker fell to
  * the LAST money column ("Avg Price") and charted per-unit prices instead of

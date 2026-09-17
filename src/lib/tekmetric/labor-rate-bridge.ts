@@ -43,10 +43,25 @@
  */
 import { sum, type PnlNormalized, type LineSeries } from "@/lib/projections/reports";
 
-/** Sum of a matched expense line's per-period values, in dollars, or null if no line matches. */
+/**
+ * Sum every matching line's values, in dollars, or null if nothing matches.
+ * A line matches by its OWN label OR by any segment of its section path —
+ * a subsection like "Payroll Taxes" can hold several differently-named leaf
+ * accounts ("940 Expenses," "941 Expenses," "State Unemployment Expenses")
+ * none of which say "payroll" themselves; only their parent group does.
+ * Summing every match, rather than taking the first, is what makes this
+ * correct for that case without double-counting elsewhere: `expenseLines`
+ * only ever holds leaf `data` rows (see `detailLines` in reports/normalize),
+ * never a subsection's own rolled-up total, so there is nothing to
+ * double-count against — each leaf account is counted exactly once, however
+ * it matched.
+ */
 function findLineTotal(lines: LineSeries[], labelPattern: RegExp): number | null {
-  const match = lines.find((line) => labelPattern.test(line.label));
-  return match ? sum(match.values) : null;
+  const matches = lines.filter(
+    (line) => labelPattern.test(line.label) || (line.group ?? []).some((g) => labelPattern.test(g))
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce((total, line) => total + sum(line.values), 0);
 }
 
 function toCents(dollars: number): number {

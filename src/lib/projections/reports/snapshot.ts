@@ -51,10 +51,13 @@ function numArrayOrNull(v: unknown): number[] | null {
 function strArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map(str) : [];
 }
+function optStrArray(v: unknown): string[] | undefined {
+  return Array.isArray(v) ? v.map(str) : undefined;
+}
 function lineSeries(v: unknown): LineSeries[] {
   return (Array.isArray(v) ? v : []).map((r) => {
     const o = obj(r);
-    return { label: str(o.label), id: optStr(o.id), values: numArray(o.values) };
+    return { label: str(o.label), id: optStr(o.id), group: optStrArray(o.group), values: numArray(o.values) };
   });
 }
 
