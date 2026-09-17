@@ -13,6 +13,7 @@ External state was not accessed during the 2026-08-10 repository audit. “Confi
 | Tekmetric | Read-only shop KPIs | Base URL, bearer token, shop ID | Cache becomes stale; projections lose operations data | Shop-system owner |
 | Transcript service | Read-only monthly aggregates | Base URL and shared secret | Transcript insight becomes stale/unavailable | Related-repo owner |
 | gcd-arcade | Server-to-server module bridge | Matching `ARCADE_BRIDGE_SECRET`; Arcade stores counterpart | Shared identity can read/trigger supported operations; no per-user delegation | Both repo owners |
+| gcd-attribution | Read-only bridge: `/api/external/labor-rate` supplies QuickBooks P&L labor/payroll figures (bare COGS labor wages, total expenses, and the payroll-tax/fee/retirement/staff-wage/owner-salary lines, plus the derived loading factor) to gcd-attribution's TP1-d labor-cost-rate admin, which has no QuickBooks connection of its own | Matching `ATTRIBUTION_BRIDGE_SECRET` (distinct from `ARCADE_BRIDGE_SECRET`); gcd-attribution stores the counterpart | Bridge unreachable/misconfigured → gcd-attribution's rate form falls back to manual entry, same as before this bridge existed; this route never writes to QBO | Both repo owners |
 
 ## QuickBooks boundaries
 
