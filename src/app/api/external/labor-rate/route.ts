@@ -61,7 +61,18 @@ export async function GET(req: Request) {
   }
 
   try {
-    const { payload, fetchedAt } = await getReportSnapshot("pnl", { start, end }, { method: "accrual" });
+    // Always fetch fresh, never the cached snapshot. This route is one
+    // deliberate, low-frequency click on gcd-attribution's rate form, not a
+    // page load — the 6h snapshot cache exists for pages people load
+    // repeatedly, and serving it here would mean a code fix to how this
+    // report gets normalized (or a same-day QuickBooks correction, exactly
+    // the 2026-08-19 scenario this whole rate form exists to catch) doesn't
+    // actually show up until the stale cache entry ages out.
+    const { payload, fetchedAt } = await getReportSnapshot(
+      "pnl",
+      { start, end },
+      { method: "accrual", forceRefresh: true }
+    );
     const inputs = deriveLaborRateInputs(payload as PnlNormalized);
 
     return NextResponse.json({
