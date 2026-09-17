@@ -23,6 +23,7 @@
     "tekmetric:backfill": "tsx scripts/tekmetric-backfill.ts",
     "tekmetric:diagnose": "tsx scripts/tekmetric-diagnose-month.ts",
     "qbo:diagnose-cogs": "tsx scripts/qbo-diagnose-cogs.ts",
+    "qbo:diagnose-payroll": "tsx scripts/qbo-diagnose-payroll-expenses.ts",
     "tekmetric:bulk-override": "tsx scripts/tekmetric-bulk-override.ts",
     "qbo:diagnose-account": "tsx scripts/qbo-diagnose-account-detail.ts",
     "transcripts:diagnose": "tsx scripts/transcripts-diagnose.ts"
