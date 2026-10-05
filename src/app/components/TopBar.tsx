@@ -6,19 +6,20 @@
    `notice` row that used to sit atop the Cash Sheet Sync page. Env facts come
    from the server layout so the pill can never disagree with the derived QBO
    environment (§12/§16).
+   On phones (globals.css §11) it collapses to: menu button · page title ·
+   search icon · short env pill. The breadcrumb hides and the Arcade link moves
+   into the slide-out menu so the bar never wraps or clips.
    ========================================================================== */
 import { usePathname } from "next/navigation";
 import { MODULES } from "@/lib/modules/registry";
+import { ARCADE_URL } from "@/lib/modules/arcade";
 import { CommandPalette } from "./CommandPalette";
+import { MenuButton } from "./NavDrawer";
 
 export interface EnvInfo {
   environment: "sandbox" | "live";
   configured: boolean;
 }
-
-// GCD Arcade — the launcher hub every program links back to. Override via env
-// if Render ever assigns the arcade's static site a different host.
-const ARCADE_URL = process.env.NEXT_PUBLIC_ARCADE_URL || "https://gcd-arcade-web.onrender.com";
 
 /** Top-left "back to arcade" link — iOS-style tinted back button, so leaving
  *  this program for another one is a single click, same as every other GCD app. */
@@ -51,8 +52,9 @@ export function TopBar({ env }: { env: EnvInfo }) {
 
   return (
     <header className="topbar">
+      <MenuButton />
       <BackToArcade />
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div className="topbar-heading">
         <div className="crumb">Hub / {group}</div>
         <div className="title">{title}</div>
       </div>
@@ -69,7 +71,8 @@ function EnvPill({ env }: { env: EnvInfo }) {
     return (
       <span className="env-pill live" title="QuickBooks credentials are not connected yet.">
         <span className="dot" />
-        Setup required
+        <span className="env-full">Setup required</span>
+        <span className="env-short">Setup</span>
       </span>
     );
   }
@@ -77,14 +80,16 @@ function EnvPill({ env }: { env: EnvInfo }) {
     return (
       <span className="env-pill live" title="Connected to the live QuickBooks company.">
         <span className="dot" />
-        Live · Connected
+        <span className="env-full">Live · Connected</span>
+        <span className="env-short">Live</span>
       </span>
     );
   }
   return (
     <span className="env-pill" title="Connected to the QuickBooks sandbox company.">
       <span className="dot" />
-      Sandbox · Connected
+      <span className="env-full">Sandbox · Connected</span>
+      <span className="env-short">Sandbox</span>
     </span>
   );
 }

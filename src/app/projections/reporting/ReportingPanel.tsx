@@ -139,7 +139,7 @@ export async function ReportingPanel({
 
       <KpiTiles kpis={data.kpis} />
 
-      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" }}>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))" }}>
         <TrendChart data={data.trend} />
         <CategoryChart
           title="Revenue by Service / Product"

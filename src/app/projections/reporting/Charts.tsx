@@ -26,7 +26,7 @@ import {
 import type { TrendPoint, CategoryDatum } from "@/lib/projections/report-service";
 import type { AgingNormalized } from "@/lib/projections/reports";
 import { money, percent } from "./format";
-import { CHART, axisProps, gridProps, barCursor, GcdTooltip } from "@/app/components/chart-theme";
+import { CHART, axisProps, gridProps, barCursor, GcdTooltip, useNarrowScreen } from "@/app/components/chart-theme";
 
 function ChartCard({
   title,
@@ -98,6 +98,7 @@ export function CategoryChart({
   unit?: string;
 }) {
   const [selected, setSelected] = useState<number | null>(null);
+  const narrow = useNarrowScreen();
   if (data.length === 0) return <ChartCard title={title}><EmptyNote label={unit} /></ChartCard>;
   const total = data.reduce((a, d) => a + d.value, 0);
   const height = Math.max(180, data.length * 34 + 24);
@@ -109,7 +110,7 @@ export function CategoryChart({
         <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 8 }}>
           <CartesianGrid stroke={CHART.grid} strokeDasharray="3 3" horizontal={false} />
           <XAxis type="number" {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} />
-          <YAxis type="category" dataKey="name" {...axisProps} width={130} tickLine={false} />
+          <YAxis type="category" dataKey="name" {...axisProps} width={narrow ? 92 : 130} tickLine={false} />
           <Tooltip content={<GcdTooltip fmt={(n) => money(n)} />} cursor={barCursor} />
           <Bar
             dataKey="value"

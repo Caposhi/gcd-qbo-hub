@@ -69,6 +69,17 @@ export function CoworkerBoard({
 }) {
   const router = useRouter();
   const answerFormRef = useRef<HTMLFormElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+  // On phones the board is one stacked column (globals.css), so picking an item
+  // would change content below the fold with no visible feedback. Bring the
+  // detail into view instead; "Back to list" returns to the list.
+  const isStacked = () =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches;
+  const pick = (id: string) => {
+    setSelectedId(id);
+    if (isStacked()) requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
   const [selectedId, setSelectedId] = useState<string | null>(questions[0]?.id ?? null);
 
   // Selection survives a server refresh: if the picked item left the current
@@ -87,14 +98,14 @@ export function CoworkerBoard({
   return (
     <div className="cwp-board" style={{ marginTop: 16 }}>
       {/* Left: clickable list */}
-      <div className="cwp-list">
+      <div className="cwp-list" ref={listRef}>
         {questions.map((q) => {
           const active = selected?.id === q.id;
           return (
             <button
               key={q.id}
               type="button"
-              onClick={() => setSelectedId(q.id)}
+              onClick={() => pick(q.id)}
               aria-pressed={active}
               className="cwp-item"
               data-active={active ? "true" : "false"}
@@ -115,7 +126,14 @@ export function CoworkerBoard({
 
       {/* Right: detail for the selected transaction */}
       {selected && (
-        <div className="cwp-detail">
+        <div className="cwp-detail" ref={detailRef}>
+          <button
+            type="button"
+            className="btn ghost cwp-back"
+            onClick={() => listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          >
+            ← Back to list
+          </button>
           {/* Question bubble */}
           <div className="card">
             <div className="cwp-item-top">

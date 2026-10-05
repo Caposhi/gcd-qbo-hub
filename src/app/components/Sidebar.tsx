@@ -5,6 +5,8 @@
    Active route gets the powder-blue fill + the signature lemondrop bar (CSS).
    Drives entirely off the MODULES registry; icons map registry `lucide` names
    to Lucide components so the registry stays server-serializable.
+   At the mobile breakpoint the same rail slides in as a drawer (NavDrawer.tsx)
+   and also carries the "Back to GCD Arcade" link the top bar drops on phones.
    ========================================================================== */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -18,9 +20,12 @@ import {
   Wrench,
   Users,
   Activity,
+  ChevronLeft,
   type LucideIcon,
 } from "lucide-react";
 import { MODULES, type ModuleGroup } from "@/lib/modules/registry";
+import { ARCADE_URL } from "@/lib/modules/arcade";
+import { DrawerCloseButton, useNavDrawer } from "./NavDrawer";
 
 const ICONS: Record<string, LucideIcon> = {
   Home,
@@ -51,18 +56,29 @@ export function Sidebar({
   coworkerOpenCount?: number;
 }) {
   const pathname = usePathname() || "/";
+  const { open, setOpen } = useNavDrawer();
   const isActive = (basePath: string) =>
     basePath === "/" ? pathname === "/" : pathname === basePath || pathname.startsWith(basePath + "/");
 
   return (
-    <aside className="sidebar">
-      <Link href="/" className="sidebar-brand" style={{ textDecoration: "none" }}>
-        <img src="/assets/gcd-logo-disc.png" alt="German Car Depot" />
-        <span>
-          <span className="name">GCD Hub</span>
-          <span className="sub">QuickBooks Online</span>
-        </span>
-      </Link>
+    <aside
+      id="hub-sidebar"
+      className={"sidebar" + (open ? " open" : "")}
+      // Tapping any link (even the current page's) dismisses the mobile drawer.
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest("a")) setOpen(false);
+      }}
+    >
+      <div className="sidebar-head">
+        <Link href="/" className="sidebar-brand" style={{ textDecoration: "none" }}>
+          <img src="/assets/gcd-logo-disc.png" alt="German Car Depot" />
+          <span>
+            <span className="name">GCD Hub</span>
+            <span className="sub">QuickBooks Online</span>
+          </span>
+        </Link>
+        <DrawerCloseButton />
+      </div>
 
       {GROUP_ORDER.map((group) => {
         const items = MODULES.filter((m) => m.group === group);
@@ -107,6 +123,11 @@ export function Sidebar({
           </nav>
         );
       })}
+
+      <a href={ARCADE_URL} className="nav-item sidebar-arcade">
+        <ChevronLeft />
+        Back to GCD Arcade
+      </a>
 
       {user?.email && (
         <div className="sidebar-user">

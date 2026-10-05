@@ -8,6 +8,7 @@
 |---|---|---|
 | `DATABASE_URL` | Required for durable/authenticated behavior | Identify database before migration/seed/backfill |
 | `PUBLIC_APP_URL` | Public base used by callers/links | Must match deployed HTTPS origin |
+| `NEXT_PUBLIC_ARCADE_URL` | Optional "Back to GCD Arcade" link target (desktop top bar and phone menu); unset uses the default in `src/lib/modules/arcade.ts` | Browser-visible and inlined at build time — a change needs a rebuild; never put a secret here |
 | `NEXTAUTH_URL` | NextAuth canonical origin | Must match deployed origin |
 | `NEXTAUTH_SECRET` | Required in production | Generate randomly; rotation invalidates sessions |
 | `APP_ENCRYPTION_KEY` | Required to read/store QBO tokens | 32-byte hex/base64; loss or rotation without re-encryption breaks credentials |

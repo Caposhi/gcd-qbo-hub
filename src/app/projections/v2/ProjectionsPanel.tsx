@@ -264,7 +264,7 @@ function ScenarioDetail({
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))" }}>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))" }}>
         <div className="card" style={{ minWidth: 0 }}>
           <h3 className="card-title" style={{ marginTop: 0 }}>Projection</h3>
           <ProjectionChart data={chartRows} />

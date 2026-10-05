@@ -67,6 +67,8 @@ Render schedules are UTC. The daily job therefore runs at 19:00 Eastern during d
 
 ## Application and HTTP surface
 
+The UI shell (sidebar, top bar, GCD Pal, ⌘K search) is responsive: on phones and portrait tablets (≤960px) the sidebar becomes a slide-out menu and every page reflows to a single column; see [Testing](TESTING.md#phone-and-tablet-layout) for the layout check.
+
 Registered modules are Cash Sheet Sync (`live`), Financial Projections, AI Report Assistant, Coworker Portal, Deposit Reconciliation, Check Reception, and Tekmetric Operations (all `prototype`). `/system-health` is an owner-only read of persisted state. A financial-report library and database snapshot/capability models also exist, but there is no registered Financial Reports module or `/financial-reports` page; treat that work as incomplete.
 
 Public or separately authenticated routes:

@@ -84,7 +84,7 @@ export default async function RowDetailPage({ params }: { params: { id: string }
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 16, marginTop: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,320px),1fr))", gap: 16, marginTop: 16 }}>
         <div className="card">
           <h3 className="card-title" style={{ marginBottom: 12 }}>Current snapshot</h3>
           <dl className="kv">

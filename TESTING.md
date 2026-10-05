@@ -36,6 +36,15 @@ Use a disposable PostgreSQL database, fictional user/customer/payee fixtures, a 
 
 Do not use a production sync, QBO creation, email, AI run, backfill, seed, or migration merely as a smoke test. Such an operation needs explicit authorization, a named environment, rollback/reconciliation planning, and an operator observing the result.
 
+## Phone and tablet layout
+
+The shell is responsive (`src/app/globals.css` §11): at ≤960px the sidebar becomes a slide-out menu opened from the top bar, and at ≤600px pages switch to phone density (2-up KPI tiles, stacked filters, compact module cards). After any UI change, check the touched pages against a disposable local database with a phone-sized browser (e.g. 390×844 and 320×640, plus 844×390 landscape) and a desktop width:
+
+- the page never scrolls sideways — wide tables scroll inside their own card instead;
+- the menu opens, closes on backdrop/Esc/link tap, and navigation works from it;
+- search, the GCD Pal sheet, and forms are usable, and focusing a field does not zoom the page on iOS (controls stay ≥16px);
+- desktop (≥961px) still shows the permanent sidebar and full top bar.
+
 ## Repository documentation checks
 
 Validate all relative Markdown links, compare active `process.env` reads plus framework-consumed variables against `.env.example` and `docs/ENVIRONMENT.md`, scan current files/history for credentials and personal data without echoing findings, reread modified documents in full, and review the complete diff.

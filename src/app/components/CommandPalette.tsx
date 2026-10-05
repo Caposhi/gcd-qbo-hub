@@ -138,8 +138,8 @@ export function CommandPalette() {
         style={{ cursor: "pointer", font: "inherit", textAlign: "left" }}
       >
         <Search size={15} />
-        <span>Search…</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>⌘K</span>
+        <span className="topbar-search-label">Search…</span>
+        <span className="topbar-search-kbd" style={{ marginLeft: "auto", fontSize: 11, opacity: 0.8 }}>⌘K</span>
       </button>
 
       {open && (
@@ -148,15 +148,16 @@ export function CommandPalette() {
           aria-modal="true"
           aria-label="Search the hub"
           onMouseDown={close}
+          className="palette-overlay"
+          // Above the drawer and the AI Pal so nothing floats over it on phones.
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 200,
+            zIndex: 800,
             background: "rgba(10,20,35,0.45)",
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "center",
-            padding: "12vh 1rem 1rem",
           }}
         >
           <div
@@ -207,11 +208,14 @@ export function CommandPalette() {
                   outline: "none",
                   background: "transparent",
                   font: "inherit",
-                  fontSize: 15,
+                  fontSize: 16, // ≥16px so iOS Safari doesn't zoom on focus
                   color: "var(--text-body)",
                 }}
               />
-              <kbd style={{ fontSize: 11, opacity: 0.55 }}>esc</kbd>
+              <kbd className="palette-esc" style={{ fontSize: 11, opacity: 0.55 }}>esc</kbd>
+              <button type="button" className="icon-btn palette-cancel" onClick={close}>
+                Cancel
+              </button>
             </div>
 
             {results.length === 0 ? (
@@ -219,7 +223,7 @@ export function CommandPalette() {
                 Nothing matches “{query}”.
               </div>
             ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 6, maxHeight: "50vh", overflowY: "auto" }}>
+              <ul className="palette-results" style={{ listStyle: "none", margin: 0, padding: 6, overflowY: "auto" }}>
                 {results.map((item, i) => (
                   <li key={`${item.href}-${item.label}`}>
                     <button
@@ -231,7 +235,7 @@ export function CommandPalette() {
                         display: "flex",
                         alignItems: "center",
                         gap: 10,
-                        padding: "9px 10px",
+                        padding: "11px 10px",
                         border: "none",
                         borderRadius: "var(--radius-md)",
                         cursor: "pointer",

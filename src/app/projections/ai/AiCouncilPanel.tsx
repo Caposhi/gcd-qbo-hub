@@ -204,7 +204,7 @@ export async function AiCouncilPanel({
             return (
               <>
                 <h2 style={{ marginTop: "1.5rem" }}>Officers</h2>
-                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))" }}>
                   {officerCards.map(({ p, rep }) => (
                     <InsightCard key={p.id} name={p.name} title={p.title} insight={parseInsight(rep!.insightJson)} />
                   ))}
@@ -221,7 +221,7 @@ export async function AiCouncilPanel({
                 Firewalled from the officer debate. Al audits from raw data only; the Board reviews the
                 finished reports.
               </p>
-              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+              <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))" }}>
                 {alReport && (
                   <InsightCard name={alP.name} title={alP.title} insight={parseInsight(alReport.insightJson)} />
                 )}
