@@ -57,18 +57,8 @@ export function FilterBar({ state }: { state: FilterState }) {
   );
 
   return (
-    <div
-      className="card"
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "1rem",
-        alignItems: "flex-end",
-        opacity: pending ? 0.6 : 1,
-      }}
-      aria-busy={pending}
-    >
-      <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+    <div className="card filter-bar" style={{ opacity: pending ? 0.6 : 1 }} aria-busy={pending}>
+      <label className="kv">
         <span className="muted">Date range</span>
         <select
           style={selectStyle}
@@ -85,7 +75,7 @@ export function FilterBar({ state }: { state: FilterState }) {
 
       {state.preset === "custom" && (
         <>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+          <label className="kv">
             <span className="muted">Start</span>
             <input
               type="date"
@@ -94,7 +84,7 @@ export function FilterBar({ state }: { state: FilterState }) {
               onChange={(e) => update({ start: e.target.value })}
             />
           </label>
-          <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+          <label className="kv">
             <span className="muted">End</span>
             <input
               type="date"
@@ -106,7 +96,7 @@ export function FilterBar({ state }: { state: FilterState }) {
         </>
       )}
 
-      <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+      <label className="kv">
         <span className="muted">Compare to</span>
         <select
           style={selectStyle}
@@ -118,7 +108,7 @@ export function FilterBar({ state }: { state: FilterState }) {
         </select>
       </label>
 
-      <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+      <label className="kv">
         <span className="muted">Method</span>
         <select
           style={selectStyle}
@@ -130,7 +120,7 @@ export function FilterBar({ state }: { state: FilterState }) {
         </select>
       </label>
 
-      <label className="kv" style={{ display: "grid", gap: "0.25rem" }}>
+      <label className="kv">
         <span className="muted">Trend by</span>
         <select
           style={selectStyle}

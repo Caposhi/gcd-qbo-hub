@@ -51,14 +51,15 @@ export default async function HomePage() {
         </div>
       )}
 
-      <div className="kpi-grid">
+      <div className="module-grid">
         {MODULES.map((m) => {
           const Icon = ICONS[m.lucide] ?? HomeIcon;
           const planned = m.status === "planned";
           const card = (
-            <div className="card hoverable" style={{ height: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <div className="card hoverable module-card" style={{ height: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+              <div className="module-head" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
                 <span
+                  className="module-icon"
                   style={{
                     width: 44,
                     height: 44,
@@ -74,11 +75,12 @@ export default async function HomePage() {
                 </span>
                 <StatusBadge status={m.status} />
               </div>
-              <div style={{ flex: 1 }}>
+              <div className="module-body" style={{ flex: 1 }}>
                 <h3 className="card-title" style={{ fontSize: 16 }}>{m.name}</h3>
                 <p className="card-subtitle" style={{ marginTop: 6 }}>{m.tagline}</p>
               </div>
               <span
+                className="module-open"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",

@@ -76,8 +76,8 @@ export function AssistantChat({
   }, [initialPrompt]);
 
   return (
-    <div className="card" style={{ display: "flex", flexDirection: "column", height: "68vh", padding: 0, overflow: "hidden" }}>
-      <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, padding: "20px 22px" }}>
+    <div className="card chat-card">
+      <div className="chat-scroll">
         {messages.length === 0 && !busy && (
           <p className="card-subtitle" style={{ margin: 0 }}>
             Ask about the cash sheet — e.g. &ldquo;How did the last sync go?&rdquo;, &ldquo;List July parts
@@ -89,7 +89,8 @@ export function AssistantChat({
             key={i}
             style={{
               alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-              maxWidth: "82%",
+              maxWidth: "88%",
+              overflowWrap: "anywhere",
               background: m.role === "user" ? "var(--royal-blue)" : "var(--gray-50)",
               color: m.role === "user" ? "#fff" : "var(--text-strong)",
               border: m.role === "user" ? "none" : "1px solid var(--border-subtle)",
@@ -114,7 +115,7 @@ export function AssistantChat({
       {error && <div className="notice danger" style={{ margin: "0 22px" }}>{error}</div>}
       <form
         onSubmit={(e) => { e.preventDefault(); void submit(input); }}
-        style={{ display: "flex", gap: 10, padding: "14px 22px", borderTop: "1px solid var(--border-subtle)" }}
+        className="chat-form"
       >
         <input
           className="input"
@@ -122,7 +123,8 @@ export function AssistantChat({
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about the books…"
           disabled={busy}
-          style={{ flex: 1, borderRadius: "var(--radius-pill)" }}
+          enterKeyHint="send"
+          style={{ flex: 1, minWidth: 0, borderRadius: "var(--radius-pill)" }}
         />
         <button className="btn primary" type="submit" disabled={busy || !input.trim()}>
           Send

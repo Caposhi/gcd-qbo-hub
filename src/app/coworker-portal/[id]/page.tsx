@@ -80,14 +80,7 @@ export default async function QuestionDetailPage({
         {question.createdAt.toISOString().slice(0, 10)}.
       </p>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 360px) 1fr",
-          gap: "20px",
-          alignItems: "start",
-        }}
-      >
+      <div className="split-detail">
         <div className="card">
           <h3 className="card-title">Question</h3>
           <p style={{ marginTop: "8px", color: "var(--text-body)" }}>

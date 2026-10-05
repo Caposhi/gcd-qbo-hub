@@ -60,10 +60,10 @@ export default async function AssistantPage({ searchParams }: { searchParams: { 
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: "1rem", alignItems: "start" }}>
-        <div className="card" style={{ padding: "18px 18px" }}>
+      <div className="assistant-layout">
+        <div className="card assistant-convos">
           <h3 className="card-title" style={{ marginBottom: 12 }}>Conversations</h3>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+          <div className="convo-list">
             <Link className="btn ghost" href="/assistant" style={{ justifyContent: "flex-start" }}>
               + New chat
             </Link>

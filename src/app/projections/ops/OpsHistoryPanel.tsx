@@ -295,7 +295,7 @@ export async function OpsHistoryPanel({
                 ))}
               </select>
             </label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 12 }}>
               <label>
                 RO count
                 <input type="number" name="roCount" className="input" min={0} step={1} required defaultValue={draft?.roCount} />

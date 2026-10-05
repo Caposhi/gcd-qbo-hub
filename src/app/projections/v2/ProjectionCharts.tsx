@@ -23,7 +23,7 @@ import {
   Cell,
 } from "recharts";
 import { money } from "../reporting/format";
-import { CHART, axisProps, gridProps, barCursor, GcdTooltip } from "@/app/components/chart-theme";
+import { CHART, axisProps, gridProps, barCursor, GcdTooltip, useNarrowScreen } from "@/app/components/chart-theme";
 
 export interface ProjRow {
   label: string;
@@ -65,6 +65,7 @@ export interface TornadoDatum {
 
 /** Which lever moves the target most — single-hue horizontal bars, largest first. */
 export function TornadoChart({ data, metricLabel }: { data: TornadoDatum[]; metricLabel: string }) {
+  const narrow = useNarrowScreen();
   if (data.length === 0) return null;
   const height = Math.max(160, data.length * 40 + 24);
   return (
@@ -72,7 +73,7 @@ export function TornadoChart({ data, metricLabel }: { data: TornadoDatum[]; metr
       <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 8 }}>
         <CartesianGrid stroke={CHART.grid} strokeDasharray="3 3" horizontal={false} />
         <XAxis type="number" {...axisProps} tickFormatter={(v) => money(Number(v), { compact: true })} />
-        <YAxis type="category" dataKey="label" {...axisProps} width={150} tickLine={false} />
+        <YAxis type="category" dataKey="label" {...axisProps} width={narrow ? 100 : 150} tickLine={false} />
         <Tooltip content={<TornadoTooltip metricLabel={metricLabel} />} cursor={barCursor} />
         <Bar dataKey="swing" radius={[0, 6, 6, 0]} maxBarSize={28}>
           {data.map((_, i) => (

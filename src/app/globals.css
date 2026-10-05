@@ -73,6 +73,7 @@
 /* ---- 3. Apple base -------------------------------------------------------- */
 * { box-sizing:border-box; }
 html, body { margin:0; padding:0; }
+html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 body {
   background:var(--bg-page); color:var(--text-body);
   font-family:var(--font-body); font-size:15px; line-height:1.55;
@@ -94,6 +95,8 @@ a:hover { color:var(--text-link-hover); }
   display:flex; flex-direction:column; padding:18px 14px; gap:2px; overflow-y:auto; }
 .sidebar-brand { display:flex; align-items:center; gap:11px; padding:6px 8px 16px; }
 .sidebar-brand img { width:36px; height:36px; object-fit:contain; }
+.sidebar-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.sidebar-brand .name, .sidebar-brand .sub { display:block; }
 .sidebar-brand .name { font-family:var(--font-heading); font-size:15px; font-weight:700; color:var(--navy-blue); line-height:1.1; }
 .sidebar-brand .sub { font-size:11px; color:var(--text-muted); margin-top:2px; }
 .nav-section { font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--gray-400); font-weight:700; padding:14px 11px 5px; }
@@ -114,6 +117,7 @@ a:hover { color:var(--text-link-hover); }
 .topbar { position:sticky; top:0; z-index:100; display:flex; align-items:center; gap:16px; padding:13px 32px;
   background:rgba(246,248,251,.85); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
   border-bottom:1px solid var(--border-subtle); }
+.topbar-heading { flex:1; min-width:0; }
 .topbar .crumb { font-size:11.5px; color:var(--text-muted); }
 .topbar .title { font-family:var(--font-heading); font-size:20px; font-weight:700; color:var(--navy-blue); line-height:1.15; }
 /* Back to GCD Arcade — iOS-style tinted back link, top-left of every topbar. */
@@ -128,13 +132,21 @@ a:hover { color:var(--text-link-hover); }
   border-radius:var(--radius-pill); padding:6px 12px; font-size:12px; font-weight:700; }
 .env-pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
 .env-pill.live { background:var(--danger-bg); color:var(--danger); }
+.env-pill { flex:none; white-space:nowrap; }
+
+/* Shell controls that only exist on phones/tablets (§11 turns them on). */
+.icon-btn { display:inline-flex; align-items:center; justify-content:center; flex:none; min-width:40px; height:40px;
+  padding:0 8px; border:none; background:transparent; border-radius:var(--radius-md); color:var(--navy-blue);
+  cursor:pointer; font:inherit; -webkit-tap-highlight-color:transparent; }
+.icon-btn:hover { background:var(--gray-100); }
+.menu-btn, .drawer-close, .sidebar-arcade, .env-short, .palette-cancel, .nav-backdrop { display:none; }
 
 .content { flex:1; overflow-y:auto; }
 .content-inner { padding:24px 32px 130px; max-width:1400px; margin:0 auto; }
 .page-desc { font-size:12px; color:var(--text-muted); margin-bottom:22px; }
 
 /* ---- 5. Cards ------------------------------------------------------------- */
-.card { background:var(--surface-card); border:1px solid var(--border-subtle); border-radius:var(--radius-lg);
+.card { max-width:100%; background:var(--surface-card); border:1px solid var(--border-subtle); border-radius:var(--radius-lg);
   box-shadow:var(--shadow-sm); padding:22px 24px; }
 .card.pad-sm { padding:19px 21px; }
 .card-title { font-family:var(--font-heading); font-size:17px; font-weight:700; color:var(--navy-blue); }
@@ -144,7 +156,8 @@ a:hover { color:var(--text-link-hover); }
 .card.hoverable:hover { transform:translateY(-3px); box-shadow:var(--shadow-lg); }
 
 /* KPI card */
-.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(228px,1fr)); gap:16px; }
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,228px),1fr)); gap:16px; }
+.module-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,228px),1fr)); gap:16px; }
 .kpi-card { position:relative; background:#fff; border:1px solid var(--border-subtle); border-radius:var(--radius-lg);
   box-shadow:var(--shadow-sm); padding:19px 21px; overflow:hidden; }
 .kpi-card-link { transition:box-shadow .12s ease, transform .12s ease, border-color .12s ease; cursor:pointer; }
@@ -158,7 +171,7 @@ a:hover { color:var(--text-link-hover); }
 /* NOTE: pick up/down by whether the move is GOOD, not by sign. Falling OpEx = .up (green). */
 
 /* charts grid */
-.charts-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(370px,1fr)); gap:16px; }
+.charts-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,370px),1fr)); gap:16px; }
 
 /* ---- 6. Controls ---------------------------------------------------------- */
 .segmented { display:inline-flex; background:var(--gray-100); border:1px solid var(--border-subtle); border-radius:12px; padding:4px; gap:2px; }
@@ -202,7 +215,17 @@ a:hover { color:var(--text-link-hover); }
 .notice.danger { border-color:#F1C3C3; background:var(--danger-bg); }
 
 /* ---- 7. Tables (Apple-clean) --------------------------------------------- */
-.table-wrap { border:1px solid var(--border-subtle); border-radius:var(--radius-lg); overflow:hidden; background:#fff; box-shadow:var(--shadow-sm); }
+/* overflow-x:auto (not hidden) so a table wider than a phone scrolls sideways
+   inside its rounded card instead of being clipped. The layered backgrounds
+   are "scroll shadows": a soft edge appears on whichever side has more columns. */
+.table-wrap { border:1px solid var(--border-subtle); border-radius:var(--radius-lg); overflow-x:auto; -webkit-overflow-scrolling:touch;
+  box-shadow:var(--shadow-sm); max-width:100%;
+  background:
+    linear-gradient(to right,#fff 30%,rgba(255,255,255,0)) left center / 40px 100% no-repeat local,
+    linear-gradient(to left,#fff 30%,rgba(255,255,255,0)) right center / 40px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%,rgba(24,40,72,.16),transparent) left center / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%,rgba(24,40,72,.16),transparent) right center / 14px 100% no-repeat scroll,
+    #fff; }
 table.gcd { width:100%; border-collapse:collapse; font-size:13.5px; }
 table.gcd th { text-align:left; padding:12px 16px; color:var(--text-muted); font-weight:600; font-size:11.5px;
   letter-spacing:.04em; text-transform:uppercase; background:var(--gray-50); border-bottom:1px solid var(--border-subtle); position:sticky; top:0; }
@@ -217,7 +240,7 @@ table.gcd th.num, table.gcd td.num { text-align:right; }
 
 /* ---- 8. Forms ------------------------------------------------------------- */
 .field label { display:block; font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:6px; }
-.input, select.input, textarea.input { width:100%; padding:10px 12px; font-family:var(--font-body); font-size:14px;
+.input, select.input, textarea.input { width:100%; max-width:100%; padding:10px 12px; font-family:var(--font-body); font-size:14px;
   color:var(--text-strong); background:#fff; border:1px solid var(--border-default); border-radius:var(--radius-md); transition:border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard); }
 .input:focus { border-color:var(--royal-blue); box-shadow:var(--shadow-focus); outline:none; }
 
@@ -239,7 +262,7 @@ table.gcd th.num, table.gcd td.num { text-align:right; }
 .sub { color: var(--text-muted); margin-top: 0; }
 .muted { color: var(--text-muted); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 16px; }
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; align-items: center; }
 .center { display: flex; min-height: 60vh; align-items: center; justify-content: center; }
 .kv { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); gap: 6px 16px; }
@@ -247,6 +270,31 @@ table.gcd th.num, table.gcd td.num { text-align:right; }
 /* Let long values (emails, ids, timestamps) wrap inside the cell instead of
    overflowing/clipping — grid items default to min-width:auto. */
 .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+code { overflow-wrap: anywhere; }
+
+/* Reporting filter bar (projections/reporting/FilterBar.tsx). */
+.filter-bar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+.filter-bar .kv { display: grid; gap: 0.25rem; }
+
+/* AI Report Assistant: conversation list beside the chat. */
+.assistant-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 1rem; align-items: start; }
+.card.assistant-convos { padding: 18px; }
+.convo-list { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.card.chat-card { display: flex; flex-direction: column; height: 68vh; padding: 0; overflow: hidden; }
+.chat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 20px 22px; }
+.chat-form { display: flex; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--border-subtle); }
+
+/* Generic two-pane detail layout (coworker question page). */
+.split-detail { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 20px; align-items: start; }
+
+/* AI Pal + command palette placement (wide screens; §11 adapts for phones). */
+.pal-fab { position: fixed; right: 24px; bottom: 24px; width: 60px; height: 60px;
+  transition: transform var(--dur-base) var(--ease-standard), opacity var(--dur-base) var(--ease-standard); }
+.pal-fab.tucked { transform: translateY(calc(100% + 40px)); opacity: 0; pointer-events: none; }
+.pal-panel { position: fixed; right: 24px; bottom: 24px; width: 346px; }
+.pal-body { max-height: 390px; }
+.palette-overlay { padding: 12vh 1rem 1rem; }
+.palette-results { max-height: 50vh; }
 
 /* keep a sane light default for any bare (unclassed) form control */
 input:not(.input), select:not(.input), textarea:not(.input) { color: var(--text-strong); }
@@ -264,7 +312,149 @@ input:not(.input), select:not(.input), textarea:not(.input) { color: var(--text-
 .cwp-item:hover { border-color: var(--powder-blue); }
 .cwp-item[data-active="true"] { border-color: var(--royal-blue); background: var(--powder-blue-100); }
 .cwp-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.cwp-back { display: none; }
 @media (max-width: 720px) {
   .cwp-board { grid-template-columns: 1fr; }
-  .cwp-list { max-height: none; }
+  .cwp-list { max-height: 46vh; }
+  .cwp-detail, .cwp-list { scroll-margin-top: 72px; }
+  .cwp-back { display: inline-flex; margin-bottom: 10px; }
+}
+
+/* ==========================================================================
+   11. Phones & tablets
+   --------------------------------------------------------------------------
+   ≤960px (phones in either orientation, iPad portrait): the sidebar becomes a
+   slide-out drawer opened from the top bar's menu button, the page scrolls as
+   a normal document (so iOS can collapse its toolbars), and the top bar
+   shrinks to menu · title · search · env pill.
+   ≤600px (phones): tighter padding, smaller headings, 2-up KPI tiles, stacked
+   filters. Inline-styled pages rely on the shared classes above; anything
+   that needs overriding inline values uses !important deliberately.
+   ========================================================================== */
+@media (max-width: 960px) {
+  .app-shell { display: block; height: auto; min-height: 100vh; overflow: visible; }
+  .main, .content { overflow: visible; }
+
+  /* Drawer */
+  .sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 700; width: min(300px, 86vw);
+    padding: calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+    transform: translateX(-100%); visibility: hidden; overscroll-behavior: contain;
+    transition: transform var(--dur-slow) var(--ease-out), visibility 0s linear var(--dur-slow); }
+  .sidebar.open { transform: none; visibility: visible; box-shadow: var(--shadow-xl);
+    transition: transform var(--dur-slow) var(--ease-out); }
+  .sidebar-brand { padding: 4px 8px 10px; }
+  .drawer-close { display: inline-flex; }
+  .nav-item { padding: 12px 12px; font-size: 15px; min-height: 46px; }
+  .nav-item.active { padding-left: 16px; }
+  .sidebar-arcade { display: flex; margin-top: auto; color: var(--royal-blue); font-weight: 600; }
+  .sidebar-arcade svg { stroke: var(--royal-blue); }
+  .sidebar-arcade ~ .sidebar-user { margin-top: 8px; }
+  .nav-backdrop { display: block; position: fixed; inset: 0; z-index: 690; background: rgba(10,20,35,.45);
+    opacity: 0; pointer-events: none; transition: opacity var(--dur-base) var(--ease-standard); }
+  .nav-backdrop.open { opacity: 1; pointer-events: auto; }
+  body.nav-open { overflow: hidden; }
+
+  /* Top bar */
+  .topbar { gap: 8px; padding: calc(8px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left)); }
+  .menu-btn { display: inline-flex; }
+  .back-to-arcade, .topbar .crumb { display: none; }
+  .topbar .title { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-search { width: 40px; height: 40px; flex: none; padding: 0; justify-content: center; color: var(--navy-blue); }
+  .topbar-search-label, .topbar-search-kbd { display: none; }
+  .env-pill { padding: 5px 10px; }
+  .env-full { display: none; }
+  .env-short { display: inline; }
+
+  /* Content */
+  .content-inner { padding: 18px calc(16px + env(safe-area-inset-right)) calc(112px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+
+  /* Segmented tabs wrap into rows instead of squeezing/clipping. */
+  .segmented { display: flex; flex-wrap: wrap; width: 100%; }
+  .segmented button, .segmented a { flex: 1 1 auto; justify-content: center; white-space: nowrap; padding: 9px 12px; }
+
+  /* Tables: compact cells; headers never break mid-word. */
+  table.gcd { font-size: 13px; }
+  table.gcd th { padding: 10px 12px; white-space: nowrap; }
+  /* A floor on cell width so many-column tables scroll sideways (with the
+     scroll shadows above) instead of breaking text one word per line. */
+  table.gcd td { padding: 11px 12px; min-width: 104px; }
+  table.gcd td.num, table.gcd td:has(> input[type="checkbox"]) { min-width: 0; }
+
+  /* iOS zooms into any focused field under 16px — keep controls at 16px. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { font-size: 16px !important; }
+  .split-detail { grid-template-columns: minmax(0, 1fr); }
+
+  /* Assistant: conversations become a swipeable chip row above the chat. */
+  .assistant-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .card.assistant-convos { padding: 10px; }
+  .assistant-convos .card-title { display: none; }
+  .convo-list { flex-direction: row; overflow-x: auto; gap: 8px; scrollbar-width: none; }
+  .convo-list::-webkit-scrollbar { display: none; }
+  .convo-list > * { flex: none; max-width: 220px; }
+  .convo-list .nav-item { min-height: 0; padding: 9px 12px; border: 1px solid var(--border-subtle); }
+  .card.chat-card { height: calc(100dvh - 210px); min-height: 380px; }
+  .chat-scroll { padding: 14px; }
+  .chat-form { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+
+  /* AI Pal: smaller button clear of the home indicator; panel is a bottom sheet. */
+  .pal-fab { right: calc(16px + env(safe-area-inset-right)); bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; }
+  .pal-panel { left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); bottom: calc(10px + env(safe-area-inset-bottom));
+    width: auto; max-width: 520px; margin-left: auto; max-height: calc(100dvh - 20px - env(safe-area-inset-top));
+    display: flex; flex-direction: column; }
+  .pal-body { max-height: none; flex: 1; min-height: 0; }
+
+  /* Command palette: pinned near the top, results use the available height. */
+  .palette-overlay { padding: calc(10px + env(safe-area-inset-top)) 10px 10px !important; }
+  .palette-results { max-height: calc(100dvh - 120px); }
+  .palette-esc { display: none; }
+  .palette-cancel { display: inline-flex; color: var(--royal-blue); font-weight: 600; font-size: 15px; }
+}
+
+@media (max-width: 600px) {
+  body { font-size: 14.5px; }
+  h1 { font-size: 24px; line-height: 1.2; overflow-wrap: anywhere; }
+  h2 { font-size: 20px; }
+  h3 { font-size: 16.5px; }
+  .accent-bar { margin-bottom: 12px; }
+  .page-desc { font-size: 13px; margin-bottom: 16px; }
+  .card { padding: 16px; border-radius: 14px; }
+  .card.pad-sm { padding: 14px; }
+  .card-title { font-size: 16px; }
+
+  /* KPI tiles two-up so key numbers fit on one screen. */
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .kpi-card { padding: 13px 14px; border-radius: 14px; }
+  .kpi-label { font-size: 10px; letter-spacing: .05em; }
+  .kpi-value { font-size: 22px; margin: 6px 0 8px; overflow-wrap: anywhere; }
+  .kpi-foot { flex-wrap: wrap; }
+  .delta { font-size: 11px; padding: 2px 7px; }
+  /* Home: module cards become compact rows — the whole card is the link. */
+  .module-grid { gap: 10px; }
+  .module-card { position: relative; flex-direction: row !important; align-items: center; gap: 14px !important; padding: 14px 16px; }
+  .module-card .module-head { flex: none; }
+  .module-card .module-icon { width: 40px !important; height: 40px !important; }
+  .module-card .badge { position: absolute; top: 13px; right: 14px; }
+  .module-card .module-body { min-width: 0; }
+  .module-card .module-body .card-title { padding-right: 62px; }
+  .module-card .module-body .card-subtitle { margin-top: 2px !important; }
+  .module-card .module-open { display: none !important; }
+  .grid { gap: 12px; }
+
+  /* Filter bar: a tidy 2-column grid with labels above full-width controls. */
+  .filter-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .filter-bar .kv { grid-template-columns: minmax(0, 1fr); }
+  .filter-bar select, .filter-bar input { width: 100%; min-width: 0; }
+
+  .kv { grid-template-columns: minmax(92px, 38%) minmax(0, 1fr); gap: 6px 12px; }
+  .row-actions { gap: 8px; }
+  /* Fields in an action row take the full line; their inline desktop min/max
+     widths (e.g. a 320px search box) would otherwise overflow a phone. */
+  .row-actions > .input, .row-actions > select, .row-actions > input:not([type="hidden"]):not([type="checkbox"]) {
+    flex: 1 1 100%; min-width: 0 !important; max-width: 100% !important; }
+  .notice { padding: 12px 14px; }
+}
+
+/* Touch screens: no hover lift (it sticks after a tap on iOS). */
+@media (hover: none) {
+  .card.hoverable:hover, .kpi-card-link:hover { transform: none; }
 }

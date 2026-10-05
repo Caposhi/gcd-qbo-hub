@@ -1,10 +1,11 @@
 import "./globals.css";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Providers } from "./providers";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar, type EnvInfo } from "./components/TopBar";
 import { AiPal } from "./components/AiPal";
+import { NavDrawerProvider, NavBackdrop } from "./components/NavDrawer";
 import { getSessionUser } from "@/lib/auth/session";
 import { getQboEnvironment } from "@/lib/config-store";
 import { hasStoredCredential } from "@/lib/qbo/oauth";
@@ -36,6 +37,15 @@ export const metadata: Metadata = {
   description: "German Car Depot — QuickBooks Online automations, reporting & portals.",
 };
 
+// Phones: render at device width (no desktop-width zoom-out) and extend under
+// the notch/home indicator; the shell pads itself with safe-area insets.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#F6F8FB",
+};
+
 /**
  * Resolve the env-pill facts for the TopBar without ever throwing on the layout
  * and WITHOUT touching the network. The pill is chrome on every route, so it must
@@ -61,16 +71,19 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="en">
       <body>
         <Providers>
-          <div className="app-shell">
-            <Sidebar user={user} coworkerOpenCount={cwpOpen} />
-            <div className="main">
-              <TopBar env={env} />
-              <div className="content">
-                <div className="content-inner">{children}</div>
+          <NavDrawerProvider>
+            <div className="app-shell">
+              <Sidebar user={user} coworkerOpenCount={cwpOpen} />
+              <NavBackdrop />
+              <div className="main">
+                <TopBar env={env} />
+                <div className="content">
+                  <div className="content-inner">{children}</div>
+                </div>
               </div>
+              <AiPal />
             </div>
-            <AiPal />
-          </div>
+          </NavDrawerProvider>
         </Providers>
       </body>
     </html>

@@ -23,7 +23,8 @@ services:
       - key: NEXTAUTH_URL
         value: https://gcd-qbo-hub.onrender.com
       # The arcade launcher's static site, for the top-left "back to arcade"
-      # link in the TopBar (client-exposed — no secret, just a hub URL).
+      # link in the TopBar and the phone slide-out menu (client-exposed — no
+      # secret, just a hub URL; read via src/lib/modules/arcade.ts).
       # Update if Render ever assigns gcd-arcade-web a different host.
       - key: NEXT_PUBLIC_ARCADE_URL
         value: https://gcd-arcade-web.onrender.com

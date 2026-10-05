@@ -4,6 +4,8 @@
    It surfaces things worth checking on the current page; clicking a suggestion
    (or "Open AI Report Assistant") jumps to /assistant with a seeded prompt.
    Mounted ONCE in the shell (src/app/layout.tsx) so it rides every route.
+   Position/size live in globals.css (.pal-fab / .pal-panel): a smaller button
+   above the home indicator and a full-width bottom sheet on phones.
 
    Insight copy is intentionally GENERIC — it names WHAT to look at and seeds a
    question, but never states figures. This is an accounting tool: the Pal must
@@ -115,6 +117,24 @@ export function AiPal() {
     };
   }, [open, moduleId]);
 
+  // Phones scroll the whole document (globals.css §11): tuck the button away
+  // while the user scrolls down so it never sits on top of what they're
+  // reading, and bring it back on any scroll up. Wide screens scroll the inner
+  // .content pane, so window scroll never fires there and nothing changes.
+  const [tucked, setTucked] = useState(false);
+  useEffect(() => {
+    let lastY = window.scrollY;
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (y > lastY + 6 && y > 120) setTucked(true);
+      else if (y < lastY - 6 || y <= 120) setTucked(false);
+      lastY = y;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => setTucked(false), [pathname]);
+
   const items = live && live.length ? live : ctx.items;
   const intro = live && live.length
     ? "Here's what stands out on this page — tap one to ask:"
@@ -130,8 +150,10 @@ export function AiPal() {
       <button
         onClick={() => setOpen(true)}
         title="Ask GCD Pal"
+        aria-label="Open GCD Pal insights"
+        className={"pal-fab" + (tucked ? " tucked" : "")}
         style={{
-          position: "fixed", right: 24, bottom: 24, width: 60, height: 60, borderRadius: "50%",
+          borderRadius: "50%",
           border: "none", cursor: "pointer", background: "var(--royal-blue)", zIndex: 600,
           display: "flex", alignItems: "center", justifyContent: "center", color: "#fff",
           animation: "gcd-glow 3s var(--ease-standard) infinite",
@@ -144,8 +166,8 @@ export function AiPal() {
   }
 
   return (
-    <div style={{
-      position: "fixed", right: 24, bottom: 24, width: 346, background: "rgba(255,255,255,0.92)",
+    <div className="pal-panel" style={{
+      background: "rgba(255,255,255,0.92)",
       backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: "1px solid var(--border-subtle)",
       borderRadius: 20, boxShadow: "var(--shadow-xl)", overflow: "hidden", zIndex: 600,
       fontFamily: "var(--font-body)", animation: "gcd-fadeup .32s var(--ease-out)",
@@ -161,14 +183,14 @@ export function AiPal() {
           <div style={{ fontFamily: "var(--font-heading)", fontSize: 14.5, fontWeight: 700, color: "var(--navy-blue)" }}>GCD Pal</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Insights · {ctx.label}</div>
         </div>
-        <button onClick={() => setOpen(false)} title="Minimize"
-          style={{ width: 30, height: 30, border: "none", background: "transparent", borderRadius: 8, cursor: "pointer",
+        <button onClick={() => setOpen(false)} title="Minimize" aria-label="Minimize GCD Pal"
+          style={{ width: 40, height: 40, border: "none", background: "transparent", borderRadius: 8, cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center", color: "var(--gray-500)" }}>
           <Chevron />
         </button>
       </div>
       {/* body */}
-      <div style={{ padding: "13px 15px", display: "flex", flexDirection: "column", gap: 9, maxHeight: 390, overflowY: "auto" }}>
+      <div className="pal-body" style={{ padding: "13px 15px", display: "flex", flexDirection: "column", gap: 9, overflowY: "auto" }}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "0 2px 2px" }}>{intro}</div>
         {items.map((it, i) => (
           <button key={i} onClick={() => ask(it.prompt)} className="gcd-insight"

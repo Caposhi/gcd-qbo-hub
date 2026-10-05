@@ -6,7 +6,21 @@
    a white card, navy text, soft navy shadow — never a dark-on-dark bubble.
    Suggested path: src/app/components/chart-theme.tsx
    ========================================================================== */
-import React from "react";
+import React, { useEffect, useState } from "react";
+
+/** True on phone-width screens (≤600px, matching globals.css §11). Charts use
+ *  it to narrow their category-label column so bars keep usable length. */
+export function useNarrowScreen(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 600px)");
+    const sync = () => setNarrow(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return narrow;
+}
 
 /* Brand-derived data-viz palette (light surface). Royal is the workhorse;
    net-income / positive series is success green; aging ramps royal -> red. */
