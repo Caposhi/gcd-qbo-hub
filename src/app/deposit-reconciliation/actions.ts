@@ -466,7 +466,8 @@ export async function locateProposedPaymentsAction() {
   if (financingPayouts.length) {
     const { findFinancingCandidates } = await import("@/lib/deposits/qbo-lookup");
     const fDates = financingPayouts.map((p) => p.settlementDate).sort();
-    financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), fDates[fDates.length - 1]);
+    // +5: Tekmetric can record a Zelle payment a day or two after the money arrives.
+    financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), shiftDate(fDates[fDates.length - 1], 5));
   }
   const { matchFinancingDeposit, lenderById } = await import("@/lib/deposits/financing");
 
