@@ -7,14 +7,11 @@ import { DateRangeFilter } from "../../components/DateRangeFilter";
 import { resolveDateRange, describeDateRange } from "@/lib/cashsheet/date-range";
 import { fullyExplained, type ReconciliationSummary } from "@/lib/cashsheet/reconciliation";
 import { runReconciliationCheckAction } from "../actions";
+import { formatUsd, checkCoversRange } from "@/lib/cashsheet/queue-view";
 
 export const dynamic = "force-dynamic";
 
-function money(n: number | null | undefined): string {
-  if (n === null || n === undefined || Number.isNaN(n)) return "";
-  const sign = n < 0 ? "-" : "";
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
-}
+const money = formatUsd;
 
 interface RegisterTxnJson {
   id: string;
@@ -82,6 +79,9 @@ export default async function ReconcilePage({
     prisma.rowEvent.findFirst({ where: { eventType: "reconciliation_error" }, orderBy: { createdAt: "desc" } }),
   ]);
   const result = (lastCheck?.diffJson as unknown as CheckResult | undefined) ?? null;
+  // The page always shows the most recent stored check, whatever period it
+  // covered — say so plainly when that isn't the period selected above.
+  const coversSelection = result ? checkCoversRange(result, resolvedRange) : false;
   // Only show the stale-error notice if it's newer than the last successful check.
   const showError = lastError && (!lastCheck || lastError.createdAt > lastCheck.createdAt);
 
@@ -136,11 +136,11 @@ export default async function ReconcilePage({
         <div className="row-actions" style={{ marginBottom: 8 }}>
           <label className="card-subtitle" style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
             Statement beginning balance (optional)
-            <input className="input" type="number" step="0.01" name="beginningBalance" style={{ width: 120 }} defaultValue={result?.beginningBalance ?? ""} />
+            <input className="input" type="number" step="0.01" name="beginningBalance" style={{ width: 120 }} defaultValue={coversSelection ? result?.beginningBalance ?? "" : ""} />
           </label>
           <label className="card-subtitle" style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
             Statement ending balance (optional)
-            <input className="input" type="number" step="0.01" name="endingBalance" style={{ width: 120 }} defaultValue={result?.endingBalance ?? ""} />
+            <input className="input" type="number" step="0.01" name="endingBalance" style={{ width: 120 }} defaultValue={coversSelection ? result?.endingBalance ?? "" : ""} />
           </label>
         </div>
         <p className="card-subtitle" style={{ marginTop: 0 }}>
@@ -164,6 +164,13 @@ export default async function ReconcilePage({
           <h2 style={{ fontSize: 18, margin: "24px 0 10px" }}>
             Last check: {result.startStr} → {result.endStr}
           </h2>
+          {!coversSelection && (
+            <div className="notice warn" style={{ marginBottom: 10 }}>
+              These results are from the last check anyone ran ({result.startStr} → {result.endStr}), not the period
+              selected above ({describeDateRange(activeRange, resolvedRange)}). Click{" "}
+              <strong>Run reconciliation check</strong> to check the selected period.
+            </div>
+          )}
           <p className="card-subtitle" style={{ marginTop: 0 }}>
             {lastCheck!.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC · {result.register.length}{" "}
             register transactions

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
+import { formatUsd } from "@/lib/cashsheet/queue-view";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../../components/RequireAuth";
@@ -22,10 +23,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function money(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  return `$${Number(v).toFixed(2)}`;
-}
+const money = formatUsd;
 
 interface PlanEvent {
   found?: boolean;
