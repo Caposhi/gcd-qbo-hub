@@ -136,22 +136,19 @@ describe("reconstructTekmetricPayouts — the August cascade (real-shape data, �
     chargeRow("py_h", "2026-08-06", 510.0, 0, 10.0),
   ].join("\n");
 
-  it("without the refund accounted for, the cascade breaks every payout from the refund onward", () => {
-    // Hand-verified pre-fix arithmetic: ignoring py_g's refund, its net is
-    // 1993.75 instead of 265.70, so po_06's bucket (8800.00 + 1993.75 =
-    // 10793.75) overshoots its 9065.70 target and never resolves.
-    const wrongCharges = parseStripeCharges(chargesCsv).map((c) =>
-      c.id === "py_g" ? { ...c, net: 2037.87 - 44.12 } : c
+  it("a payout that can't be tied is flagged alone — it no longer cascades into later payouts", () => {
+    // Hide py_g's refund from the data (as if the export omitted it): its day
+    // then over-totals po_06, which genuinely can't be reconstructed. The old
+    // FIFO walk left that pile un-consumed and broke po_07 too; now po_07
+    // still ties from its own day's charge.
+    const hiddenRefund = parseStripeCharges(chargesCsv).map((c) =>
+      c.id === "py_g" ? { ...c, net: 2037.87 - 44.12, refunded: 0 } : c
     );
-    const payouts = parseStripePayouts(payoutsCsv);
-    const result = reconstructTekmetricPayouts(payouts, wrongCharges);
-    // po_04 and po_05 still resolve (they're before the bad charge)...
-    expect(result.deposits.map((d) => d.settlementDate)).toEqual(["2026-08-04", "2026-08-05"]);
-    // ...but po_06 AND po_07 both fail, even though po_07's own charge
-    // (py_h) is perfectly fine on its own — this is the cascade, not an
-    // isolated miss: the leftover, un-consumed pile from po_06's failed
-    // attempt swamps po_07's much smaller target too.
-    expect(result.unresolved.map((u) => u.payout.id)).toEqual(["po_06", "po_07"]);
+    const result = reconstructTekmetricPayouts(parseStripePayouts(payoutsCsv), hiddenRefund);
+    expect(result.unresolved.map((u) => u.payout.id)).toEqual(["po_06"]);
+    expect(result.deposits.map((d) => d.settlementDate)).toEqual(["2026-08-04", "2026-08-05", "2026-08-07"]);
+    // po_06's charges are still waiting for review rather than swallowed.
+    expect(result.leftoverCharges.map((c) => c.id).sort()).toEqual(["py_f", "py_g"]);
   });
 
   it("with the refund correctly subtracted, every payout for the rest of the month resolves", () => {
@@ -266,5 +263,56 @@ Charge,py_n,2026-07-31 20:36,,4759.35,usd,4759.35,150.50,4608.85,usd,
     expect(res.tekmetric).toBeNull();
     expect(res.chargesOnly).toHaveLength(14);
     expect(res.unknown).toEqual([]);
+  });
+});
+
+describe("reconstructTekmetricPayouts — refund deducted from a LATER payout, holiday weekend", () => {
+  // Fictional data with the real-world shape: a charge refunded days later has
+  // its refund taken out of the payout that settles after the refund, not out
+  // of its own; and Sat/Sun/holiday-Monday charges roll into one payout.
+  const payoutsCsv = [
+    PAYOUTS_HEADER,
+    payoutRow("po_a", 1000.0, "2026-03-03"), // Mon 03-02 charges (incl. the later-refunded one, at full value)
+    payoutRow("po_b", 400.0, "2026-03-04"), // Tue 03-03 charges
+    payoutRow("po_c", 300.0, "2026-03-10"), // Fri 03-06 charges
+    payoutRow("po_d", 650.0, "2026-03-11"), // Sat+Sun+holiday Mon (03-07..03-09) charges
+    payoutRow("po_e", 250.0, "2026-03-12"), // Tue 03-10 charges MINUS the 03-02 refund (100.00)
+  ].join("\n");
+  const chargesCsv = [
+    CHARGES_HEADER,
+    chargeRow("py_1", "2026-03-02", 910.0, 0, 10.0), // 900.00
+    chargeRow("py_2", "2026-03-02", 102.0, 100.0, 2.0, "Refunded"), // 100.00 now, refund comes out later
+    chargeRow("py_3", "2026-03-03", 404.0, 0, 4.0), // 400.00
+    chargeRow("py_4", "2026-03-06", 303.0, 0, 3.0), // 300.00
+    chargeRow("py_5", "2026-03-07", 101.0, 0, 1.0), // 100.00
+    chargeRow("py_6", "2026-03-08", 202.0, 0, 2.0), // 200.00
+    chargeRow("py_7", "2026-03-09", 353.0, 0, 3.0), // 350.00
+    chargeRow("py_8", "2026-03-10", 355.0, 0, 5.0), // 350.00 − 100.00 refund = 250.00
+  ].join("\n");
+  const result = reconstructTekmetricPayouts(parseStripePayouts(payoutsCsv), parseStripeCharges(chargesCsv));
+  const byDate = Object.fromEntries(result.deposits.map((d) => [d.settlementDate, d]));
+
+  it("ties every payout, including the ones after the refunded charge", () => {
+    expect(result.unresolved).toEqual([]);
+    expect(result.leftoverCharges).toEqual([]);
+    expect(result.deposits).toHaveLength(5);
+  });
+
+  it("keeps the refunded charge at full value in its own payout", () => {
+    expect(byDate["2026-03-03"].lines.map((l) => l.ref)).toEqual(["py_1", "py_2"]);
+    expect(byDate["2026-03-03"].fee).toBe(12); // just the two fees
+  });
+
+  it("rolls the weekend and holiday into one payout", () => {
+    expect(byDate["2026-03-11"].lines.map((l) => l.ref)).toEqual(["py_5", "py_6", "py_7"]);
+  });
+
+  it("deducts the refund from the later payout, surfacing it as a gross-to-net gap beyond fees", () => {
+    const d = byDate["2026-03-12"];
+    expect(d.lines.map((l) => l.ref)).toEqual(["py_8"]);
+    expect(d.net).toBe(250);
+    // fee = gross − net = 5.00 processor fee + 100.00 refund; the deposit step
+    // sweeps the matching QBO refund to close that 100.00.
+    expect(d.fee).toBe(105);
   });
 });

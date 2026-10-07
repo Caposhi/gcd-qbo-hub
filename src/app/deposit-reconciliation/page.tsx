@@ -1,5 +1,6 @@
 import { Landmark } from "lucide-react";
 import { prisma } from "@/lib/db";
+import { formatUsd } from "@/lib/cashsheet/queue-view";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
@@ -13,9 +14,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function money(v: unknown): string {
-  return `$${Number(v).toFixed(2)}`;
-}
+const money = formatUsd;
 
 export default async function DepositReconciliationPage() {
   const user = await getSessionUser();
@@ -197,7 +196,7 @@ export default async function DepositReconciliationPage() {
                       <span className="badge muted">already deposited</span>
                     ) : (
                       <span className="badge warn">
-                        needs review{p.deltaCents ? ` (Δ ${(p.deltaCents / 100).toFixed(2)})` : ""}
+                        needs review{p.deltaCents ? ` (Δ ${formatUsd(p.deltaCents / 100)})` : ""}
                       </span>
                     )}
                     {locateMsg.get(p.id) && (
