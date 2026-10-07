@@ -32,6 +32,31 @@ describe("pickRefundsForGap", () => {
     expect(pick.refunds.map((r) => r.txnId)).toEqual(["exact"]);
   });
 
+  it("links the two refunds that close the gap when the window holds others too (the 09-17 payout)", () => {
+    // Gap 719.48 = 478.73 + 240.75, among other refund-like entries; "all of
+    // them" sums far past the gap, which is what used to block this payout.
+    const at = (txnId: string, amount: number, date: string): UndepositedRefund => ({
+      txnId, kind: "JournalEntry", lineId: "1", amount, date, memo: "", customerName: "",
+    });
+    const window = [
+      at("r478", 478.73, "2026-09-16"),
+      at("r240a", 240.75, "2026-09-16"), // refund that hit this payout
+      at("r1500a", 1500, "2026-09-10"),
+      at("r1500b", 1500, "2026-09-10"),
+      at("r1206", 1206.1, "2026-09-10"),
+      at("r240b", 240.75, "2026-07-01"), // same amount, months away
+    ];
+    const pick = pickRefundsForGap(window, 71948, new Set(), "2026-09-17");
+    expect(pick.exact).toBe(true);
+    expect(pick.refunds.map((r) => r.txnId)).toEqual(["r478", "r240a"]);
+    expect(pick.exactCandidates).toBe(2); // the tie with r240b is recorded
+  });
+
+  it("prefers the fewest refunds that close the gap", () => {
+    const pick = pickRefundsForGap([refund("a", 100), refund("b", 200), refund("c", 50), refund("d", 150)], 30000);
+    expect(pick.refunds).toHaveLength(2);
+  });
+
   it("links nothing when no combination ties — never assembles a guess", () => {
     const gap = Math.round(1728.05 * 100);
     const pick = pickRefundsForGap([refund("a", 500), refund("b", 700)], gap);
