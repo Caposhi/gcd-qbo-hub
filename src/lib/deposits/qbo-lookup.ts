@@ -102,3 +102,37 @@ export function shiftDate(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
+/**
+ * Customer payments in [startDate, endDate] with their payment-method name and
+ * memo — the candidate pool for financing payouts (financing.ts). The method
+ * ("Snap Finance", "Koalifi", "…(Bosch CNFCA)") is what separates a financed
+ * payment from a same-amount card payment, so it's resolved to its name here.
+ */
+export async function findFinancingCandidates(
+  ctx: QboContext,
+  startDate: string,
+  endDate: string
+): Promise<Array<{ id: string; amount: number; date: string; customerName: string; methodText: string }>> {
+  const [payRes, methodRes] = await Promise.all([
+    query<{ QueryResponse?: { Payment?: any[] } }>(
+      ctx,
+      `select * from Payment where TxnDate >= '${escapeQuery(startDate)}' ` +
+        `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
+    ),
+    query<{ QueryResponse?: { PaymentMethod?: any[] } }>(ctx, "select Id, Name from PaymentMethod MAXRESULTS 1000"),
+  ]);
+  const methods = new Map<string, string>();
+  for (const m of methodRes.QueryResponse?.PaymentMethod ?? []) methods.set(String(m.Id), String(m.Name ?? ""));
+  return (payRes.QueryResponse?.Payment ?? []).map((p) => {
+    const methodId = p.PaymentMethodRef?.value ? String(p.PaymentMethodRef.value) : "";
+    const methodName = String(p.PaymentMethodRef?.name ?? methods.get(methodId) ?? "");
+    return {
+      id: String(p.Id),
+      amount: Number(p.TotalAmt ?? 0),
+      date: String(p.TxnDate ?? ""),
+      customerName: String(p.CustomerRef?.name ?? ""),
+      methodText: [methodName, String(p.PrivateNote ?? ""), String(p.PaymentRefNum ?? "")].filter(Boolean).join(" | "),
+    };
+  });
+}

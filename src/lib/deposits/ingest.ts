@@ -3,7 +3,8 @@
  * deposits. Pure logic (no DB/QBO): the server action persists the result.
  *
  * Supported today (CSV): Chase Paymentech settlement, Stripe/Tekmetric payouts,
- * Stripe/Tekmetric charges. Tekmetric needs BOTH the payouts and charges files
+ * Stripe/Tekmetric charges, and the Chase account-activity export (for the
+ * customer-financing payouts — Snap, Bosch/CFNA, Koalafi — see financing.ts). Tekmetric needs BOTH the payouts and charges files
  * to reconstruct membership (see stripe.ts). PDF ingestion is a future add.
  */
 import { parseCsv } from "./csv";
@@ -15,9 +16,10 @@ import {
   type TekmetricReconstruction,
   type StripeCharge,
 } from "./stripe";
+import { isChaseActivityHeader, parseChaseActivity, lenderDeposits } from "./financing";
 import type { ExpectedDeposit } from "./types";
 
-export type FileType = "paymentech" | "stripe_payouts" | "stripe_charges" | "unknown";
+export type FileType = "paymentech" | "stripe_payouts" | "stripe_charges" | "chase_activity" | "unknown";
 
 export interface NamedFile {
   name: string;
@@ -33,6 +35,7 @@ function headerSet(text: string): Set<string> {
 export function detectFileType(text: string): FileType {
   const h = headerSet(text);
   const has = (...ks: string[]) => ks.every((k) => h.has(k));
+  if (isChaseActivityHeader(h)) return "chase_activity";
   if (has("card brand") && (h.has("batch #") || h.has("batch date"))) return "paymentech";
   if (h.has("arrival date (utc)") || (h.has("statement descriptor") && h.has("trace id")))
     return "stripe_payouts";
@@ -63,6 +66,12 @@ export interface IngestResult {
    * they export one stuck payout's transactions.
    */
   chargesOnly: StripeCharge[] | null;
+  /**
+   * Lender payouts (Snap, Bosch/CFNA, Koalafi) from a Chase account-activity
+   * export — one per bank line, net = what hit the bank. Gross and fee are
+   * unknown until Locate pairs each with its Undeposited-Funds payment(s).
+   */
+  financingDeposits: ExpectedDeposit[];
 }
 
 export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
@@ -70,6 +79,7 @@ export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
   const paymentechDeposits: ExpectedDeposit[] = [];
   const unknown: string[] = [];
   const notes: string[] = [];
+  const financingDeposits: ExpectedDeposit[] = [];
   let payoutsText: string | null = null;
   let chargesText: string | null = null;
 
@@ -79,6 +89,26 @@ export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
     if (type === "paymentech") paymentechDeposits.push(...parsePaymentechCsv(f.text));
     else if (type === "stripe_payouts") payoutsText = f.text;
     else if (type === "stripe_charges") chargesText = f.text;
+    else if (type === "chase_activity") {
+      const deps = lenderDeposits(parseChaseActivity(f.text));
+      for (const d of deps) {
+        financingDeposits.push({
+          processor: "financing",
+          settlementDate: d.date,
+          gross: d.amount,
+          fee: 0,
+          net: d.amount,
+          // One line per bank deposit: brand = lender, ref = the name on the line.
+          lines: [{ amount: d.amount, brand: d.lender, ref: d.indName ?? "" }],
+          sourceRef: d.trace ? `chase:${d.trace}` : `chase:${d.date}:${d.amount.toFixed(2)}`,
+        });
+      }
+      notes.push(
+        deps.length
+          ? `${f.name}: ${deps.length} financing payout(s) (Snap / Bosch-CFNA / Koalafi) found; every other bank line was ignored.`
+          : `${f.name}: no Snap, Bosch-CFNA or Koalafi deposits in this Chase export.`
+      );
+    }
     else unknown.push(f.name);
   }
 
@@ -104,9 +134,9 @@ export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
 
   if (unknown.length > 0) {
     notes.push(
-      `Not recognized as a Chase Paymentech, Tekmetric payouts, or Tekmetric payments/transfers export: ${unknown.join(", ")}. Nothing was read from it.`
+      `Not recognized as a Chase Paymentech, Tekmetric payouts, Tekmetric payments/transfers, or Chase account-activity export: ${unknown.join(", ")}. Nothing was read from it.`
     );
   }
 
-  return { paymentechDeposits, tekmetric, detected, unknown, notes, chargesOnly };
+  return { paymentechDeposits, tekmetric, detected, unknown, notes, chargesOnly, financingDeposits };
 }

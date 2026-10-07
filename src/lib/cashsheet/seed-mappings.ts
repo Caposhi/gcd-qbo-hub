@@ -164,6 +164,12 @@ export const SEED_ACCOUNT_MAPPINGS: SeedAccountMapping[] = [
     qboAccountType: "OtherCurrentLiability",
   },
   { friendlyName: "Cash over/short", qboAccountName: "Cash over/short", qboAccountType: "Expense" },
+  // Financing lenders' fees on Deposit Reconciliation deposits (Snap, Bosch/CFNA, Koalafi).
+  {
+    friendlyName: "Credit Card Processing Fees",
+    qboAccountName: "Credit Card Processing Fees",
+    qboAccountType: "Expense",
+  },
   {
     friendlyName: "Employee Loans Receivable",
     qboAccountName: "Employee Loans Receivable",

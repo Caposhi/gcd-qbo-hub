@@ -23,6 +23,20 @@ Drop both Tekmetric exports together: the payouts file (`po_…` rows) and the p
 - A payout that cannot be tied is flagged `needs_review` on its own and consumes no charges, so it never breaks later payouts.
 - Re-dropping the same files after a logic fix updates unposted payouts in place; payouts already created in QBO are never changed.
 
+## Customer-financing payouts (Snap, Bosch/CFNA, Koalafi)
+
+Tekmetric records a financed repair as one customer payment for the full amount in Undeposited Funds, with no fee entry. The lender later pays the shop by ACH, minus its fee, under its own name — so without this step the payment stays in Undeposited Funds and QBO suggests booking the bank line as new income (double-counting revenue). Drop the Chase **account activity** CSV for Main working Acct …9680 (Chase → Download account activity → Spreadsheet CSV, any date range). The hub keeps only lender deposits and ignores every other line:
+
+| Lender | Bank line `ORIG CO NAME` | Fee rule (`src/lib/deposits/financing.ts`) | Paid |
+|---|---|---|---|
+| Bosch card (CFNA) | `BRIDGESTONE/FIRE` (`EPOSPYMNTS`) | exactly 1.99% of the payment (±1¢) | ~2 business days after the payment |
+| Snap Finance | `QB/SNAP LOAN` | 0–1.5% (observed ~0.36%) | ~2 business days |
+| Koalafi | `KOALAFI` (`LEASE FUND`) | normally none; up to 6% allowed | ~3 business days; customer named in `IND NAME` |
+
+**Locate** pairs each lender deposit with the open Undeposited-Funds payment(s) dated up to 5 business days earlier (7 for Koalafi) whose fee fits the lender's rule. When QBO's payment method names the lender ("Snap Finance", "…(Bosch CNFCA)", "Koalifi"), only those payments are considered. Koalafi additionally requires the bank line's customer name to match the QBO customer — combined with the amount, date and fee rule, never on the name alone. Two payments in one ACH are tried only when no single payment fits. Anything with more than one plausible match goes to `needs_review` with the candidates listed; a match against a payment already on a QBO deposit is reported as already deposited.
+
+**Create** links the payment(s) and adds one negative line for the lender fee to **Credit Card Processing Fees** (account mapping of that name, else the QBO account with that exact name). The fee is re-checked against the lender's rule and the deposit total against the bank amount, to the cent, before posting. Lender rules and rates are business facts verified against real payouts in Aug–Sep 2026; if a lender changes its pricing, update `LENDERS` and its tests.
+
 ## Safety invariants
 
 - Prototype status is not a safety gate.
