@@ -216,9 +216,9 @@ export interface RefundPick {
   /** True when the gap was closed to the cent. */
   exact: boolean;
   /**
-   * How many candidates matched the gap exactly on their own. >1 means the amount
-   * was ambiguous and we broke the tie by date — recorded so the choice is
-   * auditable rather than invisible.
+   * How many candidates (single refunds, or same-size refund combinations)
+   * matched the gap exactly. >1 means it was ambiguous and we broke the tie by
+   * date — recorded so the choice is auditable rather than invisible.
    */
   exactCandidates: number;
 }
@@ -227,9 +227,15 @@ export interface RefundPick {
  * Choose the refund(s) that close a payout's gap EXACTLY.
  *
  * Strict on purpose, in the same spirit as the deposit checksum: a single
- * candidate of exactly the gap wins; otherwise, if every still-unused candidate
- * in the window together sums to exactly the gap, take them all. Anything else
- * returns nothing, so a deposit is never assembled out of a guess.
+ * candidate of exactly the gap wins; otherwise the SMALLEST combination of
+ * still-unused candidates (up to MAX_REFUND_COMBO) that sums to exactly the gap;
+ * otherwise, if every unused candidate together sums to it, take them all.
+ * Anything else returns nothing, so a deposit is never assembled out of a guess.
+ *
+ * The combination step exists because a payout can take several refunds while
+ * the 90-day window holds others too (live: the 2026-09-17 payout took a
+ * same-day 478.73 refund AND a 240.75 refund of a 09-03 charge, with four other
+ * refund-like entries in the window) — "all of them" can never tie there.
  *
  * `used` prevents one refund from being claimed by two payouts in a batch — the
  * same guard fee JEs get.
@@ -259,12 +265,57 @@ export function pickRefundsForGap(
     return { refunds: [ranked[0]], exact: true, exactCandidates: exactMatches.length };
   }
 
+  const combos = exactCombinations(avail, gapCents, cents);
+  if (combos.length > 0) {
+    // Same-size ties (e.g. two 240.75 refunds) → the set dated closest to the payout.
+    const score = (set: UndepositedRefund[]) =>
+      settlementDate ? set.reduce((s, r) => s + dayGap(r.date, settlementDate), 0) : 0;
+    const best = [...combos].sort((a, b) => score(a) - score(b))[0];
+    return { refunds: best, exact: true, exactCandidates: combos.length };
+  }
+
   const total = avail.reduce((s, r) => s + cents(r.amount), 0);
   if (avail.length > 0 && total === gapCents) {
     return { refunds: avail, exact: true, exactCandidates: 0 };
   }
 
   return { refunds: [], exact: false, exactCandidates: 0 };
+}
+
+/** Largest refund combination searched before falling back to "all of them". */
+const MAX_REFUND_COMBO = 4;
+
+/**
+ * Every combination of 2..MAX_REFUND_COMBO refunds summing to exactly
+ * `gapCents`, keeping only the smallest size found. Depth-first over amounts
+ * sorted high→low, pruning once a partial sum passes the gap (all amounts are
+ * positive). Each combination is returned in the candidates' original order.
+ */
+function exactCombinations(
+  avail: UndepositedRefund[],
+  gapCents: number,
+  cents: (n: number) => number
+): UndepositedRefund[][] {
+  const order = avail.map((r, i) => ({ r, i, c: cents(r.amount) })).sort((a, b) => b.c - a.c);
+  for (let size = 2; size <= Math.min(MAX_REFUND_COMBO, order.length); size++) {
+    const found: UndepositedRefund[][] = [];
+    const pick: typeof order = [];
+    const walk = (from: number, sum: number) => {
+      if (pick.length === size) {
+        if (sum === gapCents) found.push([...pick].sort((a, b) => a.i - b.i).map((x) => x.r));
+        return;
+      }
+      for (let k = from; k < order.length; k++) {
+        if (sum + order[k].c > gapCents) continue;
+        pick.push(order[k]);
+        walk(k + 1, sum + order[k].c);
+        pick.pop();
+      }
+    };
+    walk(0, 0);
+    if (found.length > 0) return found;
+  }
+  return [];
 }
 
 /** Whole days between two ISO dates (0 when either is unparseable). */

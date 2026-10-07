@@ -4,7 +4,8 @@
  *
  * Supported today (CSV): Chase Paymentech settlement, Stripe/Tekmetric payouts,
  * Stripe/Tekmetric charges, and the Chase account-activity export (for the
- * customer-financing payouts — Snap, Bosch/CFNA, Koalafi — see financing.ts). Tekmetric needs BOTH the payouts and charges files
+ * customer-financing payouts — Snap, Bosch/CFNA, Koalafi — and Zelle customer
+ * payments; see financing.ts). Tekmetric needs BOTH the payouts and charges files
  * to reconstruct membership (see stripe.ts). PDF ingestion is a future add.
  */
 import { parseCsv } from "./csv";
@@ -105,8 +106,8 @@ export function buildProposalsFromFiles(files: NamedFile[]): IngestResult {
       }
       notes.push(
         deps.length
-          ? `${f.name}: ${deps.length} financing payout(s) (Snap / Bosch-CFNA / Koalafi) found; every other bank line was ignored.`
-          : `${f.name}: no Snap, Bosch-CFNA or Koalafi deposits in this Chase export.`
+          ? `${f.name}: ${deps.length} deposit(s) from Snap / Bosch-CFNA / Koalafi / Zelle found; every other bank line was ignored.`
+          : `${f.name}: no Snap, Bosch-CFNA, Koalafi or Zelle deposits in this Chase export.`
       );
     }
     else unknown.push(f.name);

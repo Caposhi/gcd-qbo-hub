@@ -466,7 +466,8 @@ export async function locateProposedPaymentsAction() {
   if (financingPayouts.length) {
     const { findFinancingCandidates } = await import("@/lib/deposits/qbo-lookup");
     const fDates = financingPayouts.map((p) => p.settlementDate).sort();
-    financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), fDates[fDates.length - 1]);
+    // +5: Tekmetric can record a Zelle payment a day or two after the money arrives.
+    financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), shiftDate(fDates[fDates.length - 1], 5));
   }
   const { matchFinancingDeposit, lenderById } = await import("@/lib/deposits/financing");
 
@@ -873,7 +874,7 @@ async function createOneDeposit(
               `Swept ${pick.refunds.length} refund(s) totalling ${(sumRefundCents / 100).toFixed(2)} into this deposit: ` +
               pick.refunds.map((r) => `${r.kind} ${r.txnId}${r.lineId ? `/${r.lineId}` : ""} ${r.date} ${r.amount.toFixed(2)}${r.customerName ? ` (${r.customerName})` : ""}`).join("; ") +
               (pick.exactCandidates > 1
-                ? ` · NOTE ${pick.exactCandidates} refunds in the window shared this amount; picked the one closest to ${payout.settlementDate}.`
+                ? ` · NOTE ${pick.exactCandidates} ${pick.refunds.length > 1 ? "refund combinations" : "refunds"} in the window closed this gap exactly; picked the one dated closest to ${payout.settlementDate}.`
                 : ""),
           },
         });

@@ -82,8 +82,8 @@ export default async function DepositReconciliationPage() {
       <p className="page-desc">
         Drop your processor exports and the hub reconstructs each payout into the exact QBO deposit it should become —
         Chase Paymentech (gross card sales by batch date), Tekmetric/Stripe (payouts + charges, netted by fee), and
-        customer-financing payouts from the Chase account activity (Snap, Bosch card/CFNA, Koalafi — the payment minus
-        the lender&apos;s fee). Each deposit is gated by an exact-sum checksum; anything that doesn&apos;t tie is flagged,
+        customer-financing payouts and Zelle payments from the Chase account activity (Snap, Bosch card/CFNA, Koalafi —
+        the payment minus the lender&apos;s fee; Zelle — the exact payment). Each deposit is gated by an exact-sum checksum; anything that doesn&apos;t tie is flagged,
         never posted.
       </p>
 
@@ -100,7 +100,7 @@ export default async function DepositReconciliationPage() {
           <p className="card-subtitle" style={{ margin: 0 }}>
             Drop CSVs: the Chase <em>Paymentech</em> settlement, and both Tekmetric files (the <em>payouts</em> export
             and the <em>Payments/charges</em> export), and the Chase <em>account activity</em> download for Main working
-            Acct …9680 (picks out the Snap, Bosch/CFNA and Koalafi deposits). Safe to re-drop the same files anytime — e.g. after a parsing
+            Acct …9680 (picks out the Snap, Bosch/CFNA, Koalafi and Zelle deposits). Safe to re-drop the same files anytime — e.g. after a parsing
             fix — it always re-checks everything not yet posted against the files and current logic, and reports
             exactly what changed. A payout already posted to QBO is never touched.
           </p>
@@ -186,7 +186,7 @@ export default async function DepositReconciliationPage() {
               {payouts.map((p) => (
                 <tr key={p.id}>
                   <td>{p.settlementDate}</td>
-                  <td>{p.processor === "financing" ? `financing · ${LENDER_LABEL[p.lines?.[0]?.brand ?? ""] ?? "?"}` : p.processor}</td>
+                  <td>{p.processor === "financing" ? LENDER_LABEL[p.lines?.[0]?.brand ?? ""] ?? "financing" : p.processor}</td>
                   <td className="num">{money(p.grossAmount)}</td>
                   <td className="num">{money(p.feeAmount)}</td>
                   <td className="num"><strong>{money(p.netAmount)}</strong></td>

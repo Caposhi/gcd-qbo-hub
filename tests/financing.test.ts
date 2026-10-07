@@ -97,11 +97,27 @@ describe("matchFinancingDeposit", () => {
     expect(m).toMatchObject({ kind: "matched", paymentIds: ["snap1"], feeCents: 144 });
   });
 
-  it("Snap: refuses to guess between two equally plausible payments when QBO has no method info", () => {
+  it("Snap: needs the Snap Finance method label — its fee band is too loose to match on amount alone", () => {
     const bare = pool.map((p) => ({ ...p, methodText: "" }));
     const m = matchFinancingDeposit(dep("snap", "2026-03-04", 398.56), bare);
     expect(m.kind).toBe("review");
-    expect(m.kind === "review" && m.reason).toMatch(/2 Undeposited-Funds payments could be/);
+    expect(m.kind === "review" && m.reason).toMatch(/labelled as Snap Finance/);
+  });
+
+  it("never builds a payout from card payments (dry-run regression: two Visa payments 'fit' a Snap payout)", () => {
+    // The real Snap payment is missing; two Visa payments happen to sum into Snap's fee band.
+    const cards = [pay("v1", 240.75, "2026-03-02", "A, A", "Visa"), pay("v2", 159.0, "2026-03-03", "B, B", "Visa")];
+    expect(matchFinancingDeposit(dep("snap", "2026-03-04", 398.56), cards).kind).toBe("review");
+  });
+
+  it("Bosch: a same-amount Koalafi or card payment is excluded; the Financing-labelled one matches", () => {
+    const m = matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), [
+      pay("koal", 1000.0, "2026-03-05", "X, X", "Koalifi"),
+      pay("visa", 1000.0, "2026-03-05", "Y, Y", "Visa"),
+      pay("other", 1000.0, "2026-03-05", "Z, Z", "Other"),
+      pay("bosch", 1000.0, "2026-03-05", "Park, Kim", "Financing (i.e. snap, synchrony...) (Bosch CNFCA)"),
+    ]);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["bosch"] });
   });
 
   it("Koalafi: matches on the customer named on the bank line, even with a same-amount payment for someone else", () => {
@@ -145,5 +161,89 @@ describe("helpers", () => {
     expect(namesMatch("Rivera Ana", "Rivera, Ana")).toBe(true);
     expect(namesMatch("Rivera Ana", "Ana Maria Rivera")).toBe(true);
     expect(namesMatch("Rivera Ana", "Rivera, Bob")).toBe(false);
+  });
+});
+
+describe("Zelle customer payments", () => {
+  const ZELLE = [
+    "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #",
+    `CREDIT,03/10/2026,"Zelle payment from ANA RIVERA BACx1y2z3w4",320.15,PARTNERFI_TO_CHASE,1000.00,,`,
+    `CREDIT,03/11/2026,"Zelle payment from EXAMPLE STUDIES CONSORTIUM INC 30500000001",2500.00,QUICKPAY_CREDIT,3500.00,,`,
+    `CREDIT,03/12/2026,"Zelle payment from SAM LEE WFCT00000001",2.00,PARTNERFI_TO_CHASE,3502.00,,`,
+  ].join("\n");
+
+  it("reads the sender and the bank reference from a Zelle line (both reference styles)", () => {
+    const deps = lenderDeposits(parseChaseActivity(ZELLE));
+    expect(deps.map((d) => [d.lender, d.indName, d.trace])).toEqual([
+      ["zelle", "ANA RIVERA", "BACx1y2z3w4"],
+      ["zelle", "EXAMPLE STUDIES CONSORTIUM INC", "30500000001"],
+      ["zelle", "SAM LEE", "WFCT00000001"],
+    ]);
+  });
+
+  const zdep = (date: string, amount: number, indName: string): LenderDeposit => ({
+    lender: "zelle",
+    date,
+    amount,
+    description: "",
+    origCoName: "",
+    trace: "z",
+    indName,
+  });
+  const zpay = (id: string, amount: number, date: string, customerName: string, methodText = "Zelle"): FinancingCandidate => ({
+    id,
+    amount,
+    date,
+    customerName,
+    methodText,
+  });
+
+  it("matches the customer's own Zelle: exact amount, same day, name on the line", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-10", 320.15, "ANA RIVERA"), [
+      zpay("z1", 320.15, "2026-03-10", "Rivera, Ana"),
+      zpay("card", 320.15, "2026-03-10", "Other, Person", "Visa"),
+    ]);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["z1"], feeCents: 0 });
+  });
+
+  it("a name match wins over another Zelle payment of the same amount", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-10", 320.15, "ANA RIVERA"), [
+      zpay("other", 320.15, "2026-03-10", "Stone, Bo"),
+      zpay("z1", 320.15, "2026-03-10", "Rivera, Ana"),
+    ]);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["z1"] });
+  });
+
+  it("a company paying for a customer matches on the Zelle method when it's the only one", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-11", 2500, "EXAMPLE STUDIES CONSORTIUM INC"), [
+      zpay("z2", 2500, "2026-03-11", "Mbeki, Tom"),
+      zpay("card", 2500, "2026-03-11", "Other, Person", "Mastercard"),
+    ]);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["z2"] });
+    expect(m.kind === "matched" && m.basis).toContain("payment method names the lender");
+  });
+
+  it("…but without a name or a Zelle method there's nothing to go on — review", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-11", 2500, "EXAMPLE STUDIES CONSORTIUM INC"), [
+      zpay("card", 2500, "2026-03-11", "Mbeki, Tom", ""),
+    ]);
+    expect(m.kind).toBe("review");
+  });
+
+  it("accepts a payment Tekmetric recorded a business day after the money arrived", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-13", 320.15, "ANA RIVERA"), [zpay("z1", 320.15, "2026-03-16", "Rivera, Ana")]);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["z1"] });
+    expect(m.kind === "matched" && m.basis).toContain("recorded 1 business day(s) after the deposit");
+  });
+
+  it("requires the exact amount — Zelle has no fee", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-10", 320.15, "ANA RIVERA"), [zpay("z1", 320.16, "2026-03-10", "Rivera, Ana")]);
+    expect(m.kind).toBe("review");
+  });
+
+  it("a Zelle that isn't a repair-order payment goes to review with the Tekmetric hint", () => {
+    const m = matchFinancingDeposit(zdep("2026-03-12", 2, "SAM LEE"), []);
+    expect(m.kind).toBe("review");
+    expect(m.kind === "review" && m.reason).toMatch(/Accounting Link shows the Zelle payment as Unapproved/);
   });
 });
