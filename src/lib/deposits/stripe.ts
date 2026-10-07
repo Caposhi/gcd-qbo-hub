@@ -3,11 +3,12 @@
  *   - Payouts:  po_… rows → each bank deposit's NET amount + arrival date.
  *   - Payments: py_… rows → each charge's GROSS amount + fee.
  *
- * Neither file links a charge to its payout, but Stripe settles a day's charges
- * into the next payout (arrival = charge date + 1, verified against real data).
- * So we reconstruct membership by accumulating charges in created-date order
- * into each payout until they sum EXACTLY to the payout net — the same
- * exact-sum guarantee used everywhere in this module.
+ * Neither file links a charge to its payout, but Stripe settles each day's
+ * charges (UTC) into a later payout — normally the next business day, with
+ * weekends/holidays rolling several days into one payout (verified against
+ * real data). So we reconstruct membership from whole days of charges whose
+ * total ties EXACTLY to the payout net — the same exact-sum guarantee used
+ * everywhere in this module. See reconstructTekmetricPayouts for refunds.
  */
 import { parseCsv } from "./csv";
 import { parseCurrency } from "@/lib/cashsheet/amount";
@@ -29,8 +30,14 @@ export interface StripeCharge {
   createdDate: string; // YYYY-MM-DD
   gross: number;
   fee: number;
-  /** net = gross - fee; what this charge contributes to a payout. */
+  /** net = gross - fee - refunded; what this charge contributes overall. */
   net: number;
+  /**
+   * Amount refunded (0 when none). Stripe deducts a refund from the payout
+   * that settles on/after the day the refund is ISSUED — which may be a later
+   * payout than the charge's own. The export doesn't carry the refund date.
+   */
+  refunded: number;
 }
 
 function pick(row: Record<string, string>, ...names: string[]): string {
@@ -106,6 +113,7 @@ export function parseStripeCharges(text: string): StripeCharge[] {
       gross,
       fee,
       net: (toCents(gross) - toCents(fee) - toCents(refunded)) / 100,
+      refunded,
     });
   }
   out.sort((a, b) => a.createdDate.localeCompare(b.createdDate));
@@ -120,52 +128,155 @@ export interface TekmetricReconstruction {
   leftoverCharges: StripeCharge[];
 }
 
+/** Longest run of consecutive charge days one payout may cover (long weekends). */
+const MAX_DAYS_PER_PAYOUT = 7;
+/** Most refunds considered at once when deciding which ones a payout deducted. */
+const MAX_REFUND_POOL = 12;
+
+interface PendingRefund {
+  chargeId: string;
+  cents: number;
+}
+
+/** Charges grouped by created date, oldest first. */
+function groupByDay(charges: StripeCharge[]): StripeCharge[][] {
+  const days: StripeCharge[][] = [];
+  for (const c of charges) {
+    const last = days[days.length - 1];
+    if (last && last[0].createdDate === c.createdDate) last.push(c);
+    else days.push([c]);
+  }
+  return days;
+}
+
 /**
- * Reconstruct each payout's expected deposit from charges. Charges are consumed
- * FIFO by created-date; a payout only resolves when its charges sum to the net
- * exactly. `lines` are the gross charges (what the QBO Undeposited-Funds
- * payments match); fee = gross - net (matched later to the fee JEs).
+ * Find which outstanding refunds (if any) a payout deducted. `baseCents` is the
+ * payout's charges at gross − fee (refunds NOT subtracted). Tries "exactly the
+ * window's own refunds" first (a same-day refund, the common case), then every
+ * other combination from fewest refunds up. Returns the chosen refunds, or null.
+ */
+function pickRefunds(
+  baseCents: number,
+  targetCents: number,
+  ownRefunds: PendingRefund[],
+  pool: PendingRefund[]
+): PendingRefund[] | null {
+  const sum = (rs: PendingRefund[]) => rs.reduce((s, r) => s + r.cents, 0);
+  if (baseCents - sum(ownRefunds) === targetCents) return ownRefunds;
+  const capped = pool.slice(-MAX_REFUND_POOL);
+  const gap = baseCents - targetCents;
+  if (gap <= 0) return gap === 0 ? [] : null;
+  const masks: number[] = [];
+  for (let m = 0; m < 1 << capped.length; m++) masks.push(m);
+  const bits = (m: number) => m.toString(2).replace(/0/g, "").length;
+  masks.sort((a, b) => bits(a) - bits(b));
+  for (const m of masks) {
+    const picked = capped.filter((_, k) => m & (1 << k));
+    if (sum(picked) === gap) return picked;
+  }
+  return null;
+}
+
+/**
+ * Reconstruct each payout's expected deposit from charges. A payout resolves
+ * only when a set of charges ties to its net to the cent:
+ *
+ *  1. Whole days first: a run of 1–7 consecutive unconsumed charge days, all
+ *     created before the payout's arrival date (the earliest run that ties
+ *     wins). Weekends and holidays roll into one payout this way.
+ *  2. Refunds: each charge counts at gross − fee; a refund is deducted from
+ *     the payout that actually took it — the same payout when refunded the
+ *     same day, or a LATER one when refunded later (a 09-03 charge refunded on
+ *     09-16 comes out of the 09-17 payout). Refunds from earlier payouts stay
+ *     "outstanding" until a payout ties with them deducted.
+ *  3. Fallback for a day split across payouts: the old charge-by-charge walk
+ *     from the earliest eligible charge, refunds applied to their own charge.
+ *
+ * A payout that can't be tied is reported in `unresolved` and consumes
+ * nothing, so it never drags later payouts down with it (the old FIFO walk
+ * cascaded one miss through the rest of the month).
+ *
+ * `lines` are the gross charges (what the QBO Undeposited-Funds payments
+ * match); fee = gross − net, so any refund deducted shows up downstream as a
+ * gross-to-net gap beyond the per-charge fees, which the deposit step closes
+ * by sweeping in the matching QBO refund.
  */
 export function reconstructTekmetricPayouts(
   payouts: StripePayout[],
   charges: StripeCharge[]
 ): TekmetricReconstruction {
   const sortedPayouts = [...payouts].sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate));
-  const queue = [...charges].sort((a, b) => a.createdDate.localeCompare(b.createdDate));
-  let i = 0; // pointer into queue
+  let remaining = [...charges].sort((a, b) => a.createdDate.localeCompare(b.createdDate));
+  let outstanding: PendingRefund[] = [];
   const deposits: ExpectedDeposit[] = [];
   const unresolved: TekmetricReconstruction["unresolved"] = [];
+  const baseOf = (c: StripeCharge) => toCents(c.gross) - toCents(c.fee);
+  const refundOf = (c: StripeCharge): PendingRefund | null =>
+    toCents(c.refunded ?? 0) > 0 ? { chargeId: c.id, cents: toCents(c.refunded) } : null;
 
   for (const payout of sortedPayouts) {
     const targetCents = toCents(payout.amount);
-    const bucket: StripeCharge[] = [];
-    let sumCents = 0;
-    // Only charges created strictly before arrival (D+1 settlement) are eligible.
-    while (i < queue.length && queue[i].createdDate < payout.arrivalDate && sumCents < targetCents) {
-      bucket.push(queue[i]);
-      sumCents += toCents(queue[i].net);
-      i++;
+    const days = groupByDay(remaining.filter((c) => c.createdDate < payout.arrivalDate));
+    let match: { bucket: StripeCharge[]; applied: PendingRefund[] } | null = null;
+    let closestDelta: number | null = null;
+
+    for (let start = 0; start < days.length && !match; start++) {
+      for (let len = 1; len <= MAX_DAYS_PER_PAYOUT && start + len <= days.length; len++) {
+        const bucket = days.slice(start, start + len).flat();
+        const baseCents = bucket.reduce((s, c) => s + baseOf(c), 0);
+        const own = bucket.map(refundOf).filter((r): r is PendingRefund => r !== null);
+        const applied = pickRefunds(baseCents, targetCents, own, [...outstanding, ...own]);
+        if (applied) {
+          match = { bucket, applied };
+          break;
+        }
+        const delta = targetCents - (baseCents - own.reduce((s, r) => s + r.cents, 0));
+        if (closestDelta === null || Math.abs(delta) < Math.abs(closestDelta)) closestDelta = delta;
+      }
     }
-    if (sumCents === targetCents && bucket.length > 0) {
-      const grossCents = bucket.reduce((s, c) => s + toCents(c.gross), 0);
-      const lines: PayoutLine[] = bucket.map((c) => ({ amount: c.gross, fee: c.fee, brand: "", ref: c.id }));
-      deposits.push({
-        processor: "tekmetric",
-        settlementDate: payout.arrivalDate,
-        gross: grossCents / 100,
-        fee: (grossCents - targetCents) / 100,
-        net: payout.amount,
-        lines,
-        sourceRef: payout.traceId ?? payout.id,
-      });
-    } else {
-      // Couldn't reconstruct — put the bucket back and flag for review.
-      i -= bucket.length;
-      unresolved.push({ payout, deltaCents: targetCents - sumCents });
+
+    if (!match) {
+      // Fallback: charge-by-charge from the earliest eligible charge.
+      const eligible = days.flat();
+      const bucket: StripeCharge[] = [];
+      let sumCents = 0;
+      for (const c of eligible) {
+        if (sumCents >= targetCents) break;
+        bucket.push(c);
+        sumCents += toCents(c.net);
+      }
+      if (sumCents === targetCents && bucket.length > 0) {
+        match = { bucket, applied: bucket.map(refundOf).filter((r): r is PendingRefund => r !== null) };
+      }
     }
+
+    if (!match) {
+      unresolved.push({ payout, deltaCents: closestDelta ?? targetCents });
+      continue;
+    }
+
+    const used = new Set(match.bucket.map((c) => c.id));
+    remaining = remaining.filter((c) => !used.has(c.id));
+    const appliedIds = new Set(match.applied.map((r) => r.chargeId));
+    const newlyOwed = match.bucket
+      .map(refundOf)
+      .filter((r): r is PendingRefund => r !== null && !appliedIds.has(r.chargeId));
+    outstanding = [...outstanding.filter((r) => !appliedIds.has(r.chargeId)), ...newlyOwed];
+
+    const grossCents = match.bucket.reduce((s, c) => s + toCents(c.gross), 0);
+    const lines: PayoutLine[] = match.bucket.map((c) => ({ amount: c.gross, fee: c.fee, brand: "", ref: c.id }));
+    deposits.push({
+      processor: "tekmetric",
+      settlementDate: payout.arrivalDate,
+      gross: grossCents / 100,
+      fee: (grossCents - targetCents) / 100,
+      net: payout.amount,
+      lines,
+      sourceRef: payout.traceId ?? payout.id,
+    });
   }
 
-  return { deposits, unresolved, leftoverCharges: queue.slice(i) };
+  return { deposits, unresolved, leftoverCharges: remaining };
 }
 
 // ---------------------------------------------------------------------------

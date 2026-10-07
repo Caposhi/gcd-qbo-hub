@@ -11,8 +11,11 @@ import { RequireAuth } from "../components/RequireAuth";
 
 export const dynamic = "force-dynamic";
 
+// Every count here excludes archived rows (auto-Superseded or manually
+// archived, §10) because the Queue hides them by default — a tile must never
+// promise rows that its own link then shows as "0 rows".
 async function statusCounts(): Promise<Record<string, number>> {
-  const grouped = await prisma.sheetRow.groupBy({ by: ["status"], _count: { _all: true } });
+  const grouped = await prisma.sheetRow.groupBy({ by: ["status"], where: { archived: false }, _count: { _all: true } });
   const out: Record<string, number> = {};
   for (const g of grouped) out[g.status] = g._count._all;
   return out;
@@ -31,7 +34,7 @@ async function statusCounts(): Promise<Record<string, number>> {
 async function unreviewedCounts(statuses: string[]): Promise<Record<string, number>> {
   const grouped = await prisma.sheetRow.groupBy({
     by: ["status"],
-    where: { status: { in: statuses }, reviewedAt: null },
+    where: { status: { in: statuses }, reviewedAt: null, archived: false },
     _count: { _all: true },
   });
   const out: Record<string, number> = {};
@@ -43,7 +46,7 @@ export default async function OverviewPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
 
-  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted, depositsReady, lastReconCheck] = await Promise.all([
+  const [lastRun, counts, stage, environment, recentChanges, dupCounts, approvedNotPosted, awaitingApproval, depositsReady, lastReconCheck] = await Promise.all([
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
     statusCounts(),
     getRolloutStage(),
@@ -60,7 +63,11 @@ export default async function OverviewPage() {
     // Rows an owner_admin already approved but that haven't posted yet — the
     // "dry-run trap": approval only takes effect on the next REAL sync, and
     // it's easy to run a dry-run afterward and assume nothing happened.
-    prisma.sheetRow.count({ where: { approvedAt: { not: null }, qboTransactionId: null } }),
+    prisma.sheetRow.count({ where: { approvedAt: { not: null }, qboTransactionId: null, archived: false } }),
+    // Ready-to-post rows nobody has approved yet. Approved rows also sit in
+    // Ready To Post until the next real sync, so counting the status alone
+    // made this tile keep nagging about rows that were already approved.
+    prisma.sheetRow.count({ where: { status: RowStatus.ReadyToPost, approvedAt: null, archived: false } }),
     // Deposit-matching pilot (§Phase 4): candidates Locate already found a
     // match for, sitting on /cash-sheet-sync/deposits waiting for a click.
     countReadyCashDeposits().catch(() => 0),
@@ -70,11 +77,11 @@ export default async function OverviewPage() {
   const credsValid = await hasValidCredentials(environment).catch(() => false);
   const changedSinceLastSync =
     Number((lastRun?.summaryJson as { rowsChangedSinceLastSync?: number } | null)?.rowsChangedSinceLastSync ?? 0);
-  const awaitingApproval = counts[RowStatus.ReadyToPost] ?? 0;
 
   /** Build a Queue link pre-filtered to one or more statuses. */
   const queueHref = (...rowStatuses: string[]) =>
     `/cash-sheet-sync/queue?status=${encodeURIComponent(rowStatuses.join(","))}`;
+  const canSync = can(user.role, "run_sandbox_sync");
 
   return (
     <>
@@ -109,6 +116,21 @@ export default async function OverviewPage() {
         </div>
       )}
 
+      {approvedNotPosted > 0 && (
+        <div className="notice warn" style={{ marginBottom: 18 }}>
+          <strong>{approvedNotPosted}</strong> approved row{approvedNotPosted === 1 ? " is" : "s are"} waiting to
+          post. Approval only takes effect on the next <strong>real</strong> sync — &quot;Run dry-run now&quot; will
+          not post {approvedNotPosted === 1 ? "it" : "them"}, on purpose.{" "}
+          <Link href="/cash-sheet-sync/queue?approval=approved">See which rows</Link>, then use{" "}
+          <strong>Run sync now</strong> (or wait for tonight&apos;s cron).
+          {canSync && (
+            <form action={runSandboxSyncAction} style={{ marginTop: 10 }}>
+              <button className="btn primary" type="submit">Run sync now</button>
+            </form>
+          )}
+        </div>
+      )}
+
       <h2 style={{ fontSize: 18, margin: "8px 0 12px" }}>Last sync</h2>
       <div className="card" style={{ marginBottom: 22 }}>
         {lastRun ? (
@@ -138,7 +160,13 @@ export default async function OverviewPage() {
           label="Awaiting approval"
           n={awaitingApproval}
           sev={awaitingApproval > 0 ? "warn" : undefined}
-          href={queueHref(RowStatus.ReadyToPost)}
+          href={`${queueHref(RowStatus.ReadyToPost)}&approval=pending`}
+        />
+        <StatCard
+          label="Approved — posts next sync"
+          n={approvedNotPosted}
+          sev={approvedNotPosted > 0 ? "warn" : undefined}
+          href="/cash-sheet-sync/queue?approval=approved"
         />
         <StatCard
           label="Possible dupes"
@@ -261,14 +289,6 @@ export default async function OverviewPage() {
       </div>
 
       <h2 style={{ fontSize: 18, margin: "24px 0 12px" }}>Manual actions</h2>
-      {approvedNotPosted > 0 && (
-        <div className="notice warn" style={{ marginBottom: 12 }}>
-          <strong>{approvedNotPosted}</strong> row{approvedNotPosted === 1 ? " is" : "s are"} approved and waiting to
-          post. Approval only takes effect on a real sync — <strong>"Run dry-run now" will not post{" "}
-          {approvedNotPosted === 1 ? "it" : "them"}</strong>, on purpose. Use "Run sync now" (or wait for tonight's
-          cron) to actually post {approvedNotPosted === 1 ? "it" : "them"}.
-        </div>
-      )}
       <div className="row-actions">
         <form action={runDryRunAction}>
           <button className="btn ghost" type="submit" disabled={!can(user.role, "run_dry_run")}>
@@ -276,7 +296,7 @@ export default async function OverviewPage() {
           </button>
         </form>
         <form action={runSandboxSyncAction}>
-          <button className="btn primary" type="submit" disabled={!can(user.role, "run_sandbox_sync")}>
+          <button className="btn primary" type="submit" disabled={!canSync}>
             Run sync now
           </button>
         </form>

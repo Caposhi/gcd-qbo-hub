@@ -14,6 +14,15 @@ The module reconciles processor/bank payout data with QBO activity so an operato
 6. An authorized owner creates it once; persist the QBO response and domain event.
 7. Reconcile the returned QBO object and bank result. Never auto-edit/delete it when source data changes.
 
+## Tekmetric (Stripe) payout reconstruction
+
+Drop both Tekmetric exports together: the payouts file (`po_…` rows) and the payments file (`py_…` rows, e.g. `unified_payments.csv`). Neither links a charge to its payout, so `reconstructTekmetricPayouts` (`src/lib/deposits/stripe.ts`) rebuilds membership, accepting a payout only when its charges tie to the payout net to the cent:
+
+- Charges are grouped by UTC created date. A payout covers a run of one or more consecutive days created before its arrival date — normally the previous business day; weekends and bank holidays roll several days into one payout.
+- Each charge counts at gross − fee. A refund is deducted from the payout that actually took it: the same payout when refunded the same day, or a later payout when refunded later. The export has no refund date, so refunds stay outstanding until a payout ties with them deducted; the deposit step then sweeps the matching QBO refund (90-day lookback).
+- A payout that cannot be tied is flagged `needs_review` on its own and consumes no charges, so it never breaks later payouts.
+- Re-dropping the same files after a logic fix updates unposted payouts in place; payouts already created in QBO are never changed.
+
 ## Safety invariants
 
 - Prototype status is not a safety gate.

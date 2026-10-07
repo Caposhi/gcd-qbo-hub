@@ -14,6 +14,7 @@ import {
   dismissDuplicateAction,
 } from "../../actions";
 import { qboWebUrl } from "@/lib/qbo/links";
+import { formatUsd, approvalState } from "@/lib/cashsheet/queue-view";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,15 @@ export default async function RowDetailPage({ params }: { params: { id: string }
     },
   });
   if (!row) return notFound();
+
+  // Approval only takes effect on the next REAL sync (dry-runs never post), so
+  // compare the approval time with the last real sync to say where this row
+  // actually stands instead of leaving "Ready To Post" ambiguous.
+  const lastRealSync = row.approvedAt && !row.qboTransactionId
+    ? await prisma.syncRun.findFirst({ where: { mode: { not: "dry_run" } }, orderBy: { startedAt: "desc" } })
+    : null;
+  const approval = approvalState(row, lastRealSync?.startedAt ?? null);
+  const stamp = (d: Date) => d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
 
   // Cell-change history: every edit detected across daily syncs (§11) — both
   // the per-sync `row_changed` events and any `changed_after_posting` alert.
@@ -248,6 +258,24 @@ export default async function RowDetailPage({ params }: { params: { id: string }
       {!can(user.role, "approve_posting") && (
         <p className="card-subtitle" style={{ marginTop: 10 }}>Approving a posting requires the owner_admin role (§14).</p>
       )}
+      {approval === "waiting" && row.approvedAt && (
+        <div className="notice info" style={{ marginTop: 12 }}>
+          Approved {stamp(row.approvedAt)} by {row.approvedByEmail}.{" "}
+          {lastRealSync
+            ? <>The last real sync ran {stamp(lastRealSync.startedAt)}, before this approval, so it couldn&apos;t post this row yet. </>
+            : <>No real (non-dry-run) sync has run since. </>}
+          It posts on the next <strong>Run sync now</strong> on the{" "}
+          <Link href="/cash-sheet-sync">Overview</Link> or tonight&apos;s cron. &quot;Status reason&quot; above is from the
+          last sync and updates then.
+        </div>
+      )}
+      {approval === "blocked" && row.approvedAt && lastRealSync && (
+        <div className="notice danger" style={{ marginTop: 12 }}>
+          Approved {stamp(row.approvedAt)}, but the real sync at {stamp(lastRealSync.startedAt)} still didn&apos;t
+          post it. Reason from that sync: <strong>{row.statusReason ?? row.status}</strong>. Fix that, then run a sync
+          again.
+        </div>
+      )}
 
       {!row.purpose && !row.qboTransactionId && can(user.role, "override_purpose") && (
         <div className="card" style={{ marginTop: 12 }}>
@@ -353,10 +381,7 @@ export default async function RowDetailPage({ params }: { params: { id: string }
   );
 }
 
-function fmt(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  return `$${Number(v).toFixed(2)}`;
-}
+const fmt = formatUsd;
 
 interface FieldDiff {
   field: string;

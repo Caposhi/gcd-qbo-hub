@@ -6,6 +6,7 @@ import { DateRangeFilter } from "../../components/DateRangeFilter";
 import { RowStatus } from "@/lib/cashsheet/status";
 import { MONTH_TABS, canonicalMonthTab } from "@/lib/cashsheet/config";
 import { resolveDateRange, dateRangeWhere, describeDateRange, type DateRangePreset } from "@/lib/cashsheet/date-range";
+import { formatUsd, parseApprovalFilter, approvalWhere } from "@/lib/cashsheet/queue-view";
 
 export const dynamic = "force-dynamic";
 
@@ -29,10 +30,7 @@ const MONTH_FULL = [
   "july", "august", "september", "october", "november", "december",
 ];
 
-function money(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  return `$${Number(v).toFixed(2)}`;
-}
+const money = formatUsd;
 
 /** Strip $ and commas, lowercase, collapse whitespace — for tolerant matching. */
 function normalizeSearch(s: string): string {
@@ -80,7 +78,7 @@ function haystack(r: Row): string {
 export default async function QueuePage({
   searchParams,
 }: {
-  searchParams: { status?: string; tab?: string; q?: string; archived?: string; range?: string; from?: string; to?: string };
+  searchParams: { status?: string; tab?: string; q?: string; archived?: string; range?: string; from?: string; to?: string; approval?: string };
 }) {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -92,6 +90,9 @@ export default async function QueuePage({
   const activeRange = searchParams.range ?? "";
   const customFrom = searchParams.from ?? "";
   const customTo = searchParams.to ?? "";
+  // Overview's "Awaiting approval" / "Approved — posts next sync" tiles split
+  // Ready To Post rows by whether an owner has approved them yet.
+  const approval = parseApprovalFilter(searchParams.approval);
   // Dashboard tiles link in with a comma-separated list when one tile spans
   // more than one status (e.g. "Posted" covers Posted + Posted With Warning +
   // Deposit Created); the manual status dropdown always sends exactly one.
@@ -103,6 +104,7 @@ export default async function QueuePage({
   if (activeStatusList.length === 1) where.status = activeStatusList[0];
   else if (activeStatusList.length > 1) where.status = { in: activeStatusList };
   if (activeTab) where.tabName = activeTab;
+  Object.assign(where, approvalWhere(approval));
   // Archived rows (auto-Superseded or manually archived, §10) are hidden by
   // default — they're inert by construction, and looked identical to a real
   // pending row before this filter existed, which is the whole problem this
@@ -133,12 +135,21 @@ export default async function QueuePage({
 
   // Tolerant, multi-term search across every field (AND of space-separated terms).
   const terms = normalizeSearch(q).split(" ").filter(Boolean);
-  const filtered = terms.length
-    ? fetched.filter((r) => {
-        const hay = haystack(r);
-        return terms.every((t) => hay.includes(t));
-      })
-    : fetched;
+  const matchesSearch = (r: Row) => {
+    const hay = haystack(r);
+    return terms.every((t) => hay.includes(t));
+  };
+  const filtered = terms.length ? fetched.filter(matchesSearch) : fetched;
+
+  // How many rows these same filters would add if archived rows were shown —
+  // so a filter that only matches archived rows says so instead of a bare
+  // "0 rows" (the Overview tiles never count archived rows).
+  const archivedMatches = showArchived
+    ? 0
+    : terms.length
+      ? (await prisma.sheetRow.findMany({ where: { ...where, archived: true }, take: 3000 })).filter(matchesSearch).length
+      : await prisma.sheetRow.count({ where: { ...where, archived: true } });
+  const anyFilter = !!(activeTab || activeStatusList.length || q || approval || dateWhere);
   const rows = filtered.slice(0, 500);
 
   const statuses = Object.values(RowStatus);
@@ -150,6 +161,7 @@ export default async function QueuePage({
     q?: string;
     archived?: boolean;
     range?: string | null;
+    approval?: string | null;
   }) => {
     const p = new URLSearchParams();
     const tab = over.tab === undefined ? activeTab : over.tab ?? "";
@@ -157,7 +169,9 @@ export default async function QueuePage({
     const query = over.q === undefined ? q : over.q;
     const archived = over.archived === undefined ? showArchived : over.archived;
     const range = over.range === undefined ? activeRange : over.range ?? "";
+    const appr = over.approval === undefined ? approval ?? "" : over.approval ?? "";
     if (tab) p.set("tab", tab);
+    if (appr) p.set("approval", appr);
     if (status) p.set("status", status);
     if (query) p.set("q", query);
     if (archived) p.set("archived", "1");
@@ -195,7 +209,7 @@ export default async function QueuePage({
         customFrom={customFrom}
         customTo={customTo}
         hrefFor={(preset) => hrefWith({ range: preset === "all" ? null : preset })}
-        otherHiddenFields={{ tab: activeTab, status: activeStatus, q, archived: showArchived ? "1" : "" }}
+        otherHiddenFields={{ tab: activeTab, status: activeStatus, q, archived: showArchived ? "1" : "", approval: approval ?? "" }}
       />
       <p className="card-subtitle" style={{ margin: "6px 0 0" }}>
         Date range: <strong>{describeDateRange(activeRange || "all", resolvedRange)}</strong>
@@ -208,6 +222,7 @@ export default async function QueuePage({
         {activeRange && <input type="hidden" name="range" value={activeRange} />}
         {customFrom && <input type="hidden" name="from" value={customFrom} />}
         {customTo && <input type="hidden" name="to" value={customTo} />}
+        {approval && <input type="hidden" name="approval" value={approval} />}
         <input
           className="input"
           name="q"
@@ -248,7 +263,23 @@ export default async function QueuePage({
         {filtered.length} row{filtered.length === 1 ? "" : "s"}
         {activeTab ? ` in ${activeTab}` : ""}
         {q ? ` matching “${q}”` : ""}
-        {activeStatusList.length ? ` · ${activeStatusList.join(" or ")}` : ""}.
+        {activeStatusList.length ? ` · ${activeStatusList.join(" or ")}` : ""}
+        {approval === "pending" ? " · not yet approved" : approval === "approved" ? " · approved, not yet posted" : ""}.
+        {approval && (
+          <>
+            {" "}
+            <Link href={hrefWith({ approval: null })}>Include {approval === "pending" ? "approved" : "unapproved"} rows</Link>.
+          </>
+        )}
+        {archivedMatches > 0 && (
+          <>
+            {" "}
+            <strong>
+              {archivedMatches} more archived row{archivedMatches === 1 ? "" : "s"} match.
+            </strong>{" "}
+            <Link href={hrefWith({ archived: true })}>Show {archivedMatches === 1 ? "it" : "them"}</Link>.
+          </>
+        )}
       </p>
 
       <div className="table-wrap">
@@ -266,7 +297,7 @@ export default async function QueuePage({
                 <td>
                   <Link href={`/cash-sheet-sync/rows/${r.id}`}>{r.rowNumberLastSeen}</Link>
                 </td>
-                <td>{r.date ? r.date.toISOString().slice(0, 10) : ""}</td>
+                <td style={{ whiteSpace: "nowrap" }}>{r.date ? r.date.toISOString().slice(0, 10) : ""}</td>
                 <td>{r.rcvByOrPaidTo}</td>
                 <td>{r.name}</td>
                 <td>{r.purpose}</td>
@@ -276,6 +307,15 @@ export default async function QueuePage({
                 <td className="num">{money(r.bankDeposit)}</td>
                 <td>
                   <span className={`badge ${STATUS_CLASS[r.status] ?? "muted"}`}>{r.status}</span>
+                  {r.approvedAt && !r.qboTransactionId && (
+                    <span
+                      className="badge info"
+                      style={{ marginLeft: 4 }}
+                      title={`Approved by ${r.approvedByEmail ?? "an owner"} — posts on the next real sync`}
+                    >
+                      approved
+                    </span>
+                  )}
                   {r.archived && (
                     <span className="badge muted" style={{ marginLeft: 4 }} title={r.archivedReason ?? undefined}>
                       archived
@@ -288,7 +328,11 @@ export default async function QueuePage({
             {rows.length === 0 && (
               <tr>
                 <td colSpan={12} className="card-subtitle">
-                  No rows match. {fetched.length === 0 ? "Run a dry-run from the overview to populate the queue." : "Try a different search or month."}
+                  {!anyFilter && showArchived === false && archivedMatches === 0
+                    ? "No rows yet. Run a dry-run from the overview to populate the queue."
+                    : archivedMatches > 0
+                      ? "No active rows match — the matching rows are archived (see above)."
+                      : "No rows match these filters. Try a different search, month, or status."}
                 </td>
               </tr>
             )}

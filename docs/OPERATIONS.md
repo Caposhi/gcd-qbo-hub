@@ -18,6 +18,10 @@
 
 The daily schedule is 19:00 Eastern during daylight time and 18:00 during standard time, including weekends. No queue prevents overlapping manual and cron work; inspect current/recent runs before triggering another.
 
+### Approving Cash Sheet rows (manual stages)
+
+In `sandbox_manual` and `live_manual`, an owner's **Approve for posting** on a row is honored only by the **next real sync** (Overview → **Run sync now**, or the nightly cron); a dry-run never posts. Until then the row stays `Ready To Post` with the previous sync's status reason. The Overview splits these rows into **Awaiting approval** (not yet approved) and **Approved — posts next sync**. The row page says whether an approved row is waiting for that sync, or whether a real sync already ran after the approval and still did not post it (then read its status reason). Overview counts exclude archived rows, matching the Queue's default view; the Queue says when a filter matches only archived rows.
+
 ## Deployment
 
 1. Confirm the target branch, Render services, environment variables, QBO environment, and database identity.

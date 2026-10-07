@@ -200,7 +200,7 @@ a:hover { color:var(--text-link-hover); }
 .btn:disabled { opacity:.45; cursor:not-allowed; filter:none; box-shadow:none; }
 
 /* Badges (row status, roles) */
-.badge { display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:var(--radius-pill);
+.badge { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; padding:3px 9px; border-radius:var(--radius-pill);
   font-size:12px; font-weight:700; background:var(--gray-100); color:var(--gray-600); }
 .badge.ok { background:var(--success-bg); color:var(--success); }
 .badge.warn { background:var(--warning-bg); color:var(--warning); }
