@@ -15,6 +15,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth/session";
 import { buildProposalsFromFiles, type NamedFile } from "@/lib/deposits/ingest";
+import type { LenderId } from "@/lib/deposits/financing";
 import { buildPayoutIndexes, resolveMatch, findDuplicateIds } from "@/lib/deposits/reconcile-match";
 
 const dec = (n: number) => new Prisma.Decimal(n.toFixed(2));
@@ -184,7 +185,11 @@ export async function reconcileParsedPayouts(parsed: ParsedPayout[], importId: s
  * parsing/reconstruction work.
  */
 function toParsedPayouts(result: ReturnType<typeof buildProposalsFromFiles>): ParsedPayout[] {
-  const resolved: ParsedPayout[] = [...result.paymentechDeposits, ...(result.tekmetric?.deposits ?? [])].map((d) => ({
+  const resolved: ParsedPayout[] = [
+    ...result.paymentechDeposits,
+    ...(result.tekmetric?.deposits ?? []),
+    ...result.financingDeposits,
+  ].map((d) => ({
     processor: d.processor,
     sourceRef: d.sourceRef ?? null,
     settlementDate: d.settlementDate,
@@ -236,6 +241,7 @@ export async function ingestDepositFilesAction(formData: FormData) {
   const processors = new Set<string>();
   if (result.paymentechDeposits.length) processors.add("paymentech");
   if (result.tekmetric) processors.add("tekmetric");
+  if (result.financingDeposits.length) processors.add("financing");
 
   let imp = await prisma.depImport.findUnique({ where: { fileHash } });
   const isReprocess = !!imp;
@@ -407,8 +413,14 @@ export async function locateProposedPaymentsAction() {
   });
   // Deterministic order (oldest settlement first) so the global no-reuse guard
   // assigns each shared-amount payment stably.
+  // Financing payouts go first: they're identified by lender (payment method /
+  // customer name), so they should claim their payment before a card batch's
+  // amount-only search could take a same-amount financed payment.
   const payouts = payoutsRaw.sort(
-    (a, b) => a.settlementDate.localeCompare(b.settlementDate) || a.id.localeCompare(b.id)
+    (a, b) =>
+      Number(b.processor === "financing") - Number(a.processor === "financing") ||
+      a.settlementDate.localeCompare(b.settlementDate) ||
+      a.id.localeCompare(b.id)
   );
 
   // A payment can back only ONE payout — across the whole run AND across
@@ -431,7 +443,8 @@ export async function locateProposedPaymentsAction() {
   let feeJEs: Awaited<ReturnType<typeof findFeeJournalEntries>> = [];
   const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
   if (settleDates.length) {
-    const spanStart = shiftDate(settleDates[0], -8);
+    // −14: financing payouts can trail their payment by ~7 business days.
+    const spanStart = shiftDate(settleDates[0], -14);
     const spanEnd = shiftDate(settleDates[settleDates.length - 1], 4);
     depositedMap = await collectDepositedPaymentMap(ctx, spanStart, spanEnd);
     depositedIds = new Set(depositedMap.keys());
@@ -447,8 +460,82 @@ export async function locateProposedPaymentsAction() {
   let payoutsReview = 0;
   let payoutsAlreadyDeposited = 0;
 
+  // Financing candidate pool (fetched once, only when there are financing payouts).
+  const financingPayouts = payouts.filter((p) => p.processor === "financing" && p.lines.length > 0);
+  let financingPool: Awaited<ReturnType<typeof import("@/lib/deposits/qbo-lookup").findFinancingCandidates>> = [];
+  if (financingPayouts.length) {
+    const { findFinancingCandidates } = await import("@/lib/deposits/qbo-lookup");
+    const fDates = financingPayouts.map((p) => p.settlementDate).sort();
+    financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), fDates[fDates.length - 1]);
+  }
+  const { matchFinancingDeposit, lenderById } = await import("@/lib/deposits/financing");
+
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
+
+    if (p.processor === "financing") {
+      // One bank line = one lender payout; pair it with the payment(s) it pays.
+      const line = p.lines[0];
+      const lender = line.brand ?? "";
+      const rule = lenderById(lender);
+      const available = financingPool.filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id));
+      const deposit = {
+        lender: (rule?.id ?? lender) as LenderId,
+        date: p.settlementDate,
+        amount: Number(p.netAmount),
+        description: "",
+        origCoName: "",
+        trace: p.sourceRef,
+        indName: line.ref || null,
+      };
+      const result = matchFinancingDeposit(deposit, available);
+      let message: string;
+      if (result.kind === "matched") {
+        for (const id of result.paymentIds) globalUsed.add(id);
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: result.paymentIds[0], matchedQboTxnIds: result.paymentIds, matchedQboTxnType: "Payment" },
+        });
+        await prisma.depPayout.update({
+          where: { id: p.id },
+          data: {
+            status: "matched",
+            grossAmount: new Prisma.Decimal((result.grossCents / 100).toFixed(2)),
+            feeAmount: new Prisma.Decimal((result.feeCents / 100).toFixed(2)),
+            deltaCents: 0,
+          },
+        });
+        const names = result.paymentIds
+          .map((id) => financingPool.find((c) => c.id === id))
+          .map((c) => (c ? `${c.customerName || "?"} ${c.amount.toFixed(2)} on ${c.date}` : "?"))
+          .join(" + ");
+        message =
+          `${rule?.label ?? lender} payout matched to Undeposited-Funds payment ${names}` +
+          (result.feeCents ? ` − ${(result.feeCents / 100).toFixed(2)} lender fee (to Credit Card Processing Fees)` : " (no fee)") +
+          `. Basis: ${result.basis}.`;
+        payoutsMatched++;
+      } else {
+        await prisma.depPayoutLine.update({
+          where: { id: line.id },
+          data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
+        });
+        // Same rules against payments already on a QBO deposit: if one fits, the
+        // payout was already deposited (e.g. entered by hand) — nothing to do.
+        const prior = matchFinancingDeposit(deposit, financingPool.filter((c) => depositedIds.has(c.id)));
+        if (prior.kind === "matched") {
+          const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id)).filter(Boolean))];
+          await prisma.depPayout.update({ where: { id: p.id }, data: { status: "already_deposited", deltaCents: null } });
+          message = `Already reconciled — the matching payment is on QBO Deposit ${deps.join(", ") || "(unknown)"}. Nothing to do.`;
+          payoutsAlreadyDeposited++;
+        } else {
+          await prisma.depPayout.update({ where: { id: p.id }, data: { status: "needs_review", deltaCents: null } });
+          message = result.reason;
+          payoutsReview++;
+        }
+      }
+      await prisma.depEvent.create({ data: { payoutId: p.id, eventType: "locate_payments", message } });
+      continue;
+    }
     // Processor-specific look-back: a card sale is PAID in QBO on the sale date
     // but Paymentech settles it into a batch several days later (e.g. a 07/17
     // sale in the 07/21 batch, over a weekend), so the payment can predate the
@@ -628,11 +715,16 @@ export async function locateProposedPaymentsAction() {
 const daysApart = (a: string, b: string) =>
   Math.abs((new Date(`${a}T00:00:00Z`).getTime() - new Date(`${b}T00:00:00Z`).getTime()) / 86400000);
 
+/** QBO expense account for financing lenders' fees (owner's choice, 2026-10). */
+const CC_FEES_ACCOUNT = "Credit Card Processing Fees";
+
 interface DepCreateContext {
   gateEnv: "sandbox" | "live";
   ctx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>>;
   chaseId: string;
   overShortId: string | null;
+  /** Credit Card Processing Fees — where financing lenders' fees are booked. */
+  ccFeesId: string | null;
 }
 
 /** Resolve the shared context for creating deposits: rollout gate (never
@@ -655,7 +747,18 @@ async function prepareDepCreateContext(): Promise<{ ok: true; value: DepCreateCo
   if (!chase?.qboAccountId) return { ok: false, reason: "Chase Checking 9680 account mapping unresolved." };
   const os = await prisma.accountMapping.findFirst({ where: { friendlyName: "Cash over/short" } });
   const ctx = await getContext(gate.environment!);
-  return { ok: true, value: { gateEnv: gate.environment!, ctx, chaseId: chase.qboAccountId, overShortId: os?.qboAccountId ?? null } };
+  // Financing fees: the mapping when resolved, else the QBO account of that exact name.
+  const ccMap = await prisma.accountMapping.findFirst({ where: { friendlyName: CC_FEES_ACCOUNT } });
+  let ccFeesId = ccMap?.qboAccountId ?? null;
+  if (!ccFeesId) {
+    const { listAccounts } = await import("@/lib/qbo/client");
+    const hits = (await listAccounts(ctx)).filter((a) => a.Name.trim().toLowerCase() === CC_FEES_ACCOUNT.toLowerCase());
+    ccFeesId = hits.length === 1 ? String(hits[0].Id) : null;
+  }
+  return {
+    ok: true,
+    value: { gateEnv: gate.environment!, ctx, chaseId: chase.qboAccountId, overShortId: os?.qboAccountId ?? null, ccFeesId },
+  };
 }
 
 type DepCreateOutcome = { status: "created" | "skipped" | "blocked" | "error"; message?: string };
@@ -835,6 +938,23 @@ async function createOneDeposit(
           totalCents
         )} vs net ${f(netCents)} — not posted.${why}`
       );
+    }
+  } else if (payout.processor === "financing") {
+    // Lender payout: the payment(s) minus the lender's fee = what hit the bank.
+    // Re-check the fee against the lender's rule with the amounts QBO has NOW.
+    const { lenderById } = await import("@/lib/deposits/financing");
+    const rule = lenderById(payout.lines[0]?.brand ?? "");
+    if (!rule) return blockedP(`Unknown financing lender "${payout.lines[0]?.brand ?? ""}" — not posted.`);
+    const feeCents = sumPayCents - netCents;
+    if (!rule.feeFits(sumPayCents, feeCents)) {
+      return blockedP(
+        `${rule.label}: payments ${(sumPayCents / 100).toFixed(2)} vs bank ${(netCents / 100).toFixed(2)} implies a fee of ` +
+          `${(feeCents / 100).toFixed(2)}, which doesn't fit this lender — re-run Locate; nothing posted.`
+      );
+    }
+    if (feeCents !== 0) {
+      if (!dc.ccFeesId) return blockedP(`"${CC_FEES_ACCOUNT}" account not found in QBO (or mapping unresolved) — nothing posted.`);
+      plug = { accountId: dc.ccFeesId, amount: -feeCents / 100, description: `${rule.label} fee` };
     }
   } else {
     const plugCents = netCents - sumPayCents;

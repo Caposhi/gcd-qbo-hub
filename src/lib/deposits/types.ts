@@ -6,7 +6,7 @@
  * downloaded bank-feed line. Everything here is pure data — no QBO/DB access.
  */
 
-export type Processor = "paymentech" | "tekmetric";
+export type Processor = "paymentech" | "tekmetric" | "financing";
 
 /** One card transaction that belongs to a payout (from a processor file). */
 export interface PayoutLine {

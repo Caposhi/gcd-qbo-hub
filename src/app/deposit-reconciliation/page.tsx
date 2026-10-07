@@ -1,6 +1,7 @@
 import { Landmark } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { formatUsd } from "@/lib/cashsheet/queue-view";
+import { LENDERS } from "@/lib/deposits/financing";
 import { getSessionUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/roles";
 import { RequireAuth } from "../components/RequireAuth";
@@ -16,6 +17,8 @@ export const dynamic = "force-dynamic";
 
 const money = formatUsd;
 
+const LENDER_LABEL: Record<string, string> = Object.fromEntries(LENDERS.map((l) => [l.id, l.label]));
+
 export default async function DepositReconciliationPage() {
   const user = await getSessionUser();
   if (!user) return <RequireAuth />;
@@ -23,7 +26,7 @@ export default async function DepositReconciliationPage() {
 
   const payouts = await prisma.depPayout.findMany({
     orderBy: [{ settlementDate: "desc" }, { createdAt: "desc" }],
-    include: { _count: { select: { lines: true } } },
+    include: { _count: { select: { lines: true } }, lines: { select: { brand: true }, take: 1 } },
     take: 200,
   });
 
@@ -78,8 +81,10 @@ export default async function DepositReconciliationPage() {
       <h1>Deposit reconciliation</h1>
       <p className="page-desc">
         Drop your processor exports and the hub reconstructs each payout into the exact QBO deposit it should become —
-        Chase Paymentech (gross card sales by batch date) and Tekmetric/Stripe (payouts + charges, netted by fee). Each
-        deposit is gated by an exact-sum checksum; anything that doesn&apos;t tie is flagged, never posted.
+        Chase Paymentech (gross card sales by batch date), Tekmetric/Stripe (payouts + charges, netted by fee), and
+        customer-financing payouts from the Chase account activity (Snap, Bosch card/CFNA, Koalafi — the payment minus
+        the lender&apos;s fee). Each deposit is gated by an exact-sum checksum; anything that doesn&apos;t tie is flagged,
+        never posted.
       </p>
 
       {editable ? (
@@ -90,11 +95,12 @@ export default async function DepositReconciliationPage() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Landmark size={22} strokeWidth={1.75} aria-hidden />
-            <h3 className="card-title" style={{ margin: 0 }}>Drop your Chase Paymentech + Tekmetric CSVs</h3>
+            <h3 className="card-title" style={{ margin: 0 }}>Drop your Chase Paymentech, Tekmetric + Chase activity CSVs</h3>
           </div>
           <p className="card-subtitle" style={{ margin: 0 }}>
             Drop CSVs: the Chase <em>Paymentech</em> settlement, and both Tekmetric files (the <em>payouts</em> export
-            and the <em>Payments/charges</em> export). Safe to re-drop the same files anytime — e.g. after a parsing
+            and the <em>Payments/charges</em> export), and the Chase <em>account activity</em> download for Main working
+            Acct …9680 (picks out the Snap, Bosch/CFNA and Koalafi deposits). Safe to re-drop the same files anytime — e.g. after a parsing
             fix — it always re-checks everything not yet posted against the files and current logic, and reports
             exactly what changed. A payout already posted to QBO is never touched.
           </p>
@@ -180,7 +186,7 @@ export default async function DepositReconciliationPage() {
               {payouts.map((p) => (
                 <tr key={p.id}>
                   <td>{p.settlementDate}</td>
-                  <td>{p.processor}</td>
+                  <td>{p.processor === "financing" ? `financing · ${LENDER_LABEL[p.lines?.[0]?.brand ?? ""] ?? "?"}` : p.processor}</td>
                   <td className="num">{money(p.grossAmount)}</td>
                   <td className="num">{money(p.feeAmount)}</td>
                   <td className="num"><strong>{money(p.netAmount)}</strong></td>
