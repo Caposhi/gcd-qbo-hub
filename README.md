@@ -47,7 +47,7 @@ flowchart LR
 ```
 
 - Google Sheet rows enter Cash Sheet Sync, are normalized and persisted, matched against QBO, reviewed, then conditionally posted. Persisted rows, events, sync runs, mappings, transactions, and alerts form the audit trail.
-- QBO is both a read source and a write destination. Cash Sheet Sync can create expenses/transfers; Deposit Reconciliation can create deposits; Check Reception can create checks. Existing QBO objects are not automatically edited or deleted by these workflows.
+- QBO is both a read source and a write destination. Cash Sheet Sync can create expenses/transfers; Deposit Reconciliation can create deposits (including owner-selected $0.00 deposits that clear cancelled Tekmetric payment/reversal pairs from Undeposited Funds); Check Reception can create checks. Existing QBO objects are not automatically edited or deleted by these workflows.
 - QBO reports, Tekmetric snapshots, transcript aggregates, scenarios, and AI outputs feed projections and assistant views. AI requests can incur cost and persist conversations/reports.
 - Coworker Portal imports a configured QBO account into questions, stores answers, and can send notifications.
 - Arcade calls the `/api/external/*` surface through its own server-side bridge. Those requests use one shared service identity, not the end user's hub role.

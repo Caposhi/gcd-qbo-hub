@@ -159,6 +159,16 @@ describe("matchFinancingDeposit", () => {
     expect(matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), same).kind).toBe("review");
   });
 
+  it("can confirm a deposit by the lender label when the bank line names someone else", () => {
+    // A relative financed it: the Koalafi line names her, the payment is under the customer.
+    const deposited = [pay("k", 750.0, "2026-03-09", "Rivera, Ana", "Koalifi")];
+    const line = dep("koalafi", "2026-03-10", 750.0, "Senior Pat");
+    expect(matchFinancingDeposit(line, deposited).kind).toBe("review");
+    expect(matchFinancingDeposit(line, deposited, { labelInsteadOfName: true })).toMatchObject({ kind: "matched", paymentIds: ["k"] });
+    // Without the lender label it still won't match.
+    expect(matchFinancingDeposit(line, [pay("o", 750.0, "2026-03-09", "Rivera, Ana", "Other")], { labelInsteadOfName: true }).kind).toBe("review");
+  });
+
   it("still refuses to guess between different customers", () => {
     const two = [pay("x", 1000.0, "2026-03-05", "Park, Kim", "Other"), pay("y", 1000.0, "2026-03-05", "Lee, Sam", "Other")];
     expect(matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), two).kind).toBe("review");

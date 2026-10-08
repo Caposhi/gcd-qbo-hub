@@ -450,6 +450,9 @@ export async function locateProposedPaymentsAction() {
   let depositedIds = new Set<string>();
   let depositedMap = new Map<string, string>(); // paymentId → the Deposit it's on
   let depositTotals = new Map<string, number>(); // deposit id → total in cents
+  // Open payments cancelled by a still-open Tekmetric reversal ("Applied to: …
+  // for $-X") — never real money, so never matched to a bank line (reversals.ts).
+  let cancelled = new Map<string, import("@/lib/qbo/reversals").ReversalPair>();
   let feeJEs: Awaited<ReturnType<typeof findFeeJournalEntries>> = [];
   const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
   if (settleDates.length) {
@@ -467,6 +470,9 @@ export async function locateProposedPaymentsAction() {
       if (type === "Payment" && !depositedMap.has(id)) depositedMap.set(id, depId);
     }
     depositedIds = new Set(depositedMap.keys());
+    const { findReversalPairs } = await import("@/lib/qbo/reversals");
+    const pairs = await findReversalPairs(ctx, spanStart, new Date().toISOString().slice(0, 10), links);
+    cancelled = new Map(pairs.map((pr) => [pr.paymentId, pr]));
     // A fee JE already on a deposit belongs to that deposit's payout.
     feeJEs = (await findFeeJournalEntries(ctx, spanStart, spanEnd)).filter(
       (je) => !depositHolding(links, "JournalEntry", je.jeId, je.ufLineId)
@@ -503,7 +509,7 @@ export async function locateProposedPaymentsAction() {
       const line = p.lines[0];
       const lender = line.brand ?? "";
       const rule = lenderById(lender);
-      const available = financingPool.filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id));
+      const available = financingPool.filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id) && !cancelled.has(c.id));
       const deposit = {
         lender: (rule?.id ?? lender) as LenderId,
         date: p.settlementDate,
@@ -524,17 +530,26 @@ export async function locateProposedPaymentsAction() {
       // no customer name, so without the total check any same-amount payment
       // deposited elsewhere (e.g. in a card payout) would wrongly "cover" it.
       const checkPrior = () => {
-        const prior = matchFinancingDeposit(deposit, financingPool.filter((c) => depositedIds.has(c.id)));
-        if (prior.kind !== "matched") return null;
-        const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id) ?? ""))];
-        const totalCents = deps.length === 1 ? depositTotals.get(deps[0]) : undefined;
-        return {
-          prior,
-          deps,
-          totalCents,
-          names: describe(prior.paymentIds),
-          isThisLine: totalCents !== undefined && totalCents === Math.round(Number(p.netAmount) * 100),
+        const depositedPool = financingPool.filter((c) => depositedIds.has(c.id));
+        const verify = (prior: ReturnType<typeof matchFinancingDeposit>) => {
+          if (prior.kind !== "matched") return null;
+          const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id) ?? ""))];
+          const totalCents = deps.length === 1 ? depositTotals.get(deps[0]) : undefined;
+          return {
+            prior,
+            deps,
+            totalCents,
+            names: describe(prior.paymentIds),
+            isThisLine: totalCents !== undefined && totalCents === Math.round(Number(p.netAmount) * 100),
+          };
         };
+        const named = verify(matchFinancingDeposit(deposit, depositedPool));
+        if (named?.isThisLine) return named;
+        // Matched by hand in QBO to a payment labelled with this lender but in
+        // another customer's name (e.g. a relative financed it): accept it only
+        // when that deposit IS this bank line.
+        const labelled = verify(matchFinancingDeposit(deposit, depositedPool, { labelInsteadOfName: true }));
+        return labelled?.isThisLine ? labelled : named;
       };
       const markAlreadyDeposited = async (v: NonNullable<ReturnType<typeof checkPrior>>): Promise<string> => {
         await prisma.depPayout.update({
@@ -621,27 +636,39 @@ export async function locateProposedPaymentsAction() {
     // match can fall back to the same-customer group that sums to it.
     const windowPool =
       p.processor !== "tekmetric" ? await findPaymentsInWindow(ctx, start, end) : [];
+    // Tekmetric payout that took a refund: gross − net exceeds the charges' fees.
+    const refundsInPayout =
+      p.processor === "tekmetric" &&
+      Math.round(Number(p.grossAmount) * 100) -
+        Math.round(Number(p.netAmount) * 100) -
+        p.lines.reduce((sum, l) => sum + Math.round(Number(l.feeAmount ?? 0) * 100), 0) >
+        0;
 
     for (const line of p.lines) {
       const amt = Number(line.amount);
       // Candidate pool: exact amount first; widen to the keying band only if no
       // available exact match. "Available" = not claimed this run AND not already
       // on a QBO deposit.
-      // A card charge is never a lender, Zelle, cash or check payment; among the
-      // rest, a card-brand label beats "Other" (which can be a reversed entry).
-      const exact = (await findPaymentsByAmount(ctx, amt, start, end, methodNames)).filter((c) => !isNonCardMethod(c.method));
+      // A card charge is never a lender, Zelle, cash or check payment, nor a
+      // payment Tekmetric later reversed — unless this payout itself carries a
+      // refund, where the "reversal" IS that refund and its payment belongs here.
+      // Among the rest, a card-brand label beats "Other".
+      const cardCandidate = (c: { id: string; method: string }) =>
+        !isNonCardMethod(c.method) && (refundsInPayout || !cancelled.has(c.id));
+      const exact = (await findPaymentsByAmount(ctx, amt, start, end, methodNames)).filter(cardCandidate);
       let pool = exact;
       const availExact = exact
         .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
         .sort(
           (a, b) =>
+            Number(cancelled.has(a.id)) - Number(cancelled.has(b.id)) ||
             cardMethodRank(a.method) - cardMethodRank(b.method) ||
             daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
         );
       let pick = availExact[0];
       if (!pick) {
         const near = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end, methodNames)).filter(
-          (c) => !isNonCardMethod(c.method)
+          cardCandidate
         );
         pool = exact.concat(near);
         pick = near
@@ -649,6 +676,7 @@ export async function locateProposedPaymentsAction() {
           .sort(
             (a, b) =>
               Math.abs(a.amount - amt) - Math.abs(b.amount - amt) ||
+              Number(cancelled.has(a.id)) - Number(cancelled.has(b.id)) ||
               cardMethodRank(a.method) - cardMethodRank(b.method) ||
               daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
           )[0];
@@ -660,7 +688,7 @@ export async function locateProposedPaymentsAction() {
       let consolidatedAmbiguous = false;
       if (!pick && p.processor !== "tekmetric") {
         const available = windowPool
-          .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
+          .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id) && !cancelled.has(c.id))
           .map((c) => ({ id: c.id, amount: c.amount, customer: c.customerName ?? "" }));
         const res = findConsolidatedMatch(amt, available);
         consolidated = res.match;
@@ -941,10 +969,30 @@ async function createOneDeposit(
       const found = await findUndepositedRefunds(dc.ctx, refundStart, refundEnd);
       // A refund already swept into another deposit can't be swept again —
       // keep it out of the pick, but report it as a near miss.
+      // A reversal whose payment is still open and NOT in this payout is a
+      // Tekmetric correction, not a refund: no money left Stripe, so it can't
+      // explain this payout's gap (it would also strand its payment).
+      const { findReversalPairs } = await import("@/lib/qbo/reversals");
+      const corrections = new Map(
+        (await findReversalPairs(dc.ctx, refundStart, new Date().toISOString().slice(0, 10), links))
+          .filter((pr) => !ids.includes(pr.paymentId))
+          .map((pr) => [`${pr.jeId}:${pr.lineId}`, pr])
+      );
       found.refunds = found.refunds.filter((r) => {
         const dep = depositHolding(links, r.kind, r.txnId, r.kind === "JournalEntry" ? r.lineId : null);
         if (dep) {
           found.nearMisses.push({ txnId: r.txnId, kind: r.kind, amount: r.amount, date: r.date, reason: `already on QBO Deposit ${dep}` });
+          return false;
+        }
+        const pr = r.kind === "JournalEntry" ? corrections.get(`${r.txnId}:${r.lineId}`) : undefined;
+        if (pr) {
+          found.nearMisses.push({
+            txnId: r.txnId,
+            kind: r.kind,
+            amount: r.amount,
+            date: r.date,
+            reason: `reverses open payment ${pr.customerName} ${pr.amount.toFixed(2)} (RO ${pr.ro}) — a correction, not a refund`,
+          });
           return false;
         }
         return true;
@@ -1177,6 +1225,156 @@ export async function createAllMatchedDepositsAction() {
     data: {
       eventType: "create_batch",
       message: `Batch create: ${created} created, ${blocked} blocked, ${errored} errored (of ${matched.length} matched) · env ${prep.value.gateEnv}`,
+    },
+  });
+  revalidatePath("/deposit-reconciliation");
+}
+
+/** How far back the cancelled-pair scan and cleanup look. */
+const REVERSAL_SCAN_DAYS = 365;
+
+/** A cancelled pair as stored by the scan and shown on the page. */
+export interface StoredReversalPair {
+  key: string;
+  paymentId: string;
+  jeId: string;
+  lineId: string;
+  amount: number;
+  date: string;
+  customerName: string;
+  ro: string;
+  method: string;
+  /** Card-brand method: could be a real refund still waiting for its payout. */
+  card: boolean;
+}
+
+async function scanReversalPairs(ctx: Awaited<ReturnType<typeof import("@/lib/qbo/client").getContext>>) {
+  const { collectDepositIndex } = await import("@/lib/qbo/deposits");
+  const { findReversalPairs, reversalPairKey } = await import("@/lib/qbo/reversals");
+  const { shiftDate } = await import("@/lib/deposits/qbo-lookup");
+  const { cardMethodRank, isNonCardMethod } = await import("@/lib/deposits/financing");
+  const today = new Date().toISOString().slice(0, 10);
+  const start = shiftDate(today, -REVERSAL_SCAN_DAYS);
+  const { links } = await collectDepositIndex(ctx, start, today);
+  const pairs = await findReversalPairs(ctx, start, today, links);
+  return pairs
+    .map(
+      (p): StoredReversalPair => ({
+        key: reversalPairKey(p),
+        paymentId: p.paymentId,
+        jeId: p.jeId,
+        lineId: p.lineId,
+        amount: p.amount,
+        date: p.date,
+        customerName: p.customerName,
+        ro: p.ro,
+        method: p.method,
+        card: cardMethodRank(p.method) === 0 && !isNonCardMethod(p.method),
+      })
+    )
+    .sort((a, b) => a.date.localeCompare(b.date) || a.key.localeCompare(b.key));
+}
+
+/**
+ * Read-only: find Tekmetric payments that a later reversal cancelled, with
+ * BOTH halves still open in Undeposited Funds. The result is stored for the
+ * page; nothing is written to QBO.
+ */
+export async function scanReversalPairsAction() {
+  await requirePermission("edit_mappings");
+  const { getQboEnvironment } = await import("@/lib/config-store");
+  const { getContext } = await import("@/lib/qbo/client");
+  const environment = await getQboEnvironment();
+  const ctx = await getContext(environment);
+  const pairs = await scanReversalPairs(ctx);
+  const total = pairs.reduce((s, p) => s + Math.round(p.amount * 100), 0) / 100;
+  await prisma.depEvent.create({
+    data: {
+      eventType: "reversal_scan",
+      message: `Cancelled-pair scan: ${pairs.length} pair(s), ${total.toFixed(2)} each way, last ${REVERSAL_SCAN_DAYS} days · env ${environment}`,
+      dataJson: pairs as unknown as Prisma.InputJsonValue,
+    },
+  });
+  revalidatePath("/deposit-reconciliation");
+}
+
+/**
+ * Clear the selected cancelled pairs: one $0.00 Bank Deposit per pair, linking
+ * the payment (+amount) and its reversal line (−amount). Each pair is re-checked
+ * against QBO right before posting (both halves still open, still a pair), and
+ * the deposit must total exactly $0.00 or nothing posts. No income, expense or
+ * bank balance changes — it only empties Undeposited Funds of entries that
+ * cancel out.
+ */
+export async function clearReversalPairsAction(formData: FormData) {
+  const user = await requirePermission("edit_mappings");
+  const selected = new Set(formData.getAll("pair").map(String));
+  const prep = await prepareDepCreateContext();
+  if (!prep.ok) {
+    await prisma.depEvent.create({ data: { eventType: "reversal_clear", message: `Cleanup blocked: ${prep.reason}` } });
+    revalidatePath("/deposit-reconciliation");
+    return;
+  }
+  if (selected.size === 0) {
+    await prisma.depEvent.create({ data: { eventType: "reversal_clear", message: "Cleanup: no pairs selected — nothing posted." } });
+    revalidatePath("/deposit-reconciliation");
+    return;
+  }
+  const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents } = await import("@/lib/qbo/deposits");
+  const fresh = await scanReversalPairs(prep.value.ctx);
+  const byKey = new Map(fresh.map((p) => [p.key, p]));
+  const clearedKeys = new Set<string>();
+  let skipped = 0;
+  let errored = 0;
+  for (const key of selected) {
+    const p = byKey.get(key);
+    if (!p) {
+      skipped++;
+      await prisma.depEvent.create({
+        data: { eventType: "reversal_clear", message: `Skipped ${key}: no longer an open cancelled pair (already deposited or changed) — nothing posted.` },
+      });
+      continue;
+    }
+    const input = {
+      depositToAccountId: prep.value.chaseId,
+      txnDate: p.date,
+      privateNote: `GCD Hub: clears Tekmetric reversal — RO ${p.ro} ${p.customerName} ${p.method} ${p.amount.toFixed(2)} and its "Applied to" entry (nets to $0) · by ${user.email}`,
+      payments: [{ id: p.paymentId, amount: p.amount }],
+      journalEntries: [{ id: p.jeId, lineId: p.lineId, amount: -p.amount }],
+    };
+    if (linkedDepositTotalCents(buildLinkedDepositBody(input)) !== 0) {
+      skipped++;
+      await prisma.depEvent.create({ data: { eventType: "reversal_clear", message: `Skipped ${key}: does not net to $0.00 — nothing posted.` } });
+      continue;
+    }
+    try {
+      const res = await postLinkedDeposit(prep.value.ctx, input);
+      clearedKeys.add(key);
+      await prisma.depEvent.create({
+        data: {
+          eventType: "reversal_clear",
+          message: `Cleared RO ${p.ro} ${p.customerName} ${p.method} ${p.amount.toFixed(2)} with $0.00 QBO Deposit ${res.qboTransactionId} (${p.date}) · env ${prep.value.gateEnv}`,
+        },
+      });
+    } catch (err) {
+      errored++;
+      await prisma.depEvent.create({
+        data: { eventType: "reversal_clear", message: `QBO rejected the $0.00 deposit for RO ${p.ro} ${p.customerName}: ${String(err)}`.slice(0, 1800) },
+      });
+    }
+  }
+  await prisma.depEvent.create({
+    data: {
+      eventType: "reversal_clear",
+      message: `Cleanup: ${clearedKeys.size} pair(s) cleared, ${skipped} skipped, ${errored} errored (of ${selected.size} selected) · env ${prep.value.gateEnv}`,
+    },
+  });
+  // Refresh the stored list so cleared pairs drop off.
+  await prisma.depEvent.create({
+    data: {
+      eventType: "reversal_scan",
+      message: `Cancelled-pair scan (after cleanup): ${fresh.length - clearedKeys.size} pair(s) left · env ${prep.value.gateEnv}`,
+      dataJson: fresh.filter((p) => !clearedKeys.has(p.key)) as unknown as Prisma.InputJsonValue,
     },
   });
   revalidatePath("/deposit-reconciliation");

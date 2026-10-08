@@ -117,8 +117,8 @@ describe("refund JE direction (§the 08-06 refund)", () => {
   // Back Office credits Undeposited Funds for a refund — the SAME direction as a
   // card fee — so only the memo separates them. These assert the contract the
   // live data proved: credit + non-fee memo = refund; credit + fee memo = fee.
-  const REFUND_MEMO = "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05";
-  const FEE_MEMO = "FEE | Credit Card: Visa | OSORIO, STEVEN | 08/05/26";
+  const REFUND_MEMO = "Applied to: 70962 | DOE, JOHN on 08/05/26 for $-1728.05";
+  const FEE_MEMO = "FEE | Credit Card: Visa | DOE, JOHN | 08/05/26";
 
   it("a refund memo is not a fee memo, and vice versa", () => {
     expect(/credit card/i.test(REFUND_MEMO)).toBe(false);
@@ -133,7 +133,7 @@ describe("refund JE direction (§the 08-06 refund)", () => {
       amount: 1728.05,
       date: "2026-08-05",
       memo: REFUND_MEMO,
-      customerName: "OSORIO, STEVEN",
+      customerName: "DOE, JOHN",
     };
     const pick = pickRefundsForGap([je], Math.round(1728.05 * 100));
     expect(pick.exact).toBe(true);
@@ -155,13 +155,13 @@ describe("refund JE direction (§the 08-06 refund)", () => {
 });
 
 describe("same-amount collision (§the second 1,728.05)", () => {
-  // QBO's own search showed TWO 1,728.05 items in the window: the OSORIO refund
+  // QBO's own search showed TWO 1,728.05 items in the window: the real refund
   // JE on 08-05, and an unrelated PENEV item already deposited on 07-23. Amount
   // alone is not unique, so picking the first match could sweep the wrong txn —
   // the deposit would still tie, which is exactly what makes it dangerous.
-  const osorio: UndepositedRefund = {
-    txnId: "je-osorio", kind: "JournalEntry", lineId: "1", amount: 1728.05,
-    date: "2026-08-05", memo: "Applied to: 73962 | OSORIO, STEVEN", customerName: "OSORIO, STEVEN",
+  const refundJe: UndepositedRefund = {
+    txnId: "je-refund", kind: "JournalEntry", lineId: "1", amount: 1728.05,
+    date: "2026-08-05", memo: "Applied to: 70962 | DOE, JOHN", customerName: "DOE, JOHN",
   };
   const other: UndepositedRefund = {
     txnId: "je-other", kind: "JournalEntry", lineId: "1", amount: 1728.05,
@@ -171,20 +171,20 @@ describe("same-amount collision (§the second 1,728.05)", () => {
 
   it("picks the refund closest to the settlement date, not merely the first found", () => {
     // `other` deliberately comes first in the array.
-    const pick = pickRefundsForGap([other, osorio], gap, new Set(), "2026-08-06");
+    const pick = pickRefundsForGap([other, refundJe], gap, new Set(), "2026-08-06");
     expect(pick.exact).toBe(true);
-    expect(pick.refunds.map((r) => r.txnId)).toEqual(["je-osorio"]);
+    expect(pick.refunds.map((r) => r.txnId)).toEqual(["je-refund"]);
   });
 
   it("reports that the amount was ambiguous so the choice is auditable", () => {
-    const pick = pickRefundsForGap([other, osorio], gap, new Set(), "2026-08-06");
+    const pick = pickRefundsForGap([other, refundJe], gap, new Set(), "2026-08-06");
     expect(pick.exactCandidates).toBe(2);
     // A single candidate is not flagged.
-    expect(pickRefundsForGap([osorio], gap, new Set(), "2026-08-06").exactCandidates).toBe(1);
+    expect(pickRefundsForGap([refundJe], gap, new Set(), "2026-08-06").exactCandidates).toBe(1);
   });
 
   it("still works with no settlement date (falls back to first exact match)", () => {
-    const pick = pickRefundsForGap([osorio], gap);
-    expect(pick.refunds.map((r) => r.txnId)).toEqual(["je-osorio"]);
+    const pick = pickRefundsForGap([refundJe], gap);
+    expect(pick.refunds.map((r) => r.txnId)).toEqual(["je-refund"]);
   });
 });
