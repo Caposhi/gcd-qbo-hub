@@ -149,6 +149,23 @@ describe("matchFinancingDeposit", () => {
     expect(m).toMatchObject({ kind: "matched", feeCents: 1990 });
     expect(m.kind === "matched" && m.paymentIds.sort()).toEqual(["a", "b"]);
   });
+
+  it("links one of several identical payments instead of sending the line to review", () => {
+    // One repair paid in equal installments; only one of them was the Bosch card.
+    const same = [
+      pay("i1", 1000.0, "2026-03-05", "Park, Kim", "Other"),
+      pay("i2", 1000.0, "2026-03-05", "Park, Kim", "Other"),
+      pay("v", 1000.0, "2026-03-05", "Park, Kim", "Visa"),
+    ];
+    const m = matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), same);
+    expect(m).toMatchObject({ kind: "matched", paymentIds: ["i1"], feeCents: 1990 });
+    expect(m.kind === "matched" && m.basis).toMatch(/2 identical open payments/);
+  });
+
+  it("still refuses to guess between different customers", () => {
+    const two = [pay("x", 1000.0, "2026-03-05", "Park, Kim", "Other"), pay("y", 1000.0, "2026-03-05", "Lee, Sam", "Other")];
+    expect(matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), two).kind).toBe("review");
+  });
 });
 
 describe("helpers", () => {

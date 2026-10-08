@@ -395,7 +395,7 @@ export async function locateProposedPaymentsAction() {
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
-  const { collectDepositedLinks, depositHolding, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
+  const { collectDepositIndex, depositHolding, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
   const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
   const { findConsolidatedMatch } = await import("@/lib/deposits/consolidation");
 
@@ -447,6 +447,7 @@ export async function locateProposedPaymentsAction() {
   // a false "matched" that would only get blocked at create time.
   let depositedIds = new Set<string>();
   let depositedMap = new Map<string, string>(); // paymentId → the Deposit it's on
+  let depositTotals = new Map<string, number>(); // deposit id → total in cents
   let feeJEs: Awaited<ReturnType<typeof findFeeJournalEntries>> = [];
   const settleDates = payouts.map((p) => p.settlementDate).filter(Boolean).sort();
   if (settleDates.length) {
@@ -456,7 +457,9 @@ export async function locateProposedPaymentsAction() {
     // Every deposit dated from the span start to TODAY — a payment, fee or
     // refund from this span may have been swept by a deposit made later (e.g.
     // one entered by hand this week), which a span-limited scan would miss.
-    const links = await collectDepositedLinks(ctx, spanStart, new Date().toISOString().slice(0, 10));
+    const index = await collectDepositIndex(ctx, spanStart, new Date().toISOString().slice(0, 10));
+    const links = index.links;
+    depositTotals = index.totals;
     for (const [key, depId] of links) {
       const [type, id] = key.split(":");
       if (type === "Payment" && !depositedMap.has(id)) depositedMap.set(id, depId);
@@ -506,33 +509,51 @@ export async function locateProposedPaymentsAction() {
         trace: p.sourceRef,
         indName: line.ref || null,
       };
-      // Same rules against payments already on a QBO deposit: if one fits, the
-      // payout was already deposited (e.g. entered by hand) — nothing to post.
-      // Its gross and fee come from that payment, so the row shows what the
-      // lender actually deducted rather than net-as-gross with no fee.
-      const markAlreadyDeposited = async (): Promise<string | null> => {
+      const describe = (ids: string[]) =>
+        ids
+          .map((id) => financingPool.find((c) => c.id === id))
+          .map((c) => (c ? `${c.customerName || "?"} ${c.amount.toFixed(2)} on ${c.date}` : "?"))
+          .join(" + ");
+      // Same rules against payments already on a QBO deposit. It counts as
+      // already deposited only when that deposit IS this bank line — one
+      // deposit, totalling the bank amount to the cent. A Bosch/CFNA line has
+      // no customer name, so without the total check any same-amount payment
+      // deposited elsewhere (e.g. in a card payout) would wrongly "cover" it.
+      const checkPrior = () => {
         const prior = matchFinancingDeposit(deposit, financingPool.filter((c) => depositedIds.has(c.id)));
         if (prior.kind !== "matched") return null;
-        const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id)).filter(Boolean))];
+        const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id) ?? ""))];
+        const totalCents = deps.length === 1 ? depositTotals.get(deps[0]) : undefined;
+        return {
+          prior,
+          deps,
+          totalCents,
+          names: describe(prior.paymentIds),
+          isThisLine: totalCents !== undefined && totalCents === Math.round(Number(p.netAmount) * 100),
+        };
+      };
+      const markAlreadyDeposited = async (v: NonNullable<ReturnType<typeof checkPrior>>): Promise<string> => {
         await prisma.depPayout.update({
           where: { id: p.id },
           data: {
             status: "already_deposited",
-            grossAmount: new Prisma.Decimal((prior.grossCents / 100).toFixed(2)),
-            feeAmount: new Prisma.Decimal((prior.feeCents / 100).toFixed(2)),
+            grossAmount: new Prisma.Decimal((v.prior.grossCents / 100).toFixed(2)),
+            feeAmount: new Prisma.Decimal((v.prior.feeCents / 100).toFixed(2)),
             deltaCents: null,
           },
         });
         payoutsAlreadyDeposited++;
-        return `Already reconciled — the matching payment is on QBO Deposit ${deps.join(", ") || "(unknown)"}. Nothing to do.`;
+        return `Already reconciled — ${v.names} is on QBO Deposit ${v.deps.join(", ")}, which equals this bank line. Nothing to do.`;
       };
-      if (p.status === "already_deposited") {
-        // Never re-match an already-deposited payout against OPEN payments —
-        // that could pair it with a second, unrelated payment. Only refresh it.
-        const refreshed = await markAlreadyDeposited();
-        if (refreshed) await prisma.depEvent.create({ data: { payoutId: p.id, eventType: "locate_payments", message: refreshed } });
+      const prior = checkPrior();
+      if (prior?.isThisLine) {
+        // A deposit that IS this bank line settles it, even if an open payment
+        // also fits — matching that one too would deposit the line twice.
+        const msg = await markAlreadyDeposited(prior);
+        await prisma.depEvent.create({ data: { payoutId: p.id, eventType: "locate_payments", message: msg } });
         continue;
       }
+      // An "already deposited" that no longer verifies is re-matched below.
       const result = matchFinancingDeposit(deposit, available);
       let message: string;
       if (result.kind === "matched") {
@@ -564,14 +585,15 @@ export async function locateProposedPaymentsAction() {
           where: { id: line.id },
           data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
         });
-        const already = await markAlreadyDeposited();
-        if (already) {
-          message = already;
-        } else {
-          await prisma.depPayout.update({ where: { id: p.id }, data: { status: "needs_review", deltaCents: null } });
-          message = result.reason;
-          payoutsReview++;
-        }
+        await prisma.depPayout.update({ where: { id: p.id }, data: { status: "needs_review", deltaCents: null } });
+        message =
+          result.reason +
+          (prior
+            ? ` Note: ${prior.names} fits too, but it's on QBO Deposit ${prior.deps.join(", ") || "?"}` +
+              (prior.totalCents !== undefined ? ` (${(prior.totalCents / 100).toFixed(2)})` : "") +
+              `, which isn't this bank line — check that deposit didn't take this lender's payment.`
+            : "");
+        payoutsReview++;
       }
       await prisma.depEvent.create({ data: { payoutId: p.id, eventType: "locate_payments", message } });
       continue;
