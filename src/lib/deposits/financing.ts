@@ -125,6 +125,23 @@ export function methodConflicts(rule: LenderRule, methodText: string): boolean {
   return CARD_AND_OTHER_METHODS.test(methodText) || LENDERS.some((r) => r.id !== rule.id && r.evidence.test(methodText));
 }
 
+/**
+ * Card payouts (Paymentech, Tekmetric/Stripe) carry only card money. A QBO
+ * payment whose method names a lender, Zelle, cash, check, PAC Warranty or bad
+ * debt can never be one of their charges — even at the same amount on the same
+ * day (live 09/10: a $1,500 Bosch "Financing" payment was taken by a Stripe
+ * payout's $1,500 Visa charge, stranding the Bosch bank line). Pass the QBO
+ * payment-method NAME only, not memos, which can mention anything.
+ */
+export function isNonCardMethod(methodName: string): boolean {
+  return /\bcash\b|\bcheck\b|pac warranty|bad debt/i.test(methodName) || LENDERS.some((r) => r.evidence.test(methodName));
+}
+
+/** Sort key for card-payout candidates: a card-brand label (0) beats "Other" or none (1). */
+export function cardMethodRank(methodName: string): number {
+  return /\bvisa\b|master ?card|american express|\bamex\b|discover|affirm|klarna/i.test(methodName) ? 0 : 1;
+}
+
 /** One deposit line from a Chase account-activity export. */
 export interface BankLine {
   date: string; // YYYY-MM-DD posting date
@@ -313,27 +330,9 @@ export function matchFinancingDeposit(dep: LenderDeposit, pool: FinancingCandida
   if (rule.identity === "nameOrEvidence" && options.some((o) => o.named)) options = options.filter((o) => o.named);
   if (options.some((o) => o.evidence)) options = options.filter((o) => o.evidence);
 
-  // Interchangeable options — same customer, amount, date and payment method
-  // (e.g. one repair paid in equal installments, only one of them financed) —
-  // make the same deposit whichever is linked, so take the first instead of
-  // sending the bank line to review.
-  let identical = 0;
-  if (options.length > 1) {
-    const sig = (o: Option) =>
-      o.payments
-        .map((p) => `${p.customerName.trim().toLowerCase()}|${toCents(p.amount)}|${p.date}|${p.methodText.trim().toLowerCase()}`)
-        .sort()
-        .join("+");
-    if (new Set(options.map(sig)).size === 1) {
-      identical = options.length;
-      options = [options[0]];
-    }
-  }
-
   if (options.length === 1) {
     const o = options[0];
     const basis = [
-      identical ? `${identical} identical open payments — linked one, the other stays open` : null,
       o.named && rule.identity !== "none" ? "name on the bank line matches the customer" : null,
       o.evidence ? "payment method names the lender" : null,
       `fee ${(o.feeCents / 100).toFixed(2)} fits ${rule.label}'s rate`,

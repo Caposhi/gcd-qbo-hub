@@ -394,7 +394,9 @@ export async function locateProposedPaymentsAction() {
   await requirePermission("edit_mappings");
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
-  const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
+  const { findPaymentsByAmount, findPaymentsInRange, paymentMethodNames, shiftDate, getPaymentDetails } = await import(
+    "@/lib/deposits/qbo-lookup"
+  );
   const { collectDepositIndex, depositHolding, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
   const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
   const { findConsolidatedMatch } = await import("@/lib/deposits/consolidation");
@@ -489,7 +491,9 @@ export async function locateProposedPaymentsAction() {
     // +5: Tekmetric can record a Zelle payment a day or two after the money arrives.
     financingPool = await findFinancingCandidates(ctx, shiftDate(fDates[0], -14), shiftDate(fDates[fDates.length - 1], 5));
   }
-  const { matchFinancingDeposit, lenderById } = await import("@/lib/deposits/financing");
+  const { matchFinancingDeposit, lenderById, isNonCardMethod, cardMethodRank } = await import("@/lib/deposits/financing");
+  // Payment-method names, so card payouts never take a lender/Zelle/cash payment.
+  const methodNames = payouts.some((p) => p.processor !== "financing") ? await paymentMethodNames(ctx) : new Map<string, string>();
 
   for (const p of payouts) {
     if (p.lines.length === 0) continue; // unresolved reconstruction — nothing to locate
@@ -623,20 +627,29 @@ export async function locateProposedPaymentsAction() {
       // Candidate pool: exact amount first; widen to the keying band only if no
       // available exact match. "Available" = not claimed this run AND not already
       // on a QBO deposit.
-      const exact = await findPaymentsByAmount(ctx, amt, start, end);
+      // A card charge is never a lender, Zelle, cash or check payment; among the
+      // rest, a card-brand label beats "Other" (which can be a reversed entry).
+      const exact = (await findPaymentsByAmount(ctx, amt, start, end, methodNames)).filter((c) => !isNonCardMethod(c.method));
       let pool = exact;
       const availExact = exact
         .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
-        .sort((a, b) => daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate));
+        .sort(
+          (a, b) =>
+            cardMethodRank(a.method) - cardMethodRank(b.method) ||
+            daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
+        );
       let pick = availExact[0];
       if (!pick) {
-        const near = await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end);
+        const near = (await findPaymentsInRange(ctx, amt - KEYING_TOLERANCE, amt + KEYING_TOLERANCE, start, end, methodNames)).filter(
+          (c) => !isNonCardMethod(c.method)
+        );
         pool = exact.concat(near);
         pick = near
           .filter((c) => !globalUsed.has(c.id) && !depositedIds.has(c.id))
           .sort(
             (a, b) =>
               Math.abs(a.amount - amt) - Math.abs(b.amount - amt) ||
+              cardMethodRank(a.method) - cardMethodRank(b.method) ||
               daysApart(a.date, p.settlementDate) - daysApart(b.date, p.settlementDate)
           )[0];
       }
