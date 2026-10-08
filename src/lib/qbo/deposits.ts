@@ -240,29 +240,62 @@ export async function collectDepositedPaymentIds(
 }
 
 /**
- * Like collectDepositedPaymentIds, but maps each already-deposited payment id to
- * the QBO Deposit it sits on — so a "charge already deposited" diagnostic can
- * point straight at the deposit that swept it. Read-only.
+ * Every transaction (or transaction line) already linked into a QBO Bank
+ * Deposit, mapped to that deposit's id. Keys come from depositLinkKey: a link
+ * that names a line (journal-entry fee/refund lines) is keyed to that line; a
+ * link without one covers the whole transaction.
+ *
+ * Payments were always checked this way, but fee journal entries and refunds
+ * were not — so a payout's fee or refund search could pick an entry a
+ * neighbouring payout's deposit had already swept, and QBO rejected the new
+ * deposit ("Transaction cannot be applied to Deposit … already been applied to
+ * another Deposit", seen live on the 2026-09-17 payout). Pure; see
+ * collectDepositedLinks for the query.
  */
-export async function collectDepositedPaymentMap(
-  ctx: QboContext,
-  startDate: string,
-  endDate: string
-): Promise<Map<string, string>> {
-  const res = await query<{ QueryResponse?: { Deposit?: any[] } }>(
-    ctx,
-    `select * from Deposit where TxnDate >= '${escapeQuery(startDate)}' ` +
-      `and TxnDate <= '${escapeQuery(endDate)}' MAXRESULTS 1000`
-  );
+export function indexDepositLinks(deposits: any[]): Map<string, string> {
   const map = new Map<string, string>();
-  for (const dep of res.QueryResponse?.Deposit ?? []) {
-    for (const line of dep.Line ?? []) {
-      for (const lt of line.LinkedTxn ?? []) {
-        if (lt?.TxnType === "Payment" && lt?.TxnId && !map.has(String(lt.TxnId))) {
-          map.set(String(lt.TxnId), String(dep.Id ?? ""));
-        }
+  for (const dep of deposits) {
+    for (const line of dep?.Line ?? []) {
+      for (const lt of line?.LinkedTxn ?? []) {
+        if (!lt?.TxnType || !lt?.TxnId) continue;
+        const key = depositLinkKey(String(lt.TxnType), String(lt.TxnId), lt.TxnLineId != null ? String(lt.TxnLineId) : null);
+        if (!map.has(key)) map.set(key, String(dep.Id ?? ""));
       }
     }
   }
   return map;
+}
+
+/** Key for indexDepositLinks: "JournalEntry:123:2", or "Payment:45:" for a whole transaction. */
+export function depositLinkKey(txnType: string, txnId: string, lineId?: string | null): string {
+  // A Payment is linked with TxnLineId "0" meaning the whole payment; journal
+  // entry lines can genuinely have Id "0", so only Payments drop it.
+  const line = lineId && !(txnType === "Payment" && lineId === "0") ? lineId : "";
+  return `${txnType}:${txnId}:${line}`;
+}
+
+/** The deposit a transaction (line) is already on, or undefined. */
+export function depositHolding(
+  links: Map<string, string>,
+  txnType: string,
+  txnId: string,
+  lineId?: string | null
+): string | undefined {
+  return links.get(depositLinkKey(txnType, txnId, lineId)) ?? links.get(depositLinkKey(txnType, txnId, null));
+}
+
+/** All deposit links for deposits dated in [startDate, endDate], paged past QBO's 1000-row cap. */
+export async function collectDepositedLinks(ctx: QboContext, startDate: string, endDate: string): Promise<Map<string, string>> {
+  const all: any[] = [];
+  for (let start = 1; ; start += 1000) {
+    const res = await query<{ QueryResponse?: { Deposit?: any[] } }>(
+      ctx,
+      `select * from Deposit where TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}' ` +
+        `STARTPOSITION ${start} MAXRESULTS 1000`
+    );
+    const rows = res.QueryResponse?.Deposit ?? [];
+    all.push(...rows);
+    if (rows.length < 1000) break;
+  }
+  return indexDepositLinks(all);
 }

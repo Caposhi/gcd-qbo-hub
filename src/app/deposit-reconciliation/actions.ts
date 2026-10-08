@@ -395,7 +395,7 @@ export async function locateProposedPaymentsAction() {
   const { getQboEnvironment } = await import("@/lib/config-store");
   const { getContext } = await import("@/lib/qbo/client");
   const { findPaymentsByAmount, findPaymentsInRange, shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
-  const { collectDepositedPaymentMap, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
+  const { collectDepositedLinks, depositHolding, findPaymentsInWindow } = await import("@/lib/qbo/deposits");
   const { findFeeJournalEntries, matchFees } = await import("@/lib/qbo/journal-entries");
   const { findConsolidatedMatch } = await import("@/lib/deposits/consolidation");
 
@@ -446,9 +446,19 @@ export async function locateProposedPaymentsAction() {
     // −14: financing payouts can trail their payment by ~7 business days.
     const spanStart = shiftDate(settleDates[0], -14);
     const spanEnd = shiftDate(settleDates[settleDates.length - 1], 4);
-    depositedMap = await collectDepositedPaymentMap(ctx, spanStart, spanEnd);
+    // Every deposit dated from the span start to TODAY — a payment, fee or
+    // refund from this span may have been swept by a deposit made later (e.g.
+    // one entered by hand this week), which a span-limited scan would miss.
+    const links = await collectDepositedLinks(ctx, spanStart, new Date().toISOString().slice(0, 10));
+    for (const [key, depId] of links) {
+      const [type, id] = key.split(":");
+      if (type === "Payment" && !depositedMap.has(id)) depositedMap.set(id, depId);
+    }
     depositedIds = new Set(depositedMap.keys());
-    feeJEs = await findFeeJournalEntries(ctx, spanStart, spanEnd);
+    // A fee JE already on a deposit belongs to that deposit's payout.
+    feeJEs = (await findFeeJournalEntries(ctx, spanStart, spanEnd)).filter(
+      (je) => !depositHolding(links, "JournalEntry", je.jeId, je.ufLineId)
+    );
   }
   // Fee JEs claimed this run (a JE backs only one payout).
   const feeUsedGlobal = new Set<string>();
@@ -782,7 +792,7 @@ async function createOneDeposit(
   feeUsed: Set<string>,
   refundUsed: Set<string> = new Set()
 ): Promise<DepCreateOutcome> {
-  const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedPaymentIds } = await import(
+  const { postLinkedDeposit, buildLinkedDepositBody, linkedDepositTotalCents, collectDepositedLinks, depositHolding } = await import(
     "@/lib/qbo/deposits"
   );
   const { shiftDate, getPaymentDetails } = await import("@/lib/deposits/qbo-lookup");
@@ -803,14 +813,20 @@ async function createOneDeposit(
   const unlocated = payout.lines.filter((l) => lineIds(l).length === 0);
   if (unlocated.length) return blockedP(`${unlocated.length} line(s) not located — re-run Locate.`);
 
-  // Double-count guard: refuse if any matched payment is already on a deposit.
-  const deposited = await collectDepositedPaymentIds(
+  // Double-count guard: nothing this deposit links — payment, fee JE line or
+  // refund — may already sit on another QBO deposit. Scan every deposit from
+  // the start of the refund look-back to today: the deposit that swept an
+  // entry can be dated well after it (e.g. entered by hand later).
+  const links = await collectDepositedLinks(
     dc.ctx,
-    shiftDate(payout.settlementDate, -16),
-    shiftDate(payout.settlementDate, 2)
+    shiftDate(payout.settlementDate, -90),
+    new Date().toISOString().slice(0, 10)
   );
-  const already = payout.lines.filter((l) => lineIds(l).some((id) => deposited.has(id)));
-  if (already.length) return blockedP(`${already.length} payment(s) already on a QBO deposit — re-run Locate; nothing posted.`);
+  const alreadyIds = payout.lines.flatMap(lineIds).filter((id) => depositHolding(links, "Payment", id));
+  if (alreadyIds.length) {
+    const deps = [...new Set(alreadyIds.map((id) => depositHolding(links, "Payment", id)))].join(", ");
+    return blockedP(`${alreadyIds.length} payment(s) already on QBO Deposit ${deps} — re-run Locate; nothing posted.`);
+  }
 
   const ids = payout.lines.flatMap(lineIds);
   const details = await getPaymentDetails(dc.ctx, ids);
@@ -829,7 +845,10 @@ async function createOneDeposit(
   let plug: { accountId: string; amount: number; description: string } | undefined;
 
   if (payout.processor === "tekmetric") {
-    const feeJEs = await findFeeJournalEntries(dc.ctx, feeStart, feeEnd);
+    // Fee JEs a neighbouring payout's deposit already swept are not available.
+    const feeJEs = (await findFeeJournalEntries(dc.ctx, feeStart, feeEnd)).filter(
+      (je) => !depositHolding(links, "JournalEntry", je.jeId, je.ufLineId)
+    );
     // Charge = the matched payment's customer + that line's known fee (from the
     // Tekmetric export), so a name discrepancy can fall back to the fee amount.
     const charges = payout.lines.map((l) => ({
@@ -856,6 +875,16 @@ async function createOneDeposit(
     if (gapCents > 0) {
       const { findUndepositedRefunds, pickRefundsForGap, refundKey } = await import("@/lib/qbo/refunds");
       const found = await findUndepositedRefunds(dc.ctx, refundStart, refundEnd);
+      // A refund already swept into another deposit can't be swept again —
+      // keep it out of the pick, but report it as a near miss.
+      found.refunds = found.refunds.filter((r) => {
+        const dep = depositHolding(links, r.kind, r.txnId, r.kind === "JournalEntry" ? r.lineId : null);
+        if (dep) {
+          found.nearMisses.push({ txnId: r.txnId, kind: r.kind, amount: r.amount, date: r.date, reason: `already on QBO Deposit ${dep}` });
+          return false;
+        }
+        return true;
+      });
       const pick = pickRefundsForGap(found.refunds, gapCents, refundUsed, payout.settlementDate);
       if (pick.exact && pick.refunds.length > 0) {
         for (const r of pick.refunds) refundUsed.add(refundKey(r));
@@ -991,7 +1020,12 @@ async function createOneDeposit(
       data: {
         payoutId: payout.id,
         eventType: "create_error",
-        message: `QBO rejected deposit: ${String(err)}${detail ? ` · ${JSON.stringify(detail)}` : ""}`.slice(0, 1800),
+        message: (
+          `QBO rejected deposit: ${String(err)}${detail ? ` · ${JSON.stringify(detail)}` : ""}` +
+          (/already been applied to another Deposit/i.test(`${String(err)} ${JSON.stringify(detail ?? "")}`)
+            ? " · One of the linked payments, fee entries or refunds is already on another QBO deposit. Re-run Locate, then Create again — already-deposited entries are now skipped."
+            : "")
+        ).slice(0, 1800),
       },
     });
     return { status: "error", message: String(err) };
