@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  isNonCardMethod,
+  cardMethodRank,
   parseChaseActivity,
   lenderDeposits,
   matchFinancingDeposit,
@@ -149,6 +151,18 @@ describe("matchFinancingDeposit", () => {
     expect(m).toMatchObject({ kind: "matched", feeCents: 1990 });
     expect(m.kind === "matched" && m.paymentIds.sort()).toEqual(["a", "b"]);
   });
+
+  it("does not guess between identical unlabelled payments (one may be a reversed entry)", () => {
+    // Live 09/10: two "Other" payments were each reversed by a negative entry;
+    // the real Bosch payment was the one labelled "Financing".
+    const same = [pay("o1", 1000.0, "2026-03-05", "Park, Kim", "Other"), pay("o2", 1000.0, "2026-03-05", "Park, Kim", "Other")];
+    expect(matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), same).kind).toBe("review");
+  });
+
+  it("still refuses to guess between different customers", () => {
+    const two = [pay("x", 1000.0, "2026-03-05", "Park, Kim", "Other"), pay("y", 1000.0, "2026-03-05", "Lee, Sam", "Other")];
+    expect(matchFinancingDeposit(dep("cfna", "2026-03-09", 980.1), two).kind).toBe("review");
+  });
 });
 
 describe("helpers", () => {
@@ -245,5 +259,19 @@ describe("Zelle customer payments", () => {
     const m = matchFinancingDeposit(zdep("2026-03-12", 2, "SAM LEE"), []);
     expect(m.kind).toBe("review");
     expect(m.kind === "review" && m.reason).toMatch(/Accounting Link shows the Zelle payment as Unapproved/);
+  });
+});
+
+describe("card-payout candidate methods", () => {
+  it("rules out lender, Zelle, cash, check, warranty and bad-debt payments", () => {
+    for (const m of ["Financing (i.e. snap, synchrony...)", "Koalifi", "Snap Finance", "Zelle", "Cash", "Check", "PAC WARRANTY", "Bad Debt - Comeback"])
+      expect(isNonCardMethod(m)).toBe(true);
+  });
+  it("keeps card brands and Other (a Stripe charge can be recorded as Other)", () => {
+    for (const m of ["Visa", "Mastercard", "American Express", "Discover", "Other", ""]) expect(isNonCardMethod(m)).toBe(false);
+  });
+  it("prefers a card-brand label over Other", () => {
+    expect(cardMethodRank("Visa")).toBeLessThan(cardMethodRank("Other"));
+    expect(cardMethodRank("")).toBe(cardMethodRank("Other"));
   });
 });

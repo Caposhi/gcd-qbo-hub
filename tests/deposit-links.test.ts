@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { indexDepositLinks, depositLinkKey, depositHolding } from "@/lib/qbo/deposits";
+import { indexDepositLinks, indexDepositTotals, depositLinkKey, depositHolding } from "@/lib/qbo/deposits";
 
 // Fictional deposits shaped like QBO's Deposit query rows.
 const DEPOSITS = [
@@ -56,5 +56,18 @@ describe("indexDepositLinks / depositHolding", () => {
     expect(links.size).toBe(4);
     expect(indexDepositLinks([]).size).toBe(0);
     expect(indexDepositLinks([{ Id: "1" }]).size).toBe(0);
+  });
+});
+
+describe("indexDepositTotals", () => {
+  it("maps each deposit id to its total in cents", () => {
+    const totals = indexDepositTotals([
+      { Id: "900", TotalAmt: 1470.15 },
+      { Id: "901", TotalAmt: 0.1 + 0.2 },
+      { Id: "902" },
+    ]);
+    expect(totals.get("900")).toBe(147015);
+    expect(totals.get("901")).toBe(30);
+    expect(totals.has("902")).toBe(false);
   });
 });

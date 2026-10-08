@@ -14,6 +14,26 @@ export interface QboPaymentCandidate {
   id: string;
   amount: number;
   date: string;
+  /** QBO payment-method name ("Visa", "Koalifi", "Other"…), "" when unset. */
+  method: string;
+}
+
+/** PaymentMethod id → name, for resolving a payment's PaymentMethodRef. */
+export async function paymentMethodNames(ctx: QboContext): Promise<Map<string, string>> {
+  const res = await query<{ QueryResponse?: { PaymentMethod?: any[] } }>(ctx, "select Id, Name from PaymentMethod MAXRESULTS 1000");
+  const methods = new Map<string, string>();
+  for (const m of res.QueryResponse?.PaymentMethod ?? []) methods.set(String(m.Id), String(m.Name ?? ""));
+  return methods;
+}
+
+function toCandidate(p: any, methods?: Map<string, string>): QboPaymentCandidate {
+  const methodId = p.PaymentMethodRef?.value ? String(p.PaymentMethodRef.value) : "";
+  return {
+    id: String(p.Id),
+    amount: Number(p.TotalAmt),
+    date: String(p.TxnDate),
+    method: String(p.PaymentMethodRef?.name ?? methods?.get(methodId) ?? ""),
+  };
 }
 
 function escapeQuery(v: string): string {
@@ -25,19 +45,16 @@ export async function findPaymentsByAmount(
   ctx: QboContext,
   amount: number,
   startDate: string,
-  endDate: string
+  endDate: string,
+  methods?: Map<string, string>
 ): Promise<QboPaymentCandidate[]> {
   const amt = amount.toFixed(2);
   const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
     ctx,
-    `select Id, TotalAmt, TxnDate from Payment where TotalAmt = '${escapeQuery(amt)}' ` +
+    `select * from Payment where TotalAmt = '${escapeQuery(amt)}' ` +
       `and TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}'`
   );
-  return (res.QueryResponse?.Payment ?? []).map((p) => ({
-    id: String(p.Id),
-    amount: Number(p.TotalAmt),
-    date: String(p.TxnDate),
-  }));
+  return (res.QueryResponse?.Payment ?? []).map((p) => toCandidate(p, methods));
 }
 
 /**
@@ -50,19 +67,16 @@ export async function findPaymentsInRange(
   low: number,
   high: number,
   startDate: string,
-  endDate: string
+  endDate: string,
+  methods?: Map<string, string>
 ): Promise<QboPaymentCandidate[]> {
   const res = await query<{ QueryResponse?: { Payment?: any[] } }>(
     ctx,
-    `select Id, TotalAmt, TxnDate from Payment where TotalAmt >= '${escapeQuery(low.toFixed(2))}' ` +
+    `select * from Payment where TotalAmt >= '${escapeQuery(low.toFixed(2))}' ` +
       `and TotalAmt <= '${escapeQuery(high.toFixed(2))}' ` +
       `and TxnDate >= '${escapeQuery(startDate)}' and TxnDate <= '${escapeQuery(endDate)}'`
   );
-  return (res.QueryResponse?.Payment ?? []).map((p) => ({
-    id: String(p.Id),
-    amount: Number(p.TotalAmt),
-    date: String(p.TxnDate),
-  }));
+  return (res.QueryResponse?.Payment ?? []).map((p) => toCandidate(p, methods));
 }
 
 /** Fetch TotalAmt for a set of payment ids (for computing a deposit's plug). */

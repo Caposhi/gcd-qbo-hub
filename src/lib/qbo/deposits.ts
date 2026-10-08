@@ -284,8 +284,26 @@ export function depositHolding(
   return links.get(depositLinkKey(txnType, txnId, lineId)) ?? links.get(depositLinkKey(txnType, txnId, null));
 }
 
-/** All deposit links for deposits dated in [startDate, endDate], paged past QBO's 1000-row cap. */
-export async function collectDepositedLinks(ctx: QboContext, startDate: string, endDate: string): Promise<Map<string, string>> {
+/** Each deposit's total in cents, by deposit id. Pure. */
+export function indexDepositTotals(deposits: any[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const dep of deposits) {
+    if (dep?.Id == null || dep?.TotalAmt == null) continue;
+    map.set(String(dep.Id), Math.round(Number(dep.TotalAmt) * 100));
+  }
+  return map;
+}
+
+/**
+ * Links and totals for deposits dated in [startDate, endDate], paged past
+ * QBO's 1000-row cap. Totals let a caller confirm that a deposit really is a
+ * given bank line before calling that line "already deposited".
+ */
+export async function collectDepositIndex(
+  ctx: QboContext,
+  startDate: string,
+  endDate: string
+): Promise<{ links: Map<string, string>; totals: Map<string, number> }> {
   const all: any[] = [];
   for (let start = 1; ; start += 1000) {
     const res = await query<{ QueryResponse?: { Deposit?: any[] } }>(
@@ -297,5 +315,10 @@ export async function collectDepositedLinks(ctx: QboContext, startDate: string, 
     all.push(...rows);
     if (rows.length < 1000) break;
   }
-  return indexDepositLinks(all);
+  return { links: indexDepositLinks(all), totals: indexDepositTotals(all) };
+}
+
+/** All deposit links for deposits dated in [startDate, endDate]. */
+export async function collectDepositedLinks(ctx: QboContext, startDate: string, endDate: string): Promise<Map<string, string>> {
+  return (await collectDepositIndex(ctx, startDate, endDate)).links;
 }
