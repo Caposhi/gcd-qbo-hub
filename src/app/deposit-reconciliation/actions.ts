@@ -408,7 +408,14 @@ export async function locateProposedPaymentsAction() {
   const ctx = await getContext(environment);
 
   const payoutsRaw = await prisma.depPayout.findMany({
-    where: { status: { in: ["proposed", "needs_review", "matched"] } },
+    where: {
+      OR: [
+        { status: { in: ["proposed", "needs_review", "matched"] } },
+        // Lender/Zelle payouts already deposited by hand are re-read only to
+        // refresh their gross and fee (see the financing branch below).
+        { processor: "financing", status: "already_deposited", qboDepositId: null },
+      ],
+    },
     include: { lines: true },
   });
   // Deterministic order (oldest settlement first) so the global no-reuse guard
@@ -499,6 +506,33 @@ export async function locateProposedPaymentsAction() {
         trace: p.sourceRef,
         indName: line.ref || null,
       };
+      // Same rules against payments already on a QBO deposit: if one fits, the
+      // payout was already deposited (e.g. entered by hand) — nothing to post.
+      // Its gross and fee come from that payment, so the row shows what the
+      // lender actually deducted rather than net-as-gross with no fee.
+      const markAlreadyDeposited = async (): Promise<string | null> => {
+        const prior = matchFinancingDeposit(deposit, financingPool.filter((c) => depositedIds.has(c.id)));
+        if (prior.kind !== "matched") return null;
+        const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id)).filter(Boolean))];
+        await prisma.depPayout.update({
+          where: { id: p.id },
+          data: {
+            status: "already_deposited",
+            grossAmount: new Prisma.Decimal((prior.grossCents / 100).toFixed(2)),
+            feeAmount: new Prisma.Decimal((prior.feeCents / 100).toFixed(2)),
+            deltaCents: null,
+          },
+        });
+        payoutsAlreadyDeposited++;
+        return `Already reconciled — the matching payment is on QBO Deposit ${deps.join(", ") || "(unknown)"}. Nothing to do.`;
+      };
+      if (p.status === "already_deposited") {
+        // Never re-match an already-deposited payout against OPEN payments —
+        // that could pair it with a second, unrelated payment. Only refresh it.
+        const refreshed = await markAlreadyDeposited();
+        if (refreshed) await prisma.depEvent.create({ data: { payoutId: p.id, eventType: "locate_payments", message: refreshed } });
+        continue;
+      }
       const result = matchFinancingDeposit(deposit, available);
       let message: string;
       if (result.kind === "matched") {
@@ -530,14 +564,9 @@ export async function locateProposedPaymentsAction() {
           where: { id: line.id },
           data: { matchedQboTxnId: null, matchedQboTxnIds: [], matchedQboTxnType: null },
         });
-        // Same rules against payments already on a QBO deposit: if one fits, the
-        // payout was already deposited (e.g. entered by hand) — nothing to do.
-        const prior = matchFinancingDeposit(deposit, financingPool.filter((c) => depositedIds.has(c.id)));
-        if (prior.kind === "matched") {
-          const deps = [...new Set(prior.paymentIds.map((id) => depositedMap.get(id)).filter(Boolean))];
-          await prisma.depPayout.update({ where: { id: p.id }, data: { status: "already_deposited", deltaCents: null } });
-          message = `Already reconciled — the matching payment is on QBO Deposit ${deps.join(", ") || "(unknown)"}. Nothing to do.`;
-          payoutsAlreadyDeposited++;
+        const already = await markAlreadyDeposited();
+        if (already) {
+          message = already;
         } else {
           await prisma.depPayout.update({ where: { id: p.id }, data: { status: "needs_review", deltaCents: null } });
           message = result.reason;

@@ -144,7 +144,7 @@ export default async function DepositReconciliationPage() {
       )}
       {editable && matchedCount > 0 && (
         <p className="card-subtitle">
-          Posts every matched payout (Paymentech + Tekmetric) in one go — each re-verified and checksum-gated. Then
+          Posts every matched payout (Paymentech, Tekmetric, lender and Zelle) in one go — each re-verified and checksum-gated. Then
           match each in the Chase bank feed.
         </p>
       )}
