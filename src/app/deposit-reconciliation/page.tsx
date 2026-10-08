@@ -11,6 +11,9 @@ import {
   cleanupDuplicatePayoutsAction,
   createDepositFromPayoutAction,
   createAllMatchedDepositsAction,
+  scanReversalPairsAction,
+  clearReversalPairsAction,
+  type StoredReversalPair,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +67,17 @@ export default async function DepositReconciliationPage() {
     orderBy: { createdAt: "desc" },
   });
   const matchedCount = payouts.filter((p) => p.status === "matched" && !p.qboDepositId).length;
+
+  // Cancelled Tekmetric entries (payment + "Applied to" reversal) from the last scan.
+  const lastReversalScan = await prisma.depEvent.findFirst({
+    where: { eventType: "reversal_scan" },
+    orderBy: { createdAt: "desc" },
+  });
+  const reversalPairs = (Array.isArray(lastReversalScan?.dataJson) ? lastReversalScan!.dataJson : []) as unknown as StoredReversalPair[];
+  const lastReversalClear = await prisma.depEvent.findFirst({
+    where: { eventType: "reversal_clear", message: { startsWith: "Cleanup" } },
+    orderBy: { createdAt: "desc" },
+  });
 
   // Flag likely duplicates (same processor + source ref) so the cleanup button
   // only shows when there's something to clean.
@@ -236,12 +250,85 @@ export default async function DepositReconciliationPage() {
         </div>
       )}
 
-      <p className="card-subtitle" style={{ marginTop: "1rem" }}>
-        Next step (needs the live QBO connection): for each <em>proposed</em> deposit, locate the matching
-        Undeposited-Funds payments (and Tekmetric fee entries) and create the QBO Bank Deposit so the bank-feed line
-        auto-matches. That runs behind the rollout ladder (propose → create-you-match → auto). See
-        <code> docs/DEPOSIT_RECONCILIATION.md</code>.
+      <h2>Cancelled entries in Undeposited Funds</h2>
+      <p className="card-subtitle">
+        When a payment is changed or deleted in Tekmetric, Back Office leaves the original payment in Undeposited Funds
+        and adds a reversing entry (&ldquo;Applied to: RO | NAME … for $-X&rdquo;). The two cancel out, so no bank line
+        will ever match them. The hub never uses either half for a deposit. Clearing a pair posts one $0.00 deposit
+        linking both halves, which empties them from Undeposited Funds without changing income, expenses or the bank
+        balance.
       </p>
+      {editable && (
+        <div className="row-actions">
+          <form action={scanReversalPairsAction}>
+            <button className="btn ghost" type="submit">Find cancelled pairs (read-only)</button>
+          </form>
+        </div>
+      )}
+      {lastReversalScan && (
+        <p className="card-subtitle">
+          {lastReversalScan.message} · {lastReversalScan.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
+      {lastReversalClear && (
+        <p className="card-subtitle">
+          {lastReversalClear.message} · {lastReversalClear.createdAt.toISOString().replace("T", " ").slice(0, 19)} UTC
+        </p>
+      )}
+      {reversalPairs.length > 0 && (
+        <form action={clearReversalPairsAction}>
+          <div className="table-wrap">
+            <table className="gcd">
+              <thead>
+                <tr>
+                  <th>Clear</th>
+                  <th>Date</th>
+                  <th>Customer</th>
+                  <th>RO</th>
+                  <th>Method</th>
+                  <th className="num">Amount</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reversalPairs.map((p) => (
+                  <tr key={p.key}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        name="pair"
+                        value={p.key}
+                        defaultChecked={!p.card}
+                        disabled={!editable}
+                        aria-label={`Clear ${p.customerName} ${p.amount.toFixed(2)}`}
+                      />
+                    </td>
+                    <td>{p.date}</td>
+                    <td>{p.customerName}</td>
+                    <td>{p.ro}</td>
+                    <td>{p.method || "—"}</td>
+                    <td className="num">{money(p.amount)}</td>
+                    <td style={{ fontSize: "0.75rem" }}>
+                      {p.card
+                        ? "Card payment — could be a real refund whose payout isn't in yet. Check Stripe before clearing."
+                        : "Correction: payment and reversal cancel out."}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {editable && (
+            <div className="row-actions">
+              <button className="btn primary" type="submit">Clear selected pairs with $0.00 deposits</button>
+            </div>
+          )}
+          <p className="card-subtitle">
+            Each pair is re-checked in QBO right before posting. A pair that has changed or was already deposited is
+            skipped, and a deposit is posted only if it nets to exactly $0.00.
+          </p>
+        </form>
+      )}
     </>
   );
 }

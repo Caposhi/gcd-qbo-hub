@@ -229,8 +229,8 @@ function nameTokens(s: string): Set<string> {
 }
 
 /**
- * Same person? Order-insensitive token overlap — "Ferdinand Jacob" (bank) vs
- * "Ferdinand, Jacob" (QBO). Needs two shared tokens, or every token of a
+ * Same person? Order-insensitive token overlap — "Rivera Ana" (bank) vs
+ * "Rivera, Ana" (QBO). Needs two shared tokens, or every token of a
  * one-word name.
  */
 export function namesMatch(a: string, b: string): boolean {
@@ -276,9 +276,21 @@ interface Option {
  * Pair one lender deposit with the payment(s) it pays out. Only ever returns a
  * match that is the single plausible one; anything ambiguous goes to review.
  */
-export function matchFinancingDeposit(dep: LenderDeposit, pool: FinancingCandidate[]): FinancingMatch {
-  const rule = lenderById(dep.lender);
-  if (!rule) return { kind: "review", reason: `Unknown lender ${dep.lender}.` };
+export function matchFinancingDeposit(
+  dep: LenderDeposit,
+  pool: FinancingCandidate[],
+  opts: { labelInsteadOfName?: boolean } = {}
+): FinancingMatch {
+  const found = lenderById(dep.lender);
+  if (!found) return { kind: "review", reason: `Unknown lender ${dep.lender}.` };
+  // labelInsteadOfName: accept a payment labelled with this lender even when the
+  // bank line names someone else (a relative or co-signer financed it). Only
+  // for confirming an EXISTING deposit that equals the bank line — never for
+  // choosing an open payment.
+  const rule: LenderRule =
+    opts.labelInsteadOfName && (found.identity === "name" || found.identity === "nameOrEvidence")
+      ? { ...found, identity: "evidence" }
+      : found;
   const netCents = toCents(dep.amount);
 
   // Business days from the payment to the deposit; negative when it was recorded after.

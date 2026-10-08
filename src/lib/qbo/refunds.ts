@@ -32,7 +32,7 @@ function escapeQuery(v: string): string {
  * against the live 2026-08-06 payout: Back Office DISPLAYS the refund as a
  * negative "Customer Payment", but because QBO payments can't be negative it
  * EXPORTS a journal entry — debit A/R, credit Undeposited Funds, memo
- * "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05".
+ * "Applied to: 70962 | DOE, JOHN on 08/05/26 for $-1728.05".
  *
  * `RefundReceipt` and `Payment` are kept because other configurations record
  * refunds those ways (a refund receipt deposited to UF, or a negative payment),
@@ -51,6 +51,8 @@ export interface UndepositedRefund {
   date: string;
   memo: string;
   customerName: string;
+  /** Journal entries: the entry's DocNumber — Tekmetric puts the payment method there ("Other", "Visa"). */
+  ref?: string;
 }
 
 /**
@@ -146,7 +148,7 @@ export async function findUndepositedRefunds(
   //    asset, so it CREDITS Undeposited Funds — the same direction as a fee JE,
   //    which is why direction alone can't separate them. The memo does:
   //      fee    → "FEE | Credit Card: Visa | NAME | date"
-  //      refund → "Applied to: 73962 | OSORIO, STEVEN on 08/05/26 for $-1728.05"
+  //      refund → "Applied to: 70962 | DOE, JOHN on 08/05/26 for $-1728.05"
   //    findFeeJournalEntries claims only the /credit card/ ones, so taking the
   //    complement here means a refund JE is never double-counted as a fee.
   try {
@@ -169,6 +171,7 @@ export async function findUndepositedRefunds(
           date: String(je.TxnDate ?? ""),
           memo,
           customerName: String(d.Entity?.EntityRef?.name ?? ""),
+          ref: String(je.DocNumber ?? ""),
         });
       }
     }
