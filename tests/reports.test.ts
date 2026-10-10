@@ -12,6 +12,7 @@ import {
   sum,
   deriveKpis,
   resolveRange,
+  isValidIsoDate,
   comparisonRange,
   agingAsOfRange,
   rollupSeries,
@@ -381,6 +382,36 @@ describe("resolveRange", () => {
     });
     // Missing custom dates fall back to the current month.
     expect(resolveRange("custom", now)).toEqual({ start: "2026-07-01", end: "2026-07-31" });
+  });
+
+  it("resolves Monday–Sunday weeks, compared to the week before", () => {
+    // 2026-07-13 is a Monday; 2026-07-19 a Sunday.
+    expect(resolveRange("this_week", now)).toEqual({ start: "2026-07-13", end: "2026-07-19" });
+    expect(resolveRange("last_week", now)).toEqual({ start: "2026-07-06", end: "2026-07-12" });
+    expect(resolveRange("this_week", new Date(Date.UTC(2026, 6, 19)))).toEqual({ start: "2026-07-13", end: "2026-07-19" });
+    // Across a month boundary.
+    expect(resolveRange("this_week", new Date(Date.UTC(2026, 9, 1)))).toEqual({ start: "2026-09-28", end: "2026-10-04" });
+    expect(comparisonRange(resolveRange("this_week", now), "prior_period")).toEqual(resolveRange("last_week", now));
+  });
+
+  it("ignores half-typed or impossible custom dates instead of crashing", () => {
+    // What a browser date input reports while the year is typed: "0002-10-05".
+    expect(resolveRange("custom", now, "0002-10-05", "2026-10-11")).toEqual({ start: "2026-10-11", end: "2026-10-11" });
+    expect(resolveRange("custom", now, "2026-09-31", "2026-02-30")).toEqual({ start: "2026-07-01", end: "2026-07-31" });
+    const range = resolveRange("custom", now, "0020-10-05", "0202-10-11");
+    const cmp = comparisonRange(range, "prior_period");
+    for (const d of [range.start, range.end, cmp.start, cmp.end]) {
+      expect(Number.isNaN(new Date(`${d}T00:00:00.000Z`).getTime())).toBe(false);
+    }
+  });
+
+  it("validates complete calendar dates", () => {
+    expect(isValidIsoDate("2026-10-05")).toBe(true);
+    expect(isValidIsoDate("2024-02-29")).toBe(true);
+    expect(isValidIsoDate("2026-02-29")).toBe(false);
+    expect(isValidIsoDate("0002-10-05")).toBe(false);
+    expect(isValidIsoDate("")).toBe(false);
+    expect(isValidIsoDate(undefined)).toBe(false);
   });
 });
 

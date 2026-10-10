@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useTransition } from "react";
 import {
   RANGE_PRESETS,
+  isValidIsoDate,
   type RangePreset,
   type ComparisonMode,
   type AccountingMethod,
@@ -56,6 +57,13 @@ export function FilterBar({ state }: { state: FilterState }) {
     [params, router]
   );
 
+  // A date input reports every keystroke while the year is typed ("0002-…",
+  // "0020-…"). Only reload once the box holds a complete, real date (or was
+  // cleared) — reloading on the half-typed year crashed the page (2026-10-10).
+  const onDate = (key: "start" | "end", value: string) => {
+    if (value === "" || isValidIsoDate(value)) update({ [key]: value });
+  };
+
   return (
     <div className="card filter-bar" style={{ opacity: pending ? 0.6 : 1 }} aria-busy={pending}>
       <label className="kv">
@@ -81,7 +89,7 @@ export function FilterBar({ state }: { state: FilterState }) {
               type="date"
               style={selectStyle}
               defaultValue={state.customStart}
-              onChange={(e) => update({ start: e.target.value })}
+              onChange={(e) => onDate("start", e.target.value)}
             />
           </label>
           <label className="kv">
@@ -90,7 +98,7 @@ export function FilterBar({ state }: { state: FilterState }) {
               type="date"
               style={selectStyle}
               defaultValue={state.customEnd}
-              onChange={(e) => update({ end: e.target.value })}
+              onChange={(e) => onDate("end", e.target.value)}
             />
           </label>
         </>
