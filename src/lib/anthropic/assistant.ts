@@ -119,7 +119,7 @@ const TOOLS: Anthropic.Tool[] = [
       properties: {
         preset: {
           type: "string",
-          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
+          enum: ["this_week", "last_week", "this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
           description: "Date range preset, or 'custom' to use startDate/endDate for any arbitrary range. Default 'this_month'.",
         },
         startDate: { type: "string", description: "Custom range start, YYYY-MM-DD. Used when preset is 'custom'." },
@@ -146,7 +146,7 @@ const TOOLS: Anthropic.Tool[] = [
       properties: {
         preset: {
           type: "string",
-          enum: ["this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
+          enum: ["this_week", "last_week", "this_month", "last_month", "this_quarter", "ytd", "trailing_12", "custom"],
           description: "Date range preset (aging is as-of the period end), or 'custom' to use startDate/endDate. Default 'this_month'.",
         },
         startDate: { type: "string", description: "Custom range start, YYYY-MM-DD. Used when preset is 'custom'." },

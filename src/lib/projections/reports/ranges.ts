@@ -9,6 +9,8 @@
  */
 
 export type RangePreset =
+  | "this_week"
+  | "last_week"
   | "this_month"
   | "last_month"
   | "this_quarter"
@@ -17,6 +19,8 @@ export type RangePreset =
   | "custom";
 
 export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
+  { value: "this_week", label: "This Week" },
+  { value: "last_week", label: "Last Week" },
   { value: "this_month", label: "This Month" },
   { value: "last_month", label: "Last Month" },
   { value: "this_quarter", label: "This Quarter" },
@@ -53,14 +57,42 @@ interface YMD {
 function partsOf(date: Date): YMD {
   return { y: date.getUTCFullYear(), m0: date.getUTCMonth(), d: date.getUTCDate() };
 }
+/** Years a custom date may fall in; anything else is a typo or a half-typed date. */
+const MIN_YEAR = 1990;
+const MAX_YEAR = 2100;
+
+/**
+ * Parse a YYYY-MM-DD date, or null when it isn't a real calendar date in a
+ * plausible year. A browser date input reports every keystroke while the year
+ * is typed ("0002-10-05", "0020-10-05"…); accepting those sent ranges into
+ * year 2, whose prior-period comparison landed thousands of years earlier and
+ * crashed the Reporting page on an invalid Date (live, 2026-10-10).
+ */
 function parseIso(s: string): YMD | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
   if (!m) return null;
   const y = Number(m[1]);
   const m0 = Number(m[2]) - 1;
   const d = Number(m[3]);
-  if (m0 < 0 || m0 > 11 || d < 1 || d > 31) return null;
+  if (y < MIN_YEAR || y > MAX_YEAR) return null;
+  if (m0 < 0 || m0 > 11 || d < 1 || d > daysInMonth(y, m0)) return null;
   return { y, m0, d };
+}
+
+/** True for a complete, real YYYY-MM-DD date in a plausible year. */
+export function isValidIsoDate(s: string | null | undefined): boolean {
+  return !!s && parseIso(s) !== null;
+}
+
+/** Monday (UTC) of the week containing y-m0-d, as YMD. */
+function mondayOf(y: number, m0: number, d: number): YMD {
+  const date = new Date(Date.UTC(y, m0, d));
+  const back = (date.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
+  return partsOf(new Date(Date.UTC(y, m0, d - back)));
+}
+function weekFrom(mon: YMD): DateRange {
+  const sun = partsOf(new Date(Date.UTC(mon.y, mon.m0, mon.d + 6)));
+  return { start: iso(mon.y, mon.m0, mon.d), end: iso(sun.y, sun.m0, sun.d) };
 }
 
 /**
@@ -77,6 +109,13 @@ export function resolveRange(
   const { y, m0 } = partsOf(now);
 
   switch (preset) {
+    // Weeks run Monday–Sunday; "prior period" then compares to the week before.
+    case "this_week":
+      return weekFrom(mondayOf(y, m0, partsOf(now).d));
+    case "last_week": {
+      const mon = mondayOf(y, m0, partsOf(now).d);
+      return weekFrom(partsOf(new Date(Date.UTC(mon.y, mon.m0, mon.d - 7))));
+    }
     case "this_month":
       return { start: iso(y, m0, 1), end: iso(y, m0, daysInMonth(y, m0)) };
     case "last_month": {
@@ -214,6 +253,8 @@ export function agingAsOfRange(range: DateRange, now: Date): DateRange {
 
 export function isRangePreset(v: unknown): v is RangePreset {
   return (
+    v === "this_week" ||
+    v === "last_week" ||
     v === "this_month" ||
     v === "last_month" ||
     v === "this_quarter" ||
